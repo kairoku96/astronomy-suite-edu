@@ -47,6 +47,25 @@ naked-eye beginner concepts up to AST 221 level. Solar-system topics are taught 
 interactive 3-D guided tours; stellar-physics topics (HR diagram, fusion, stellar
 structure and evolution) are taught as illustrated in-app lesson panels.
 
+## Planetarium: jump to a real date
+
+**Simulation → Go to date…** scrubs the whole system to any calendar date
+(e.g. `2027-03-14`), placing every planet at its real position for that moment;
+the HUD shows the current simulated date. `Jump to today` and `Reset to J2000
+epoch` are there too. `simTimeSec = 0` is the J2000.0 epoch, and the planets are
+seeded from real J2000 mean elements, so dates map to true sky configurations
+(good to well under a degree over a range of decades).
+
+## Adding comets and asteroids
+
+**Objects → Add comet / asteroid…** adds a body from six classical orbital
+elements; comets are drawn with an anti-sunward dust + ion tail that grows as
+they near the Sun. **Objects → Load orbital-elements file…** loads many at once
+from a CSV — see [`samples/orbital-elements-example.csv`](samples/orbital-elements-example.csv)
+for the format (`name, a_AU, e, i, node, varpi, M0, type`). **Add demo comets**
+drops in 1P/Halley plus a tail demo — then use *Go to date… → 1986-02-09* to
+watch Halley round the Sun.
+
 ## Repository layout
 
 ```
@@ -55,6 +74,7 @@ src/GLSphereRenderer.java        GPU sphere shader for the 2-D sim
 src/astrosim/                    3-D OpenGL sim
 src/tools/ScreenGrab.java        screenshot helper
 assets/textures/                 planet / moon / sun texture maps
+samples/                         example orbital-elements file
 libs/                            bundled FlatLaf look-and-feel
 run.ps1 / run2d.ps1              build + launch scripts
 ```

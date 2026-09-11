@@ -562,6 +562,9 @@ public class SolarSystemSimulation extends JPanel
     /** Mean anomaly for each moon (per planet) */
     private final double[][] moonMean = new double[NAMES.length][];
 
+    /** User-added minor bodies (comets / asteroids) loaded from orbital elements. */
+    private final java.util.List<SmallBody> smallBodies = new java.util.ArrayList<>();
+
     /** Number of points to use when drawing orbits */
     private static final int ORBIT_RESOLUTION = 10000;
 
@@ -1400,6 +1403,11 @@ public class SolarSystemSimulation extends JPanel
             }
         }
 
+        // Draw user-added comets / asteroids (with anti-sunward tails for comets)
+        if (!smallBodies.isEmpty()) {
+            drawSmallBodies(g2);
+        }
+
         // Draw velocity vectors for planets (educational feature)
         if (showVelocityVectors) {
             drawVelocityVectors(g2, cx, cy);
@@ -1739,6 +1747,7 @@ public class SolarSystemSimulation extends JPanel
         rows.add(new String[]{"Zoom", String.format("%.2f×  %s", currentZoom,
                 followingPlanet && autoZoomEnabled ? "Auto" : "Manual")});
         rows.add(new String[]{"Time", formatTimeScale(timeScale)});
+        rows.add(new String[]{"Date", simDateString()});
         rows.add(new String[]{"Elapsed", String.format("%.2f yr", simTimeSec / (365.25 * DAY))});
         if (viewPitchRad > 1e-4) {
             rows.add(new String[]{"View tilt", String.format("%.0f°  ( [ ]  \\ )", Math.toDegrees(viewPitchRad))});
@@ -2478,6 +2487,64 @@ public class SolarSystemSimulation extends JPanel
     /** Julian centuries of sim time elapsed since the J2000 epoch (simTimeSec = 0). */
     private double centuriesSinceEpoch() { return simTimeSec / (36525.0 * 86400.0); }
 
+    // ------- Real-date planetarium mapping (simTimeSec = 0 is the J2000.0 epoch) -------
+
+    /** J2000.0 = 2000-01-01 12:00 TT, treated as UTC here (the ~64 s offset is irrelevant visually). */
+    private static final java.time.Instant J2000_INSTANT =
+            java.time.LocalDateTime.of(2000, 1, 1, 12, 0, 0).toInstant(java.time.ZoneOffset.UTC);
+    private static final java.time.format.DateTimeFormatter SIM_DATE_FMT =
+            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd  HH:mm");
+
+    /** The simulated calendar instant for the current elapsed sim time (UTC), or null if out of range. */
+    private java.time.LocalDateTime simDateTime() {
+        try {
+            return java.time.LocalDateTime.ofInstant(
+                    J2000_INSTANT.plusSeconds((long) simTimeSec), java.time.ZoneOffset.UTC);
+        } catch (Exception e) {
+            return null;   // beyond the representable range at extreme time offsets
+        }
+    }
+
+    /** Human-readable simulated date, or an elapsed-years fallback at extreme offsets. */
+    private String simDateString() {
+        java.time.LocalDateTime dt = simDateTime();
+        if (dt == null) return String.format("J2000 %+.0f yr", simTimeSec / (365.25 * DAY));
+        return dt.format(SIM_DATE_FMT);
+    }
+
+    private static double wrapTwoPi(double a) {
+        a %= 2 * Math.PI;
+        if (a < 0) a += 2 * Math.PI;
+        return a;
+    }
+
+    /**
+     * Jump the whole simulation to a real calendar date/time: sets sim time and places every
+     * body at the mean-anomaly it has then (planets from real J2000 elements; moons/added
+     * small bodies phased from the epoch). Works while paused, so it acts as a date scrubber.
+     */
+    private void goToDate(java.time.LocalDateTime dt) {
+        long secs = java.time.Duration.between(J2000_INSTANT,
+                dt.toInstant(java.time.ZoneOffset.UTC)).getSeconds();
+        simTimeSec = secs;
+        for (int i = 0; i < NAMES.length; i++) {
+            double n = 2 * Math.PI / (PERIOD_Y[i] * 365.25 * DAY);
+            double M0 = Math.toRadians(PLANET_L0[i] - PLANET_VARPI0[i]);
+            meanAnomaly[i] = wrapTwoPi(M0 + n * simTimeSec);
+            for (int m = 0; m < moonMean[i].length; m++) {
+                moonMean[i][m] = wrapTwoPi((2 * Math.PI / (MOON_PERIOD_DAYS[i][m] * DAY)) * simTimeSec);
+            }
+        }
+        for (int i = 0; i < NAMES.length; i++) {
+            double[] pos = planetXYZ(i);
+            planetX[i] = pos[0]; planetY[i] = pos[1]; planetZ[i] = pos[2];
+        }
+        for (SmallBody sb : smallBodies) sb.updatePosition(simTimeSec);
+        computeBarycenter();
+        updateTimeScaleLabel();
+        repaint();
+    }
+
     /** Current (precessed) longitude of the ascending node for planet i (radians). */
     private double planetOmega(int i) {
         return Math.toRadians(PLANET_OMEGA0[i] + PLANET_OMEGA_DOT[i] * centuriesSinceEpoch());
@@ -2528,6 +2595,276 @@ public class SolarSystemSimulation extends JPanel
     private double[] planetXYZ(int i) {
         double E = solveEccentricAnomaly(meanAnomaly[i], ECC[i]);
         return keplerXYZ(A_METERS[i], ECC[i], E, planetIncl(i), planetOmega(i), planetVarpi(i));
+    }
+
+    /**
+     * A user-added minor body — an asteroid or a comet — propagated on its own fixed
+     * Keplerian orbit from six classical elements. Comets are flagged so they get an
+     * anti-sunward tail. Elements follow the JPL Small-Body Database convention;
+     * {@code M0} is the mean anomaly at the J2000 epoch (simTimeSec = 0).
+     */
+    static final class SmallBody {
+        final String name;
+        final double aM;                 // semi-major axis (m)
+        final double ecc;
+        final double inclRad, omegaRad, varpiRad, M0Rad;
+        final boolean comet;
+        final Color color;
+        double x, y, z;                  // current heliocentric position (m)
+
+        SmallBody(String name, double aAU, double ecc, double inclDeg, double nodeDeg,
+                  double varpiDeg, double M0Deg, boolean comet, Color color) {
+            this.name = name;
+            this.aM = aAU * AU;
+            this.ecc = ecc;
+            this.inclRad = Math.toRadians(inclDeg);
+            this.omegaRad = Math.toRadians(nodeDeg);
+            this.varpiRad = Math.toRadians(varpiDeg);
+            this.M0Rad = Math.toRadians(M0Deg);
+            this.comet = comet;
+            this.color = color;
+            updatePosition(0);
+        }
+
+        /** Mean motion (rad/s) from Kepler's 3rd law: P[yr] = a[AU]^1.5. */
+        double meanMotion() {
+            double aAU = aM / AU;
+            return 2 * Math.PI / (Math.pow(aAU, 1.5) * 365.25 * DAY);
+        }
+
+        void updatePosition(double simTimeSecNow) {
+            double M = M0Rad + meanMotion() * simTimeSecNow;
+            double E = solveEccentricAnomaly(M, ecc);
+            double[] p = keplerXYZ(aM, ecc, E, inclRad, omegaRad, varpiRad);
+            x = p[0]; y = p[1]; z = p[2];
+        }
+
+        /** Heliocentric distance (m) — drives comet-tail length/brightness. */
+        double sunDistM() { return Math.sqrt(x * x + y * y + z * z); }
+    }
+
+    /** Draw every added comet/asteroid: its orbit ring, an anti-sunward tail (comets), a nucleus + label. */
+    private void drawSmallBodies(Graphics2D g2) {
+        double sunSX = projX(sunBarycenterX), sunSY = projY(sunBarycenterY, 0);
+        Object oldAA = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        Font oldFont = g2.getFont();
+        for (SmallBody sb : smallBodies) {
+            double px = projX(sb.x + sunBarycenterX), py = projY(sb.y + sunBarycenterY, sb.z);
+
+            if (showPlanetOrbits) {
+                Path2D.Double path = new Path2D.Double();
+                final int seg = 360;
+                for (int j = 0; j <= seg; j++) {
+                    double E = 2 * Math.PI * j / seg;
+                    double[] w = keplerXYZ(sb.aM, sb.ecc, E, sb.inclRad, sb.omegaRad, sb.varpiRad);
+                    double sx = projX(w[0] + sunBarycenterX), sy = projY(w[1] + sunBarycenterY, w[2]);
+                    if (j == 0) path.moveTo(sx, sy); else path.lineTo(sx, sy);
+                }
+                path.closePath();
+                g2.setColor(new Color(sb.color.getRed(), sb.color.getGreen(), sb.color.getBlue(), 70));
+                g2.setStroke(new BasicStroke(1f));
+                g2.draw(path);
+            }
+
+            if (sb.comet) drawCometTail(g2, sb, px, py, sunSX, sunSY);
+
+            double r = sb.comet ? 3.2 : 2.6;
+            g2.setColor(sb.color);
+            g2.fill(new Ellipse2D.Double(px - r, py - r, 2 * r, 2 * r));
+            if (sb.comet) {   // bright coma glow around the nucleus
+                g2.setColor(new Color(sb.color.getRed(), sb.color.getGreen(), sb.color.getBlue(), 90));
+                g2.fill(new Ellipse2D.Double(px - r * 2.2, py - r * 2.2, r * 4.4, r * 4.4));
+            }
+            g2.setColor(new Color(235, 240, 250, 210));
+            g2.setFont(oldFont.deriveFont(Font.PLAIN, 11f));
+            g2.drawString(sb.name, (int) (px + r + 4), (int) (py - r - 2));
+        }
+        g2.setFont(oldFont);
+        if (oldAA != null) g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
+    }
+
+    /** A comet's twin tails: a straight bluish ion tail + a broader, curved warm dust tail, both anti-sunward. */
+    private void drawCometTail(Graphics2D g2, SmallBody sb, double px, double py, double sunSX, double sunSY) {
+        double dx = px - sunSX, dy = py - sunSY, dlen = Math.hypot(dx, dy);
+        if (dlen < 1e-6) return;
+        double ux = dx / dlen, uy = dy / dlen;             // anti-sunward (away from Sun)
+        double rAU = sb.sunDistM() / AU;
+        double activity = Math.max(0.0, Math.min(1.0, (3.5 - rAU) / 3.5));  // sublimation grows near the Sun
+        if (activity <= 0.02) return;
+        double lenPx = Math.max(activity * 0.35 * AU * METERS_TO_PIXELS * currentZoom, activity * 160);
+        double perpx = -uy, perpy = ux;
+        // Ion tail: straight, narrow, bluish.
+        drawTailPoly(g2, px, py, ux, uy, perpx, perpy, lenPx, 5 + 7 * activity,
+                new Color(150, 190, 255), activity, 0.0);
+        // Dust tail: broader, warmer, curved gently to one side.
+        drawTailPoly(g2, px, py, ux, uy, perpx, perpy, lenPx * 0.72, 10 + 14 * activity,
+                new Color(255, 224, 168), activity * 0.85, 0.20);
+    }
+
+    /** Fill one tapered, optionally curved tail, fading from the nucleus (bright) to a transparent tip. */
+    private void drawTailPoly(Graphics2D g2, double px, double py, double ux, double uy,
+                              double perpx, double perpy, double len, double halfW,
+                              Color base, double alphaScale, double curve) {
+        final int N = 18;
+        double[] ax = new double[N + 1], ay = new double[N + 1], w = new double[N + 1];
+        for (int k = 0; k <= N; k++) {
+            double t = k / (double) N;
+            double along = t * len, bend = curve * len * t * t;
+            ax[k] = px + ux * along + perpx * bend;
+            ay[k] = py + uy * along + perpy * bend;
+            w[k] = halfW * (1.0 - t) * (1.0 - t) + 0.6;    // taper to a point
+        }
+        Path2D.Double poly = new Path2D.Double();
+        poly.moveTo(ax[0] + perpx * w[0], ay[0] + perpy * w[0]);
+        for (int k = 1; k <= N; k++) poly.lineTo(ax[k] + perpx * w[k], ay[k] + perpy * w[k]);
+        for (int k = N; k >= 0; k--) poly.lineTo(ax[k] - perpx * w[k], ay[k] - perpy * w[k]);
+        poly.closePath();
+        float a = (float) Math.min(1.0, Math.max(0.0, alphaScale));
+        Color c0 = new Color(base.getRed(), base.getGreen(), base.getBlue(), (int) (150 * a));
+        Color c1 = new Color(base.getRed(), base.getGreen(), base.getBlue(), 0);
+        float tx = (float) ax[N], ty = (float) ay[N];
+        if (Math.abs(tx - px) < 0.5f && Math.abs(ty - py) < 0.5f) return;   // degenerate gradient guard
+        g2.setPaint(new GradientPaint((float) px, (float) py, c0, tx, ty, c1));
+        g2.fill(poly);
+    }
+
+    /* ---------- Real-date scrubbing + adding minor bodies (UI) ---------- */
+
+    /** Parse "YYYY-MM-DD" or "YYYY-MM-DD HH:MM" (also accepting 'T') to a LocalDateTime, or null. */
+    private static java.time.LocalDateTime parseDateTime(String s) {
+        if (s == null) return null;
+        s = s.trim().replace('T', ' ');
+        String[] dt = {"yyyy-M-d H:m", "yyyy-M-d HH:mm", "yyyy-MM-dd HH:mm", "yyyy-MM-dd H:m"};
+        for (String p : dt) {
+            try { return java.time.LocalDateTime.parse(s, java.time.format.DateTimeFormatter.ofPattern(p)); }
+            catch (Exception ignored) { }
+        }
+        try { return java.time.LocalDate.parse(s.split("\\s+")[0]).atStartOfDay(); }
+        catch (Exception ignored) { }
+        return null;
+    }
+
+    /** Ask for a real date and scrub the whole system to it (pauses so it holds on that date). */
+    private void promptGoToDate(Window owner) {
+        String input = (String) JOptionPane.showInputDialog(owner,
+                "Jump to a real date — the whole system moves to its configuration then.\n"
+                + "Format:  YYYY-MM-DD   or   YYYY-MM-DD HH:MM",
+                "Go to Date", JOptionPane.QUESTION_MESSAGE, null, null, simDateString().trim());
+        if (input == null || input.isBlank()) return;
+        java.time.LocalDateTime dt = parseDateTime(input);
+        if (dt == null) {
+            JOptionPane.showMessageDialog(owner,
+                    "Couldn't read \"" + input + "\".\nUse YYYY-MM-DD or YYYY-MM-DD HH:MM.",
+                    "Invalid date", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        simulationPaused = true;
+        goToDate(dt);
+    }
+
+    /** A small labelled text field for the add-body form. */
+    private static JTextField field(String val) {
+        JTextField f = new JTextField(val, 8);
+        return f;
+    }
+
+    /** Form to add a comet/asteroid from six classical orbital elements. */
+    private void promptAddSmallBody(Window owner) {
+        JTextField name = field("New Comet");
+        JTextField a = field("3.0"), e = field("0.8"), inc = field("20"),
+                   node = field("80"), varpi = field("100"), m0 = field("0");
+        JCheckBox comet = new JCheckBox("Comet (draw a tail)", true);
+        JPanel form = new JPanel(new GridLayout(0, 2, 6, 4));
+        form.add(new JLabel("Name")); form.add(name);
+        form.add(new JLabel("Semi-major axis a (AU)")); form.add(a);
+        form.add(new JLabel("Eccentricity e (0–0.999)")); form.add(e);
+        form.add(new JLabel("Inclination i (deg)")); form.add(inc);
+        form.add(new JLabel("Long. of asc. node Ω (deg)")); form.add(node);
+        form.add(new JLabel("Long. of perihelion ϖ (deg)")); form.add(varpi);
+        form.add(new JLabel("Mean anomaly at J2000 (deg)")); form.add(m0);
+        form.add(new JLabel("")); form.add(comet);
+        int ok = JOptionPane.showConfirmDialog(owner, form, "Add Comet / Asteroid from Orbital Elements",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (ok != JOptionPane.OK_OPTION) return;
+        try {
+            double aAU = Double.parseDouble(a.getText().trim());
+            double ecc = Double.parseDouble(e.getText().trim());
+            if (aAU <= 0 || ecc < 0 || ecc >= 1.0) throw new NumberFormatException("a>0 and 0<=e<1 required");
+            SmallBody sb = new SmallBody(name.getText().trim().isEmpty() ? "Body" : name.getText().trim(),
+                    aAU, ecc, Double.parseDouble(inc.getText().trim()),
+                    Double.parseDouble(node.getText().trim()), Double.parseDouble(varpi.getText().trim()),
+                    Double.parseDouble(m0.getText().trim()), comet.isSelected(),
+                    comet.isSelected() ? new Color(180, 230, 255) : new Color(200, 200, 180));
+            sb.updatePosition(simTimeSec);
+            smallBodies.add(sb);
+            repaint();
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(owner, "Invalid element value:\n" + ex.getMessage(),
+                    "Add body", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    /**
+     * Load minor bodies from a text/CSV file, one per line:
+     * {@code name,a_AU,e,i_deg,node_deg,varpi_deg,M0_deg,type}  (type: comet|asteroid).
+     * Blank lines and lines starting with '#' are ignored.
+     */
+    private void loadElementsFile(Window owner) {
+        JFileChooser fc = new JFileChooser();
+        fc.setDialogTitle("Load orbital-elements file (name,a,e,i,node,varpi,M0,type)");
+        if (fc.showOpenDialog(owner) != JFileChooser.APPROVE_OPTION) return;
+        int added = 0, bad = 0;
+        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(fc.getSelectedFile()))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String t = line.trim();
+                if (t.isEmpty() || t.startsWith("#")) continue;
+                String[] f = t.split("\\s*,\\s*");
+                if (f.length < 7) { bad++; continue; }
+                try {
+                    boolean isComet = f.length >= 8 && f[7].toLowerCase().startsWith("c");
+                    SmallBody sb = new SmallBody(f[0], Double.parseDouble(f[1]), Double.parseDouble(f[2]),
+                            Double.parseDouble(f[3]), Double.parseDouble(f[4]), Double.parseDouble(f[5]),
+                            Double.parseDouble(f[6]), isComet,
+                            isComet ? new Color(180, 230, 255) : new Color(200, 200, 180));
+                    sb.updatePosition(simTimeSec);
+                    smallBodies.add(sb);
+                    added++;
+                } catch (Exception ex) { bad++; }
+            }
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(owner, "Couldn't read the file:\n" + ex.getMessage(),
+                    "Load elements", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        repaint();
+        JOptionPane.showMessageDialog(owner,
+                "Loaded " + added + " object(s)" + (bad > 0 ? " (" + bad + " line(s) skipped)." : "."),
+                "Load elements", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /** Add 1P/Halley on its real orbit, and a demo comet placed at perihelion so a tail shows now. */
+    private void addDemoComets(Window owner) {
+        // 1P/Halley (J2000 elements; retrograde). Near aphelion at J2000 — scrub to 1986 or 2061 for its tail.
+        SmallBody halley = new SmallBody("1P/Halley", 17.834, 0.96714, 162.26, 58.42, 169.75, 66.5,
+                true, new Color(180, 230, 255));
+        // Demo comet sitting near perihelion at J2000, so its tail is visible immediately.
+        SmallBody demo = new SmallBody("Demo Comet", 3.2, 0.82, 24.0, 80.0, 110.0, 0.0,
+                true, new Color(200, 240, 255));
+        halley.updatePosition(simTimeSec);
+        demo.updatePosition(simTimeSec);
+        smallBodies.add(halley);
+        smallBodies.add(demo);
+        repaint();
+        if (owner != null) {
+            JOptionPane.showMessageDialog(owner,
+                    "Added 1P/Halley and a demo comet.\n\n"
+                    + "The demo comet is near the Sun now, so its tail shows immediately.\n"
+                    + "Halley is near aphelion at J2000 — use Simulation → Go to date…\n"
+                    + "and enter 1986-02-09 (or 2061-07-28) to watch it round the Sun.",
+                    "Demo comets added", JOptionPane.INFORMATION_MESSAGE);
+        }
     }
 
     // ------- View projection (world -> screen), pitch-aware -------
@@ -3663,6 +4000,9 @@ public class SolarSystemSimulation extends JPanel
             double v = Math.sqrt(Math.max(0.0, mu * (2.0 / r - 1.0 / a)));
             planetSpeedKmS[i] = v / 1000.0;
         }
+
+        // Advance any user-added comets / asteroids on their own Keplerian orbits.
+        for (SmallBody sb : smallBodies) sb.updatePosition(simTimeSec);
 
         // Compute barycenter of the system (Sun + planets) from current Kepler positions
         computeBarycenter();
@@ -4995,14 +5335,46 @@ public class SolarSystemSimulation extends JPanel
         solarEclipseItem.addActionListener(_ -> panel.showEclipse(true));
         JMenuItem lunarEclipseItem = new JMenuItem("Show lunar eclipse (Earth)");
         lunarEclipseItem.addActionListener(_ -> panel.showEclipse(false));
+        // Real-date scrubbing (planetarium): jump the whole system to a calendar date.
+        JMenuItem gotoDateItem = new JMenuItem("Go to date…");
+        gotoDateItem.addActionListener(_ -> panel.promptGoToDate(frame));
+        JMenuItem todayItem = new JMenuItem("Jump to today");
+        todayItem.addActionListener(_ -> {
+            panel.simulationPaused = true;
+            panel.goToDate(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+        });
+        JMenuItem epochItem = new JMenuItem("Reset to J2000 epoch");
+        epochItem.addActionListener(_ -> {
+            panel.goToDate(java.time.LocalDateTime.of(2000, 1, 1, 12, 0));
+        });
         JMenuItem exitItem = new JMenuItem("Exit");
         exitItem.addActionListener(_ -> System.exit(0));
         simMenu.add(resetViewItem);
+        simMenu.addSeparator();
+        simMenu.add(gotoDateItem);
+        simMenu.add(todayItem);
+        simMenu.add(epochItem);
         simMenu.addSeparator();
         simMenu.add(solarEclipseItem);
         simMenu.add(lunarEclipseItem);
         simMenu.addSeparator();
         simMenu.add(exitItem);
+
+        // Objects menu — add comets/asteroids from orbital elements (item 6)
+        JMenu objectsMenu = new JMenu("Objects");
+        JMenuItem addBodyItem = new JMenuItem("Add comet / asteroid…");
+        addBodyItem.addActionListener(_ -> panel.promptAddSmallBody(frame));
+        JMenuItem loadFileItem = new JMenuItem("Load orbital-elements file…");
+        loadFileItem.addActionListener(_ -> panel.loadElementsFile(frame));
+        JMenuItem demoCometItem = new JMenuItem("Add demo comets (Halley + tail demo)");
+        demoCometItem.addActionListener(_ -> panel.addDemoComets(frame));
+        JMenuItem clearBodiesItem = new JMenuItem("Clear added objects");
+        clearBodiesItem.addActionListener(_ -> { panel.smallBodies.clear(); panel.repaint(); });
+        objectsMenu.add(addBodyItem);
+        objectsMenu.add(loadFileItem);
+        objectsMenu.addSeparator();
+        objectsMenu.add(demoCometItem);
+        objectsMenu.add(clearBodiesItem);
 
         // View menu – mirrors keyboard toggles
         JMenu viewMenu = new JMenu("View");
@@ -5202,6 +5574,7 @@ public class SolarSystemSimulation extends JPanel
         helpMenu.add(aboutItem);
 
         menuBar.add(simMenu);
+        menuBar.add(objectsMenu);
         menuBar.add(viewMenu);
 
         // Education menu for lessons
