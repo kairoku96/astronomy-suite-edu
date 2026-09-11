@@ -209,6 +209,22 @@ public class SolarSystemSimulation extends JPanel
     private boolean showVelocityVectors = false;    // Show velocity vectors on planets
     private boolean showVelocityComparison = false; // Show velocity comparison at perihelion vs aphelion
 
+    // ----- Curriculum: data-driven ladder from beginner to AST 221 level -----
+    /** All lessons, built once on first access. Ordered beginner -> advanced. */
+    private java.util.List<Lesson> curriculum;
+    /** Page index within a PANEL lesson (reuses tourStep as the page cursor). */
+    private java.util.List<Lesson> curriculum() {
+        if (curriculum == null) curriculum = buildCurriculum();
+        return curriculum;
+    }
+    /** The Lesson object currently selected (clamped to a valid index). */
+    private Lesson currentLessonObj() {
+        java.util.List<Lesson> c = curriculum();
+        int idx = currentLesson - 1;
+        if (idx < 0 || idx >= c.size()) idx = 0;
+        return c.get(idx);
+    }
+
     // ----- Guided Tour System -----
     private boolean guidedTourActive = false;
     private int tourStep = 0;
@@ -1668,29 +1684,28 @@ public class SolarSystemSimulation extends JPanel
             // Title text with icon
             g2.setColor(new Color(255, 255, 255, 250));
             g2.setFont(g2.getFont().deriveFont(Font.BOLD, titleFontSize));
-            String title = "🎓 Lesson " + currentLesson;
+            Lesson curL = currentLessonObj();
+            String title = "🎓 Lesson " + currentLesson + " / " + curriculum().size();
             int titleWidth = g2.getFontMetrics().stringWidth(title);
             int titleY = bannerY + (int)(bannerHeight * 0.4);
             g2.drawString(title, bannerX + (bannerWidth - titleWidth) / 2, titleY);
 
-            // Lesson name
-            String[] lessonNames = {
-                "Introduction to Orbital Motion",
-                "Velocity & Kepler's 2nd Law",
-                "Scale of the Solar System",
-                "Moon Systems",
-                "Time Control"
-            };
-            String subtitle = lessonNames[currentLesson - 1];
+            // Lesson name (from the curriculum)
+            String subtitle = curL.title;
             g2.setFont(g2.getFont().deriveFont(Font.PLAIN, subtitleFontSize));
             g2.setColor(new Color(220, 235, 255, 250));
             int subtitleWidth = g2.getFontMetrics().stringWidth(subtitle);
             int subtitleY = bannerY + (int)(bannerHeight * 0.72);
             g2.drawString(subtitle, bannerX + (bannerWidth - subtitleWidth) / 2, subtitleY);
 
-            // Draw guided tour message if active
-            if (guidedTourActive && !tourMessage.isEmpty()) {
-                drawGuidedTourMessage(g2);
+            // Draw guided content if active: full illustrated panel for stellar
+            // (PANEL) lessons, small caption box for 3-D (TOUR) lessons.
+            if (guidedTourActive) {
+                if (curL.kind == LessonKind.PANEL) {
+                    drawLessonPanel(g2, curL, tourStep);
+                } else if (!tourMessage.isEmpty()) {
+                    drawGuidedTourMessage(g2);
+                }
             }
         }
     }
@@ -1945,6 +1960,324 @@ public class SolarSystemSimulation extends JPanel
             g2.drawString(line, textX, textY);
             textY += lineHeight;
         }
+    }
+
+    /* =========================================================================
+       ILLUSTRATED PANEL LESSONS (stellar-physics topics the 3-D scene can't show)
+       ========================================================================= */
+
+    private static final Color PANEL_ACCENT = new Color(120, 180, 255);
+
+    /** Draws one page of a stellar-physics PANEL lesson: heading, schematic, text. */
+    private void drawLessonPanel(Graphics2D g2, Lesson L, int pageIdx) {
+        if (L.pages == null || L.pages.isEmpty()) return;
+        pageIdx = Math.max(0, Math.min(pageIdx, L.pages.size() - 1));
+        PanelPage pg = L.pages.get(pageIdx);
+        int alpha = (int) (tourMessageAlpha * 255);
+        if (alpha <= 0) return;
+
+        Object oldAA = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        Font baseFont = g2.getFont();
+        int W = getWidth(), H = getHeight();
+
+        // Dim the live scene so text is readable.
+        g2.setColor(new Color(6, 8, 16, (int) (Math.min(alpha, 255) * 0.66)));
+        g2.fillRect(0, 0, W, H);
+
+        int cardW = Math.min(780, W - 60);
+        int cardH = Math.min(560, H - 96);
+        int cardX = (W - cardW) / 2;
+        int cardY = (H - cardH) / 2 + 4;
+        int pad = 22;
+
+        // Card body.
+        g2.setColor(new Color(0, 0, 0, Math.min(alpha, 120)));
+        g2.fillRoundRect(cardX + 5, cardY + 6, cardW, cardH, 20, 20);
+        g2.setPaint(new GradientPaint(cardX, cardY, new Color(20, 24, 44, Math.min(alpha, 245)),
+                cardX, cardY + cardH, new Color(30, 34, 62, Math.min(alpha, 245))));
+        g2.fillRoundRect(cardX, cardY, cardW, cardH, 20, 20);
+        g2.setColor(new Color(PANEL_ACCENT.getRed(), PANEL_ACCENT.getGreen(), PANEL_ACCENT.getBlue(), Math.min(alpha, 210)));
+        g2.setStroke(new BasicStroke(2.2f));
+        g2.drawRoundRect(cardX, cardY, cardW, cardH, 20, 20);
+
+        // Header: tier (left) + progress (right).
+        g2.setFont(baseFont.deriveFont(Font.BOLD, 11f));
+        g2.setColor(new Color(150, 190, 240, alpha));
+        g2.drawString(L.tier.toUpperCase(), cardX + pad, cardY + pad + 4);
+        String prog = "Lesson " + L.number + " / " + curriculum().size()
+                + "   ·   Page " + (pageIdx + 1) + " / " + L.pages.size();
+        FontMetrics hfm = g2.getFontMetrics();
+        g2.drawString(prog, cardX + cardW - pad - hfm.stringWidth(prog), cardY + pad + 4);
+
+        // Page heading.
+        g2.setFont(baseFont.deriveFont(Font.BOLD, 20f));
+        g2.setColor(new Color(255, 255, 255, alpha));
+        g2.drawString(pg.heading, cardX + pad, cardY + pad + 32);
+        g2.setColor(new Color(PANEL_ACCENT.getRed(), PANEL_ACCENT.getGreen(), PANEL_ACCENT.getBlue(), Math.min(alpha, 160)));
+        g2.setStroke(new BasicStroke(1.4f));
+        g2.drawLine(cardX + pad, cardY + pad + 42, cardX + cardW - pad, cardY + pad + 42);
+
+        int contentTop = cardY + pad + 56;
+        int contentBot = cardY + cardH - 42;
+        // Diagram occupies the left ~46%, explanatory text the right.
+        int gap = 20;
+        int diagW = (int) ((cardW - 2 * pad - gap) * 0.46);
+        Rectangle diagRect = new Rectangle(cardX + pad, contentTop, diagW, contentBot - contentTop);
+        drawLessonDiagram(g2, pg.diagram, diagRect, alpha, baseFont);
+
+        // Body text (wrapped, honouring explicit newlines).
+        int textX = diagRect.x + diagRect.width + gap;
+        int textW = cardX + cardW - pad - textX;
+        g2.setFont(baseFont.deriveFont(Font.PLAIN, 13f));
+        FontMetrics bfm = g2.getFontMetrics();
+        int ty = contentTop + bfm.getAscent();
+        g2.setColor(new Color(224, 232, 245, alpha));
+        for (String para : pg.body.split("\n")) {
+            for (String line : wrapPlain(bfm, para.strip(), textW)) {
+                g2.drawString(line, textX, ty);
+                ty += bfm.getHeight() + 2;
+            }
+        }
+
+        // Footer hint.
+        g2.setFont(baseFont.deriveFont(Font.PLAIN, 12f));
+        String hint = (pageIdx + 1 < L.pages.size()) ? "Press 'N' for the next page"
+                                                      : "Press 'N' to finish the lesson";
+        g2.setColor(new Color(170, 205, 245, alpha));
+        int fx = cardX + (cardW - g2.getFontMetrics().stringWidth(hint)) / 2;
+        g2.drawString(hint, fx, cardY + cardH - 16);
+        if (tourStepReady) {
+            double pulse = Math.sin(System.currentTimeMillis() / 300.0) * 0.3 + 0.7;
+            g2.setColor(new Color(150, 200, 255, (int) (pulse * Math.min(alpha, 150))));
+            g2.setStroke(new BasicStroke(4f));
+            g2.drawRoundRect(cardX - 2, cardY - 2, cardW + 4, cardH + 4, 22, 22);
+        }
+
+        g2.setFont(baseFont);
+        if (oldAA != null) g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
+    }
+
+    /** Greedy word-wrap that keeps whole words within {@code maxWidth} pixels. */
+    private static java.util.List<String> wrapPlain(FontMetrics fm, String text, int maxWidth) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (text.isEmpty()) { out.add(""); return out; }
+        StringBuilder cur = new StringBuilder();
+        for (String word : text.split(" ")) {
+            String trial = cur.isEmpty() ? word : cur + " " + word;
+            if (fm.stringWidth(trial) > maxWidth && !cur.isEmpty()) {
+                out.add(cur.toString());
+                cur = new StringBuilder(word);
+            } else {
+                cur = new StringBuilder(trial);
+            }
+        }
+        if (!cur.isEmpty()) out.add(cur.toString());
+        return out;
+    }
+
+    private void diagLabel(Graphics2D g2, Font base, int alpha, String s, int x, int y) {
+        g2.setFont(base.deriveFont(Font.PLAIN, 10.5f));
+        g2.setColor(new Color(210, 222, 240, alpha));
+        g2.drawString(s, x, y);
+    }
+
+    /** Draws a schematic for a PANEL page inside {@code r}. Pure Java2D, theme-dark. */
+    private void drawLessonDiagram(Graphics2D g2, String key, Rectangle r, int alpha, Font base) {
+        // Framed backing so the schematic reads as a figure.
+        g2.setColor(new Color(10, 14, 26, Math.min(alpha, 235)));
+        g2.fillRoundRect(r.x, r.y, r.width, r.height, 12, 12);
+        g2.setColor(new Color(70, 96, 140, Math.min(alpha, 180)));
+        g2.setStroke(new BasicStroke(1.2f));
+        g2.drawRoundRect(r.x, r.y, r.width, r.height, 12, 12);
+        Shape oldClip = g2.getClip();
+        g2.setClip(r);
+        int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+
+        switch (key) {
+            case "DISK" -> {
+                int sx = r.x + 26, sy = cy;
+                // Disk rings (ellipses) around the young star.
+                for (int i = 1; i <= 6; i++) {
+                    int rw = i * (r.width - 40) / 7, rh = rw / 3;
+                    int red = 60 + 30 * (6 - i), blue = 90 + 24 * i;
+                    g2.setColor(new Color(Math.min(255, red), 70, Math.min(255, blue), Math.min(alpha, 150)));
+                    g2.setStroke(new BasicStroke(1.4f));
+                    g2.drawOval(sx - rw, sy - rh, rw * 2, rh * 2);
+                }
+                // Frost line.
+                int fx = sx + (int) ((r.width - 40) * 0.52);
+                g2.setColor(new Color(120, 200, 255, Math.min(alpha, 220)));
+                g2.setStroke(new BasicStroke(1.6f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 1f, new float[]{5, 5}, 0));
+                g2.drawLine(fx, r.y + 14, fx, r.y + r.height - 14);
+                diagLabel(g2, base, alpha, "frost line", fx - 24, r.y + 12);
+                diagLabel(g2, base, alpha, "hot · rock", r.x + 18, r.y + r.height - 12);
+                diagLabel(g2, base, alpha, "cold · ice", r.x + r.width - 70, r.y + r.height - 12);
+                // Star.
+                g2.setColor(new Color(255, 235, 140, alpha));
+                g2.fillOval(sx - 9, sy - 9, 18, 18);
+            }
+            case "ACCRETION" -> {
+                int y = cy;
+                int[] xs = {r.x + 34, cx, r.x + r.width - 40};
+                int[] rad = {3, 8, 16};
+                Color[] col = {new Color(150, 160, 180), new Color(190, 170, 150), new Color(120, 180, 240)};
+                String[] lab = {"dust", "planetesimal", "planet"};
+                for (int i = 0; i < 3; i++) {
+                    if (i == 0) {
+                        for (int d = 0; d < 8; d++)
+                            g2.fillOval(xs[i] - 10 + (d % 4) * 6, y - 8 + (d / 4) * 8, 2, 2);
+                        g2.setColor(new Color(150, 160, 180, alpha));
+                    } else {
+                        g2.setColor(new Color(col[i].getRed(), col[i].getGreen(), col[i].getBlue(), alpha));
+                        g2.fillOval(xs[i] - rad[i], y - rad[i], rad[i] * 2, rad[i] * 2);
+                    }
+                    diagLabel(g2, base, alpha, lab[i], xs[i] - 20, y + 34);
+                    if (i < 2) {
+                        g2.setColor(new Color(160, 190, 230, alpha));
+                        g2.setStroke(new BasicStroke(1.4f));
+                        int ax = xs[i] + 18, bx = xs[i + 1] - 20;
+                        g2.drawLine(ax, y, bx, y);
+                        g2.fillPolygon(new int[]{bx, bx - 6, bx - 6}, new int[]{y, y - 4, y + 4}, 3);
+                    }
+                }
+            }
+            case "SUN" -> {
+                int R = Math.min(r.width, r.height) / 2 - 16;
+                String[] zn = {"photosphere", "convective", "radiative", "core"};
+                Color[] zc = {new Color(255, 210, 120), new Color(255, 170, 70),
+                              new Color(255, 120, 60), new Color(255, 70, 50)};
+                double[] frac = {1.0, 0.72, 0.50, 0.24};
+                for (int i = 0; i < 4; i++) {
+                    int rr = (int) (R * frac[i]);
+                    g2.setColor(new Color(zc[i].getRed(), zc[i].getGreen(), zc[i].getBlue(), Math.min(alpha, 235)));
+                    g2.fillOval(cx - rr, cy - rr, rr * 2, rr * 2);
+                }
+                // Leader labels down the right side.
+                for (int i = 0; i < 4; i++) {
+                    int ly = r.y + 20 + i * 18;
+                    g2.setColor(new Color(zc[i].getRed(), zc[i].getGreen(), zc[i].getBlue(), alpha));
+                    g2.fillRect(r.x + r.width - 92, ly - 8, 8, 8);
+                    diagLabel(g2, base, alpha, zn[i], r.x + r.width - 80, ly);
+                }
+            }
+            case "HYDRO" -> {
+                int colX = cx, top = r.y + 26, bot = r.y + r.height - 26;
+                g2.setColor(new Color(70, 90, 130, Math.min(alpha, 160)));
+                g2.setStroke(new BasicStroke(1.4f));
+                g2.drawRect(colX - 30, top, 60, bot - top);
+                // Gravity down.
+                g2.setColor(new Color(120, 170, 255, alpha));
+                g2.setStroke(new BasicStroke(2.4f));
+                g2.drawLine(colX, top + 6, colX, cy - 6);
+                g2.fillPolygon(new int[]{colX, colX - 6, colX + 6}, new int[]{cy, cy - 10, cy - 10}, 3);
+                diagLabel(g2, base, alpha, "gravity", colX + 12, top + 22);
+                // Pressure up.
+                g2.setColor(new Color(255, 170, 110, alpha));
+                g2.drawLine(colX, bot - 6, colX, cy + 6);
+                g2.fillPolygon(new int[]{colX, colX - 6, colX + 6}, new int[]{cy, cy + 10, cy + 10}, 3);
+                diagLabel(g2, base, alpha, "pressure", colX + 12, bot - 8);
+                g2.setColor(new Color(230, 238, 250, alpha));
+                g2.setFont(base.deriveFont(Font.BOLD, 12f));
+                String eq = "dP/dr = −ρg";
+                g2.drawString(eq, cx - g2.getFontMetrics().stringWidth(eq) / 2, bot + 2);
+            }
+            case "HR" -> {
+                int ax = r.x + 30, ay = r.y + r.height - 26;   // axis origin
+                int aw = r.width - 48, ah = r.height - 52;
+                g2.setColor(new Color(150, 170, 200, alpha));
+                g2.setStroke(new BasicStroke(1.4f));
+                g2.drawLine(ax, ay, ax, ay - ah);              // luminosity axis
+                g2.drawLine(ax, ay, ax + aw, ay);              // temperature axis
+                diagLabel(g2, base, alpha, "L →", ax - 24, ay - ah + 6);
+                diagLabel(g2, base, alpha, "hot ← T → cool", ax + aw / 2 - 34, ay + 16);
+                // Main sequence diagonal (hot/bright upper-left to cool/faint lower-right).
+                g2.setColor(new Color(150, 200, 255, alpha));
+                g2.setStroke(new BasicStroke(6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g2.drawLine(ax + 12, ay - ah + 14, ax + aw - 18, ay - 12);
+                diagLabel(g2, base, alpha, "main sequence", ax + aw / 2 - 30, ay - ah / 2 + 26);
+                // Giants (upper right).
+                g2.setColor(new Color(255, 150, 120, alpha));
+                g2.fillOval(ax + aw - 60, ay - ah + 18, 34, 20);
+                diagLabel(g2, base, alpha, "giants", ax + aw - 62, ay - ah + 12);
+                // White dwarfs (lower left).
+                g2.setColor(new Color(210, 230, 255, alpha));
+                g2.fillOval(ax + 22, ay - 30, 14, 10);
+                diagLabel(g2, base, alpha, "white dwarfs", ax + 8, ay - 34);
+                // The Sun.
+                g2.setColor(new Color(255, 230, 120, alpha));
+                int sunx = ax + (int) (aw * 0.52), suny = ay - (int) (ah * 0.46);
+                g2.fillOval(sunx - 4, suny - 4, 8, 8);
+                diagLabel(g2, base, alpha, "Sun", sunx + 6, suny + 3);
+            }
+            case "PPCHAIN" -> {
+                g2.setFont(base.deriveFont(Font.BOLD, 11f));
+                String[] rows = {"p + p → ²H + e⁺ + ν", "²H + p → ³He + γ", "³He + ³He → ⁴He + 2p"};
+                int y = r.y + 34;
+                for (int i = 0; i < rows.length; i++) {
+                    g2.setColor(new Color(40, 60, 100, Math.min(alpha, 210)));
+                    g2.fillRoundRect(r.x + 14, y - 16, r.width - 28, 24, 8, 8);
+                    g2.setColor(new Color(120, 160, 220, alpha));
+                    g2.drawRoundRect(r.x + 14, y - 16, r.width - 28, 24, 8, 8);
+                    g2.setColor(new Color(235, 242, 252, alpha));
+                    g2.drawString(rows[i], r.x + 22, y);
+                    if (i < rows.length - 1) {
+                        g2.setColor(new Color(150, 190, 230, alpha));
+                        int mx = cx;
+                        g2.drawLine(mx, y + 8, mx, y + 20);
+                        g2.fillPolygon(new int[]{mx, mx - 4, mx + 4}, new int[]{y + 24, y + 18, y + 18}, 3);
+                    }
+                    y += 40;
+                }
+                g2.setColor(new Color(255, 220, 140, alpha));
+                g2.setFont(base.deriveFont(Font.BOLD, 11.5f));
+                String net = "4 p → ⁴He + energy";
+                g2.drawString(net, cx - g2.getFontMetrics().stringWidth(net) / 2, r.y + r.height - 12);
+            }
+            case "EVOLUTION" -> {
+                int ax = r.x + 26, ay = r.y + r.height - 24;
+                int aw = r.width - 44, ah = r.height - 48;
+                g2.setColor(new Color(150, 170, 200, alpha));
+                g2.setStroke(new BasicStroke(1.3f));
+                g2.drawLine(ax, ay, ax, ay - ah);
+                g2.drawLine(ax, ay, ax + aw, ay);
+                diagLabel(g2, base, alpha, "L", ax - 16, ay - ah + 8);
+                diagLabel(g2, base, alpha, "hot ← T → cool", ax + aw / 2 - 34, ay + 14);
+                // MS point.
+                int msx = ax + (int) (aw * 0.5), msy = ay - (int) (ah * 0.42);
+                g2.setColor(new Color(150, 200, 255, alpha));
+                g2.fillOval(msx - 5, msy - 5, 10, 10);
+                diagLabel(g2, base, alpha, "main seq.", msx - 26, msy + 20);
+                // Track to red giant (up-right = cooler, brighter).
+                int rgx = ax + (int) (aw * 0.82), rgy = ay - (int) (ah * 0.82);
+                g2.setColor(new Color(255, 150, 110, alpha));
+                g2.setStroke(new BasicStroke(2.4f));
+                g2.drawLine(msx, msy, rgx, rgy);
+                g2.fillPolygon(new int[]{rgx, rgx - 8, rgx - 2}, new int[]{rgy, rgy + 2, rgy + 9}, 3);
+                g2.fillOval(rgx - 9, rgy - 9, 18, 18);
+                diagLabel(g2, base, alpha, "red giant", rgx - 30, rgy - 12);
+            }
+            case "ENDPOINTS" -> {
+                int startx = r.x + 20, y0 = r.y + 30;
+                g2.setColor(new Color(255, 220, 140, alpha));
+                g2.fillOval(startx - 6, y0 - 6, 12, 12);
+                diagLabel(g2, base, alpha, "dying star", startx + 10, y0 + 4);
+                String[] lab = {"white dwarf  ≤1.4 M☉", "neutron star  ~1.4–3 M☉", "black hole  >3 M☉"};
+                Color[] cc = {new Color(210, 230, 255), new Color(180, 200, 240), new Color(150, 140, 200)};
+                int bx = r.x + r.width - 150;
+                for (int i = 0; i < 3; i++) {
+                    int by = r.y + 24 + i * ((r.height - 44) / 3) + 14;
+                    g2.setColor(new Color(150, 175, 220, alpha));
+                    g2.setStroke(new BasicStroke(1.3f));
+                    g2.drawLine(startx + 6, y0 + 6, bx - 6, by);
+                    g2.setColor(new Color(cc[i].getRed(), cc[i].getGreen(), cc[i].getBlue(), Math.min(alpha, 220)));
+                    g2.fillOval(bx - 6, by - 6, 12, 12);
+                    diagLabel(g2, base, alpha, lab[i], bx + 10, by + 4);
+                }
+            }
+            default -> diagLabel(g2, base, alpha, "(figure)", cx - 20, cy);
+        }
+        g2.setClip(oldClip);
     }
 
     /**
@@ -3493,293 +3826,686 @@ public class SolarSystemSimulation extends JPanel
     }
 
     /**
-     * Updates the guided tour for different lessons
-     * This method manages tour steps with manual progression (press N to continue)
+     * Generic guided-lesson driver. Works for every lesson in the curriculum:
+     * a TOUR lesson runs its {@link TourAction} steps against the live 3-D scene,
+     * while a PANEL lesson pages through illustrated stellar-physics content.
+     * Progression is manual (press N); {@link #tourStep} is the step/page cursor.
      */
     private void updateGuidedTour(double dtReal) {
-        // Update tour timer
         tourStepStartTime += dtReal;
 
-        // Fade in tour message
+        // Fade in the current step's caption/page.
         if (tourMessageAlpha < 1.0) {
             tourMessageAlpha += TOUR_MESSAGE_FADE_SPEED * dtReal;
             if (tourMessageAlpha > 1.0) tourMessageAlpha = 1.0;
         }
 
-        // After message is fully faded in and camera settled, allow advancing
-        if (tourMessageAlpha >= 1.0 && tourStepStartTime > 1.5) {
+        Lesson L = currentLessonObj();
+
+        // Allow advancing once faded in. Panels settle quickly (no camera move);
+        // 3-D tours wait a beat longer for the camera to arrive.
+        double readyAfter = (L.kind == LessonKind.PANEL) ? 0.35 : 1.5;
+        if (tourMessageAlpha >= 1.0 && tourStepStartTime > readyAfter) {
             tourStepReady = true;
         }
 
-        // Route to appropriate lesson tour
-        if (currentLesson == 1) {
-            updateLesson1Tour(dtReal);
-        } else if (currentLesson == 2) {
-            updateLesson2Tour(dtReal);
+        int count = (L.kind == LessonKind.TOUR) ? L.steps.size() : L.pages.size();
+
+        // Advancing past the last step/page ends the lesson.
+        if (tourStep >= count) { endTour(); return; }
+
+        // TOUR lessons run their scene setup once, on the first frame of a step.
+        if (L.kind == LessonKind.TOUR && tourStepStartTime < dtReal * 2) {
+            tourMessage = L.steps.get(tourStep).run(this);
         }
     }
 
-    /**
-     * Lesson 1 Tour: Introduction to Orbital Motion
-     */
-    private void updateLesson1Tour(double dtReal) {
-        // Lesson 1 Tour Steps - execute setup on first frame only
-        if (tourStepStartTime < dtReal * 2) { // First frame of this step
-            switch (tourStep) {
-                case 0: // Welcome & Setup
-                    showPlanetOrbits = true;
-                    showPerihelionAphelion = true;
-                    showKeplersLaw = true;
-                    hideAllPlanetsExcept(-1); // Show all for overview
-                    returnToSun();
-                    currentZoom = 2.0;
-                    targetZoom = 2.0;
-                    tourMessage = """
-                            Welcome to Lesson 1: Introduction to Orbital Motion
-                            We'll explore how planets orbit the Sun.
-                            
-                            Press 'N' to continue to the next step.""";
-                    break;
+    /** Cleanly stop any guided lesson and restore the scene to a neutral state. */
+    private void endTour() {
+        guidedTourActive = false;
+        tourStep = 0;
+        tourMessage = "";
+        tourMessageAlpha = 0.0;
+        tourStepReady = false;
+        showVelocityVectors = false;
+        showVelocityComparison = false;
+        restorePlanetVisibility();
+    }
 
-                case 1: // Focus on Venus (circular orbit)
-                    hideAllPlanetsExcept(findPlanetIndex("Venus"));
-                    focusPlanetByNameWithZoom("Venus", 1.0);  // Show full orbit comfortably
-                    tourMessage = """
-                            Venus - Nearly Perfect Circle
-                            Eccentricity ≈ 0.007
-                            Notice how circular the orbit looks!
-                            
-                            Press 'N' to continue.""";
-                    break;
+    /* =========================================================================
+       CURRICULUM  —  data-driven lesson ladder (beginner  ->  AST 221)
+       Tiers:  I Foundations · II Orbital Mechanics · III Planetary Science ·
+               IV Stellar Astrophysics.  Solar-system topics are taught as 3-D
+               guided TOURs; stellar-physics topics as illustrated PANEL lessons.
+       ========================================================================= */
 
-                case 2: // Focus on Earth
-                    hideAllPlanetsExcept(findPlanetIndex("Earth"));
-                    focusPlanetByNameWithZoom("Earth", 0.79);  // Show full orbit comfortably
-                    tourMessage = """
-                            Earth - Also Quite Circular
-                            Eccentricity ≈ 0.017
-                            Our orbit is nearly circular too.
-                            
-                            Press 'N' to continue.""";
-                    break;
+    enum LessonKind { TOUR, PANEL }
 
-                case 3: // Focus on Mars
-                    hideAllPlanetsExcept(findPlanetIndex("Mars"));
-                    focusPlanetByNameWithZoom("Mars", 0.5);  // Show full orbit
-                    tourMessage = """
-                            Mars - More Elliptical
-                            Eccentricity ≈ 0.093
-                            The orbit starts to look stretched.
-                            
-                            Press 'N' to continue.""";
-                    break;
+    /** One step of a 3-D guided tour: mutates the scene and returns its caption. */
+    @FunctionalInterface interface TourAction { String run(SolarSystemSimulation p); }
 
-                case 4: // Focus on Mercury
-                    hideAllPlanetsExcept(findPlanetIndex("Mercury"));
-                    focusPlanetByNameWithZoom("Mercury", 1.75);  // Smaller orbit, can zoom more
-                    tourMessage = """
-                            Mercury - Quite Elliptical
-                            Eccentricity ≈ 0.206
-                            Notice the red (P) and blue (A) markers
-                            showing perihelion and aphelion points.
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 5: // Focus on Pluto
-                    hideAllPlanetsExcept(findPlanetIndex("Pluto"));
-                    focusPlanetByNameWithZoom("Pluto", 0.02);  // Large orbit, zoom out (slightly more than 0.04)
-                    tourMessage = """
-                            Pluto - Highly Elliptical
-                            Eccentricity ≈ 0.250
-                            The most eccentric orbit in our tour!
-                            Distance varies dramatically.
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 6: // Kepler's Third Law - Mercury
-                    hideAllPlanetsExcept(findPlanetIndex("Mercury"));
-                    focusPlanetByNameWithZoom("Mercury", 1.75);
-                    tourMessage = """
-                            Kepler's Third Law Verification
-                            Mercury: P² / a³ ≈ 1.0
-                            Check the yellow line in the info panel!
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 7: // Kepler's Third Law - Earth
-                    hideAllPlanetsExcept(findPlanetIndex("Earth"));
-                    focusPlanetByNameWithZoom("Earth", 0.79);
-                    tourMessage = """
-                            Kepler's Third Law Verification
-                            Earth: P² / a³ = 1.0000 (exactly!)
-                            By definition of AU and year.
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 8: // Kepler's Third Law - Jupiter
-                    hideAllPlanetsExcept(findPlanetIndex("Jupiter"));
-                    focusPlanetByNameWithZoom("Jupiter", 0.1);  // Large orbit, zoom out more
-                    tourMessage = """
-                            Kepler's Third Law Verification
-                            Jupiter: P² / a³ ≈ 1.0
-                            The ratio is constant for all planets!
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 9: // Return to overview
-                    restorePlanetVisibility();
-                    returnToSun();
-                    currentZoom = 1.5;
-                    targetZoom = 1.5;
-                    tourMessage = """
-                            Tour Complete!
-                            All planet visibility has been restored.
-                            Feel free to explore on your own.
-                            
-                            Press 'N' to end the tour.""";
-                    break;
-
-                case 10: // End tour
-                    guidedTourActive = false;
-                    tourStep = 0;
-                    tourMessage = "";
-                    tourMessageAlpha = 0.0;
-                    tourStepReady = false;
-                    restorePlanetVisibility();
-                    break;
-            }
+    /** One illustrated page of a stellar-physics PANEL lesson. */
+    static final class PanelPage {
+        final String heading; final String diagram; final String body;
+        PanelPage(String heading, String diagram, String body) {
+            this.heading = heading; this.diagram = diagram; this.body = body;
         }
     }
 
-    /**
-     * Lesson 2 Tour: Orbital Velocity and Kepler's 2nd Law
-     */
-    private void updateLesson2Tour(double dtReal) {
-        // Lesson 2 Tour Steps - execute setup on first frame only
-        if (tourStepStartTime < dtReal * 2) { // First frame of this step
-            switch (tourStep) {
-                case 0: // Welcome & Setup
-                    showPlanetOrbits = true;
-                    showPerihelionAphelion = true;
-                    showVelocityVectors = true;
-                    showVelocityComparison = true;
-                    hideAllPlanetsExcept(-1); // Show all for overview
-                    returnToSun();
-                    currentZoom = 2.0;
-                    targetZoom = 2.0;
-                    tourMessage = """
-                            Welcome to Lesson 2: Orbital Velocity
-                            We'll explore how velocity changes around an orbit.
-                            Velocity vectors show speed and direction.
-                            
-                            Press 'N' to continue to the next step.""";
-                    break;
-
-                case 1: // Explain velocity vectors
-                    returnToSun();
-                    currentZoom = 1.5;
-                    targetZoom = 1.5;
-                    tourMessage = """
-                            Velocity Vectors
-                            Arrows show each planet's velocity.
-                            Blue = slower, Red = faster.
-                            Notice how colors change around the orbit!
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 2: // Mercury at perihelion
-                    hideAllPlanetsExcept(findPlanetIndex("Mercury"));
-                    focusPlanetByNameWithZoom("Mercury", 1.75);  // Same as Lesson 1
-                    tourMessage = """
-                            Mercury - High Eccentricity
-                            Watch the velocity arrow change color
-                            as Mercury moves around its orbit.
-                            Red = fast (perihelion), Blue = slow (aphelion).
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 3: // Mars velocity demonstration
-                    hideAllPlanetsExcept(findPlanetIndex("Mars"));
-                    focusPlanetByNameWithZoom("Mars", 0.5);  // Same as Lesson 1
-                    tourMessage = """
-                            Mars - Velocity Variation
-                            Current speed shown next to arrow.
-                            Mars moves faster when closer to the Sun.
-                            This is Kepler's 2nd Law in action!
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 4: // Earth circular orbit comparison
-                    hideAllPlanetsExcept(findPlanetIndex("Earth"));
-                    focusPlanetByNameWithZoom("Earth", 0.79);  // Same as Lesson 1
-                    tourMessage = """
-                            Earth - Nearly Constant Velocity
-                            Earth's nearly circular orbit means
-                            velocity stays almost constant.
-                            Speed: ~30 km/s year-round.
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 5: // Pluto extreme case
-                    hideAllPlanetsExcept(findPlanetIndex("Pluto"));
-                    focusPlanetByNameWithZoom("Pluto", 0.02);  // Same as Lesson 1
-                    tourMessage = """
-                            Pluto - Extreme Velocity Change
-                            Highly elliptical orbit = huge velocity range!
-                            Perihelion: ~6.1 km/s (fast)
-                            Aphelion: ~3.7 km/s (slow)
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 6: // Kepler's 2nd Law explanation
-                    returnToSun();
-                    currentZoom = 1.5;
-                    targetZoom = 1.5;
-                    hideAllPlanetsExcept(-1); // Show all
-                    tourMessage = """
-                            Kepler's Second Law
-                            "Equal areas in equal times"
-                            Planets move faster when closer to the Sun
-                            to sweep equal orbital areas.
-                            
-                            Press 'N' to continue.""";
-                    break;
-
-                case 7: // Return to overview
-                    restorePlanetVisibility();
-                    returnToSun();
-                    currentZoom = 1.5;
-                    targetZoom = 1.5;
-                    tourMessage = """
-                            Velocity Tour Complete!
-                            You can toggle velocity vectors anytime:
-                            Education → Lesson 2 Features
-                            
-                            Press 'N' to end the tour.""";
-                    break;
-
-                case 8: // End tour
-                    guidedTourActive = false;
-                    tourStep = 0;
-                    tourMessage = "";
-                    tourMessageAlpha = 0.0;
-                    tourStepReady = false;
-                    showVelocityVectors = false;
-                    showVelocityComparison = false;
-                    restorePlanetVisibility();
-                    break;
-            }
+    /** A lesson: either a TOUR (drives the 3-D scene) or a PANEL (illustrated pages). */
+    static final class Lesson {
+        final int number; final String tier; final String title; final String subtitle;
+        final String[] objectives; final LessonKind kind;
+        final java.util.List<TourAction> steps;   // TOUR only
+        final java.util.List<PanelPage> pages;    // PANEL only
+        private Lesson(int number, String tier, String title, String subtitle, String[] objectives,
+                       java.util.List<TourAction> steps, java.util.List<PanelPage> pages) {
+            this.number = number; this.tier = tier; this.title = title; this.subtitle = subtitle;
+            this.objectives = objectives;
+            this.kind = (steps != null) ? LessonKind.TOUR : LessonKind.PANEL;
+            this.steps = steps; this.pages = pages;
         }
+        static Lesson tour(int n, String tier, String title, String sub, String[] obj,
+                           java.util.List<TourAction> steps) {
+            return new Lesson(n, tier, title, sub, obj, steps, null);
+        }
+        static Lesson panel(int n, String tier, String title, String sub, String[] obj,
+                            java.util.List<PanelPage> pages) {
+            return new Lesson(n, tier, title, sub, obj, null, pages);
+        }
+    }
+
+    /** Typed builder so the step lambdas get {@link TourAction} as their target type. */
+    private static java.util.List<TourAction> steps(TourAction... s) { return java.util.List.of(s); }
+    private static PanelPage page(String heading, String diagram, String body) {
+        return new PanelPage(heading, diagram, body);
+    }
+
+    /** Builds the full ordered curriculum once. */
+    private java.util.List<Lesson> buildCurriculum() {
+        java.util.List<Lesson> c = new java.util.ArrayList<>();
+
+        // ---------- TIER I — Foundations ----------
+        c.add(Lesson.tour(1, "I · Foundations", "The Solar System at a Glance",
+            "What orbits the Sun, and how it is arranged",
+            new String[]{
+                "Name the Sun, the eight planets, and the dwarf planets",
+                "Distinguish terrestrial worlds, giants, and small bodies",
+                "See how the whole system nests around one star"},
+            steps(
+                p -> { p.showPlanetOrbits = true; p.hideAllPlanetsExcept(-1); p.returnToSun();
+                       p.currentZoom = p.targetZoom = 1.2; return """
+                       Welcome — The Solar System at a Glance
+                       One star, eight planets, and a swarm of small worlds,
+                       all bound by the Sun's gravity.
+
+                       Press 'N' to continue."""; },
+                p -> { p.returnToSun(); p.currentZoom = p.targetZoom = 3.0; return """
+                       The Sun
+                       A middle-aged G-type star holding 99.86% of the
+                       system's mass. Everything else orbits it.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Mars", 0.6); return """
+                       The Terrestrial Planets
+                       Mercury, Venus, Earth, Mars — small, rocky, dense,
+                       close to the Sun.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Jupiter", 0.12); return """
+                       The Giant Planets
+                       Jupiter & Saturn (gas giants), Uranus & Neptune
+                       (ice giants) — huge, low-density, far out.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Pluto", 0.02); return """
+                       Dwarf Planets & Debris
+                       Ceres in the asteroid belt; Pluto, Haumea & Eris in
+                       the Kuiper belt beyond Neptune.
+
+                       Press 'N' to continue."""; },
+                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
+                       return """
+                       Recap
+                       Sun · terrestrials · giants · dwarfs & debris.
+                       Next we'll measure just how far apart they are.
+
+                       Press 'N' to finish."""; }
+            )));
+
+        c.add(Lesson.tour(2, "I · Foundations", "Scale & Distances",
+            "How vast the Solar System really is",
+            new String[]{
+                "Use the astronomical unit (AU) as a yardstick",
+                "Relate distance to light-travel time",
+                "Compare the crowded inner system with the vast outer system"},
+            steps(
+                p -> { p.showPlanetOrbits = true; p.hideAllPlanetsExcept(-1); p.returnToSun();
+                       p.currentZoom = p.targetZoom = 0.9; return """
+                       Scale & Distances
+                       1 AU = Earth–Sun distance = 149.6 million km.
+                       We'll walk outward and watch the scale explode.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Earth", 0.79); return """
+                       Earth — 1 AU
+                       Sunlight takes 8 minutes to reach us.
+                       This is our unit of distance.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Jupiter", 0.12); return """
+                       Jupiter — 5.2 AU
+                       Already 5× farther than Earth. Sunlight now
+                       takes about 43 minutes to arrive.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Neptune", 0.04); return """
+                       Neptune — 30 AU
+                       The outermost planet. Sunlight takes ~4 hours.
+                       The inner system would be a tiny dot here.
+
+                       Press 'N' to continue."""; },
+                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.0;
+                       return """
+                       Recap
+                       The inner planets huddle within ~1.5 AU; the outer
+                       system stretches 20× farther. Space is mostly empty.
+
+                       Press 'N' to finish."""; }
+            )));
+
+        // ---------- TIER II — Orbital Mechanics ----------
+        c.add(Lesson.tour(3, "II · Orbital Mechanics", "Orbits & Ellipses",
+            "Kepler's 1st Law and orbital eccentricity",
+            new String[]{
+                "Contrast circular and elliptical orbits",
+                "Read eccentricity, perihelion and aphelion",
+                "Recognise the Sun sits at one focus of the ellipse"},
+            steps(
+                p -> { p.showPlanetOrbits = true; p.showPerihelionAphelion = true; p.showKeplersLaw = true;
+                       p.hideAllPlanetsExcept(-1); p.returnToSun(); p.currentZoom = p.targetZoom = 2.0;
+                       return """
+                       Kepler's 1st Law
+                       Planets trace ellipses with the Sun at one focus.
+                       We'll compare orbits from round to stretched.
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Venus"));
+                       p.focusPlanetByNameWithZoom("Venus", 1.0); return """
+                       Venus — nearly a perfect circle
+                       Eccentricity e ≈ 0.007.
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Earth"));
+                       p.focusPlanetByNameWithZoom("Earth", 0.79); return """
+                       Earth — also quite circular
+                       e ≈ 0.017. Our seasons are NOT caused by this.
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Mars"));
+                       p.focusPlanetByNameWithZoom("Mars", 0.5); return """
+                       Mars — visibly elliptical
+                       e ≈ 0.093. The orbit looks stretched.
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Mercury"));
+                       p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
+                       Mercury — quite elliptical
+                       e ≈ 0.206. Red (P) = perihelion, blue (A) = aphelion.
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Pluto"));
+                       p.focusPlanetByNameWithZoom("Pluto", 0.02); return """
+                       Pluto — highly elliptical
+                       e ≈ 0.250. Its distance from the Sun varies hugely.
+
+                       Press 'N' to continue."""; },
+                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
+                       return """
+                       Recap
+                       Every orbit is an ellipse; only the eccentricity
+                       differs. Next: how speed changes along one.
+
+                       Press 'N' to finish."""; }
+            )));
+
+        c.add(Lesson.tour(4, "II · Orbital Mechanics", "Kepler's 2nd Law: Equal Areas",
+            "Why planets speed up near the Sun",
+            new String[]{
+                "State the equal-areas law",
+                "Link orbital speed to distance from the Sun",
+                "Connect it to conservation of angular momentum"},
+            steps(
+                p -> { p.showPlanetOrbits = true; p.showPerihelionAphelion = true;
+                       p.showVelocityVectors = true; p.showVelocityComparison = true;
+                       p.hideAllPlanetsExcept(-1); p.returnToSun(); p.currentZoom = p.targetZoom = 2.0;
+                       return """
+                       Kepler's 2nd Law — Equal Areas
+                       A line from Sun to planet sweeps equal areas in
+                       equal times. Arrows show each planet's velocity.
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Mercury"));
+                       p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
+                       Watch Mercury
+                       Its eccentric orbit makes the speed swing most.
+                       Note the arrow lengthening and shortening.
+
+                       Press 'N' to continue."""; },
+                p -> { return """
+                       At Perihelion (P) — fastest
+                       Closest to the Sun, the planet races along:
+                       up to ~59 km/s for Mercury.
+
+                       Press 'N' to continue."""; },
+                p -> { return """
+                       At Aphelion (A) — slowest
+                       Farthest out, it dawdles: ~39 km/s.
+                       Same orbit, very different speed.
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Earth"));
+                       p.focusPlanetByNameWithZoom("Earth", 0.79); return """
+                       Compare Earth
+                       Nearly circular → speed barely changes
+                       (~29.3 to 30.3 km/s).
+
+                       Press 'N' to continue."""; },
+                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
+                       return """
+                       Recap
+                       Equal areas ⇔ angular momentum L = m v r is
+                       conserved. Toggle vectors under Education → Overlays.
+
+                       Press 'N' to finish."""; }
+            )));
+
+        c.add(Lesson.tour(5, "II · Orbital Mechanics", "Kepler's 3rd Law: P² = a³",
+            "The harmony of the whole system",
+            new String[]{
+                "State P² = a³ (years, AU)",
+                "Verify the ratio is the same for every planet",
+                "Predict a period from a distance"},
+            steps(
+                p -> { p.showPlanetOrbits = true; p.showKeplersLaw = true; p.hideAllPlanetsExcept(-1);
+                       p.returnToSun(); p.currentZoom = p.targetZoom = 2.0; return """
+                       Kepler's 3rd Law
+                       Period² = semi-major axis³  (P in years, a in AU).
+                       The yellow line in the info panel shows P²/a³.
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Mercury"));
+                       p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
+                       Mercury
+                       a = 0.39 AU, P = 0.24 yr → P²/a³ ≈ 1.00
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Earth"));
+                       p.focusPlanetByNameWithZoom("Earth", 0.79); return """
+                       Earth
+                       a = 1 AU, P = 1 yr → P²/a³ = 1.0000 (by definition)
+
+                       Press 'N' to continue."""; },
+                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Jupiter"));
+                       p.focusPlanetByNameWithZoom("Jupiter", 0.12); return """
+                       Jupiter
+                       a = 5.20 AU, P = 11.86 yr → P²/a³ ≈ 1.00
+
+                       Press 'N' to continue."""; },
+                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
+                       return """
+                       Recap & Challenge
+                       The ratio is constant — it encodes the Sun's mass.
+                       Try it: a planet at a = 4 AU has P = √(4³) = 8 yr.
+
+                       Press 'N' to finish."""; }
+            )));
+
+        c.add(Lesson.tour(6, "II · Orbital Mechanics", "Gravity & Newton",
+            "What actually holds an orbit together",
+            new String[]{
+                "Apply Newton's law of gravitation F = GMm/r²",
+                "See an orbit as constant free-fall around the Sun",
+                "Explain why closer planets orbit faster"},
+            steps(
+                p -> { p.showPlanetOrbits = true; p.hideAllPlanetsExcept(-1); p.returnToSun();
+                       p.currentZoom = p.targetZoom = 1.6; return """
+                       Newton's Gravity
+                       F = G·M·m / r²  — every mass pulls every other.
+                       Kepler described orbits; Newton explained them.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Earth", 0.79); return """
+                       An orbit is perpetual free-fall
+                       The Sun pulls the planet inward; its sideways
+                       motion keeps it 'falling around' rather than in.
+
+                       Press 'N' to continue."""; },
+                p -> { return """
+                       Turn off gravity (thought experiment)
+                       With no pull, a planet would fly off in a straight
+                       line along its velocity (tangent to the orbit).
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
+                       Closer ⇒ stronger pull ⇒ faster orbit
+                       Mercury feels a fierce pull and whips around the
+                       Sun in just 88 days.
+
+                       Press 'N' to continue."""; },
+                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
+                       return """
+                       Recap
+                       One law — inverse-square gravity — reproduces all
+                       three of Kepler's laws. The Sun's mass sets the tempo.
+
+                       Press 'N' to finish."""; }
+            )));
+
+        c.add(Lesson.tour(7, "II · Orbital Mechanics", "Energy & Angular Momentum",
+            "The conserved quantities behind the motion",
+            new String[]{
+                "Use the vis-viva equation for orbital speed",
+                "Trade kinetic and potential energy around an orbit",
+                "Tie angular-momentum conservation to Kepler's 2nd law"},
+            steps(
+                p -> { p.showPerihelionAphelion = true; p.showVelocityVectors = true;
+                       p.hideAllPlanetsExcept(p.findPlanetIndex("Mercury"));
+                       p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
+                       Vis-viva: the speed equation
+                       v² = G·M·(2/r − 1/a)
+                       Speed depends only on the current distance r.
+
+                       Press 'N' to continue."""; },
+                p -> { return """
+                       At perihelion
+                       r is smallest → v is largest.
+                       Kinetic energy high, potential energy low.
+
+                       Press 'N' to continue."""; },
+                p -> { return """
+                       At aphelion
+                       r is largest → v is smallest.
+                       Now PE is high, KE is low — but the TOTAL
+                       orbital energy stays constant.
+
+                       Press 'N' to continue."""; },
+                p -> { return """
+                       Angular momentum
+                       L = m·v·r is conserved, so v·r is constant.
+                       That is exactly Kepler's equal-areas law.
+
+                       Press 'N' to continue."""; },
+                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
+                       return """
+                       Recap
+                       Energy and angular momentum are both conserved;
+                       together they fix the size and shape of every orbit.
+
+                       Press 'N' to finish."""; }
+            )));
+
+        // ---------- TIER III — Planetary Science ----------
+        c.add(Lesson.tour(8, "III · Planetary Science", "Planetary Properties",
+            "Mass, radius, density and composition",
+            new String[]{
+                "Compare planet radii, masses and densities",
+                "Explain the terrestrial / giant divide",
+                "Link bulk density to composition"},
+            steps(
+                p -> { p.hideAllPlanetsExcept(-1); p.focusPlanetByNameWithZoom("Earth", 0.79); return """
+                       Reading a planet's stats
+                       Click a body to see mass, radius and density in
+                       the info panel. Start with Earth (our benchmark).
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Jupiter", 0.12); return """
+                       Jupiter — the gas giant
+                       11× Earth's radius, 318× its mass, yet only
+                       1.3 g/cm³ — mostly hydrogen and helium.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
+                       Mercury — dense and rocky
+                       Small but 5.4 g/cm³ — a large iron core under a
+                       thin rocky mantle.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Saturn", 0.12); return """
+                       Saturn — less dense than water
+                       0.69 g/cm³. If you had a big enough bathtub,
+                       Saturn would float.
+
+                       Press 'N' to continue."""; },
+                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
+                       return """
+                       Recap
+                       Two families: small dense rock/metal worlds inside,
+                       large low-density gas/ice worlds outside. Why? Next tier.
+
+                       Press 'N' to finish."""; }
+            )));
+
+        c.add(Lesson.tour(9, "III · Planetary Science", "Moons, Tides & Eclipses",
+            "Satellites, resonances and shadow geometry",
+            new String[]{
+                "Describe the Earth–Moon system",
+                "Explain solar and lunar eclipse geometry",
+                "Recognise orbital resonance among Jupiter's moons"},
+            steps(
+                p -> { p.simulationPaused = false; p.focusPlanetByNameWithZoom("Earth", 0.5); return """
+                       Moons — worlds orbiting worlds
+                       The Moon circles Earth every 27.3 days, its orbit
+                       tilted ~5° to Earth's orbit around the Sun.
+
+                       Press 'N' to continue."""; },
+                p -> { p.showEclipse(true); return """
+                       Solar eclipse
+                       New Moon crosses exactly between Earth and Sun;
+                       its umbra falls on Earth. Rare because of that 5° tilt.
+
+                       Press 'N' to continue."""; },
+                p -> { p.showEclipse(false); return """
+                       Lunar eclipse
+                       Full Moon passes through Earth's shadow and
+                       dims to a coppery red.
+
+                       Press 'N' to continue."""; },
+                p -> { p.simulationPaused = false; p.focusPlanetByNameWithZoom("Jupiter", 0.5); return """
+                       Jupiter's Galilean moons
+                       Io, Europa, Ganymede, Callisto. The inner three
+                       lock in a 4:2:1 resonance — Io orbits 4× per Ganymede.
+
+                       Press 'N' to continue."""; },
+                p -> { p.focusPlanetByNameWithZoom("Saturn", 0.5); return """
+                       Saturn & Titan
+                       Titan is bigger than Mercury and wears a thick,
+                       hazy nitrogen atmosphere.
+
+                       Press 'N' to continue."""; },
+                p -> { p.simulationPaused = false; p.restorePlanetVisibility(); p.returnToSun();
+                       p.currentZoom = p.targetZoom = 1.5; return """
+                       Recap
+                       Moons obey the same gravity as planets; tides and
+                       resonances sculpt whole satellite systems.
+
+                       Press 'N' to finish."""; }
+            )));
+
+        // ---------- TIER III/IV bridge — illustrated PANEL lessons ----------
+        c.add(Lesson.panel(10, "III · Planetary Science", "How Planets Form",
+            "From a collapsing cloud to a planetary system",
+            new String[]{
+                "Sketch the protoplanetary-disk model",
+                "Explain the frost line's role",
+                "Connect formation to the terrestrial/giant divide"},
+            listPages(
+                page("A star is born with a disk", "DISK", """
+                     • A giant molecular cloud collapses under gravity.
+                     • Conservation of angular momentum flattens it into a
+                       spinning disk feeding a new star at the centre.
+                     • Leftover gas and dust in the disk build the planets."""),
+                page("The frost line divides the disk", "DISK", """
+                     • Close to the star it is hot — only rock and metal
+                       stay solid. Farther out, water/ammonia freeze.
+                     • That boundary is the FROST (snow) line, near ~3 AU.
+                     • Far side of the line has far more solid material."""),
+                page("Dust → planetesimals → planets", "ACCRETION", """
+                     • Dust grains stick, grow to km-sized planetesimals.
+                     • Gravity then runs away: the biggest bodies accrete
+                       the rest into protoplanets.
+                     • Inside the frost line: small rocky worlds.
+                     • Outside: cores grow fast enough to grab gas → giants."""),
+                page("Why the two families exist", "ACCRETION", """
+                     • Terrestrial planets: rock/metal, close, dense.
+                     • Giants: massive icy cores that captured H/He envelopes
+                       before the disk gas blew away.
+                     • Same process, two outcomes — set by the frost line.""")
+            )));
+
+        // ---------- TIER IV — Stellar Astrophysics (AST 221) ----------
+        c.add(Lesson.panel(11, "IV · Stellar Astrophysics", "The Sun as a Star",
+            "Anatomy and energy transport of an average star",
+            new String[]{
+                "Label the Sun's interior zones",
+                "Trace energy from core to photosphere",
+                "State hydrostatic equilibrium"},
+            listPages(
+                page("An ordinary G2V star", "SUN", """
+                     • The Sun is a main-sequence star: 1.99×10³⁰ kg,
+                       surface ~5772 K, luminosity 3.83×10²⁶ W.
+                     • It is a ball of plasma held together by gravity and
+                       held up by internal pressure."""),
+                page("The core — the furnace", "SUN", """
+                     • Inner ~25% of the radius. T ≈ 15 million K,
+                       density ~150 g/cm³.
+                     • Hydrogen fuses to helium here, releasing the energy
+                       that powers the entire star."""),
+                page("Radiative zone — the slow crawl", "SUN", """
+                     • Energy leaves the core as photons that random-walk
+                       outward, absorbed and re-emitted endlessly.
+                     • A single packet of energy can take ~100,000 years
+                       to cross this zone."""),
+                page("Convective zone & photosphere", "SUN", """
+                     • In the outer third, hot plasma boils upward in cells
+                       (granulation) and sinks when cooled.
+                     • The photosphere is the visible 'surface' — the layer
+                       from which sunlight finally escapes to space."""),
+                page("Hydrostatic equilibrium", "HYDRO", """
+                     • At every depth, outward pressure exactly balances the
+                       inward pull of gravity: dP/dr = −ρ g.
+                     • This balance is why the Sun neither collapses nor
+                       explodes — it is the central idea of stellar structure.""")
+            )));
+
+        c.add(Lesson.panel(12, "IV · Stellar Astrophysics", "Stellar Properties & the HR Diagram",
+            "Sorting the stars by luminosity and temperature",
+            new String[]{
+                "Define luminosity, temperature and spectral class",
+                "Read the Hertzsprung–Russell diagram",
+                "Apply L = 4πR²σT⁴ and the mass–luminosity relation"},
+            listPages(
+                page("Two master properties", "HR", """
+                     • A star's light is set mainly by its LUMINOSITY
+                       (total power) and its surface TEMPERATURE.
+                     • Temperature also fixes colour: hot stars look blue,
+                       cool stars red."""),
+                page("Spectral classes: O B A F G K M", "HR", """
+                     • Stars are binned by temperature into classes
+                       O(hot,blue) → M(cool,red). The Sun is class G.
+                     • 'Oh Be A Fine Girl/Guy, Kiss Me' — hottest to coolest."""),
+                page("The Hertzsprung–Russell diagram", "HR", """
+                     • Plot luminosity (up) vs temperature (hot on the LEFT).
+                     • Most stars fall on a diagonal MAIN SEQUENCE.
+                     • Giants sit upper-right (cool but bright); white
+                       dwarfs lower-left (hot but faint)."""),
+                page("Stefan–Boltzmann law", "HR", """
+                     • L = 4πR²σT⁴.
+                     • A cool star can still be luminous if it is huge
+                       (a red giant) — big R beats low T.
+                     • A hot star can be faint if it is tiny (a white dwarf)."""),
+                page("The mass–luminosity relation", "HR", """
+                     • On the main sequence, L ≈ M³·⁵ (roughly).
+                     • Massive stars are enormously more luminous — and burn
+                       their fuel so fast they live only millions of years,
+                       while low-mass stars last many billions.""")
+            )));
+
+        c.add(Lesson.panel(13, "IV · Stellar Astrophysics", "Nuclear Energy & Stellar Structure",
+            "What makes a star shine, and what holds it up",
+            new String[]{
+                "Explain fusion and the mass defect (E = mc²)",
+                "Follow the proton–proton chain and CNO cycle",
+                "List the equations of stellar structure"},
+            listPages(
+                page("Why stars shine: E = mc²", "PPCHAIN", """
+                     • Fusing light nuclei into heavier ones converts a tiny
+                       fraction of mass into energy.
+                     • Fusing 4 protons into 1 helium nucleus loses ~0.7% of
+                       the mass — released as radiation."""),
+                page("The proton–proton chain", "PPCHAIN", """
+                     • The Sun's main route (stars ≲ 1.3 M☉):
+                       p + p → deuterium (+ e⁺ + ν)
+                       d + p → helium-3 + γ
+                       ³He + ³He → ⁴He + 2p
+                     • Net: 4 p → ⁴He + energy + neutrinos."""),
+                page("The CNO cycle", "PPCHAIN", """
+                     • In hotter, more massive stars, carbon/nitrogen/oxygen
+                       act as catalysts to fuse hydrogen far faster.
+                     • Its steep temperature sensitivity (∝ T¹⁶ or more) makes
+                       massive stars burn ferociously bright."""),
+                page("Equations of stellar structure", "HYDRO", """
+                     • Four coupled relations describe a star:
+                       – Hydrostatic equilibrium: dP/dr = −ρ g
+                       – Mass continuity:        dM/dr = 4πr²ρ
+                       – Energy generation:      dL/dr = 4πr²ρ ε
+                       – Energy transport:       dT/dr (radiative or convective)"""),
+                page("Radiation vs convection", "SUN", """
+                     • Energy moves outward by radiation where the gas is
+                       transparent enough, and by convection where the
+                       temperature gradient gets too steep.
+                     • Which zone is which depends on the star's mass.""")
+            )));
+
+        c.add(Lesson.panel(14, "IV · Stellar Astrophysics", "Stellar Evolution & Endpoints",
+            "From birth on the main sequence to stellar corpses",
+            new String[]{
+                "Trace a star's path across the HR diagram",
+                "Contrast low-mass and high-mass fates",
+                "State the Chandrasekhar and neutron-star mass limits"},
+            listPages(
+                page("Life on the main sequence", "EVOLUTION", """
+                     • A star spends ~90% of its life fusing hydrogen in its
+                       core, sitting on the main sequence.
+                     • Its position there is set almost entirely by its mass."""),
+                page("Leaving the main sequence", "EVOLUTION", """
+                     • When core hydrogen runs out, the core contracts and
+                       heats; the envelope swells and cools.
+                     • The star climbs to the upper-right as a RED GIANT,
+                       now fusing helium (and heavier elements if massive)."""),
+                page("Low-mass fate: white dwarf", "ENDPOINTS", """
+                     • Stars up to ~8 M☉ shed their outer layers as a glowing
+                       PLANETARY NEBULA.
+                     • What remains is a WHITE DWARF: an Earth-sized ember
+                       held up by electron degeneracy pressure."""),
+                page("High-mass fate: supernova", "ENDPOINTS", """
+                     • Massive stars build an iron core, which cannot fuse
+                       and collapses catastrophically.
+                     • The rebound is a core-collapse SUPERNOVA, forging heavy
+                       elements and seeding space with them."""),
+                page("The mass limits", "ENDPOINTS", """
+                     • White dwarf ≤ 1.4 M☉ (the Chandrasekhar limit).
+                     • Above that a NEUTRON STAR forms — until ~2–3 M☉
+                       (the TOV limit).
+                     • Beyond it, nothing halts gravity: a BLACK HOLE.""")
+            )));
+
+        return c;
+    }
+
+    /** Convenience: build an immutable page list (kept separate for readability). */
+    private static java.util.List<PanelPage> listPages(PanelPage... pages) {
+        return java.util.List.of(pages);
     }
 
     /**
@@ -4079,6 +4805,52 @@ public class SolarSystemSimulation extends JPanel
         showLabels = false;
     }
 
+    /**
+     * Headless: drive the whole curriculum and render every tour step and panel
+     * page to PNGs. Doubles as an end-to-end smoke test of the lesson system —
+     * every step lambda is actually executed. Enabled with -Dsss.lessonshot=&lt;dir&gt;.
+     */
+    private void renderLessonShots(String dir) {
+        final int W = 1600, H = 1000;
+        try { new File(dir).mkdirs(); } catch (Exception ignored) { }
+        setSize(W, H);
+        shadingEnabled = true; showAtmosphere = true; showRings = true; showLabels = false;
+        computeBarycenter();
+        lessonMode = true; guidedTourActive = true; tourMessageAlpha = 1.0; tourStepReady = true;
+        int n = 0;
+        for (Lesson L : curriculum()) {
+            currentLesson = L.number;
+            // Neutralise any state the previous lesson left behind.
+            restorePlanetVisibility();
+            showKeplersLaw = showPerihelionAphelion = showVelocityVectors = showVelocityComparison = false;
+            simulationPaused = false;
+            if (L.kind == LessonKind.TOUR) {
+                for (int s = 0; s < L.steps.size(); s++) {
+                    tourStep = s;
+                    tourMessage = L.steps.get(s).run(this);   // run the real step setup
+                    writeShot(String.format("%s/lesson_%02d_%s_step%02d.png",
+                            dir, L.number, slug(L.title), s), W, H);
+                    n++;
+                }
+                restorePlanetVisibility();
+            } else {
+                for (int pg = 0; pg < L.pages.size(); pg++) {
+                    tourStep = pg;
+                    writeShot(String.format("%s/lesson_%02d_%s_page%02d.png",
+                            dir, L.number, slug(L.title), pg), W, H);
+                    n++;
+                }
+            }
+        }
+        guidedTourActive = false; lessonMode = false;
+        System.out.println("  rendered " + n + " lesson shots");
+    }
+
+    /** Filesystem-safe lowercase slug for a lesson title. */
+    private static String slug(String s) {
+        return s.toLowerCase().replaceAll("[^a-z0-9]+", "_").replaceAll("^_|_$", "");
+    }
+
     /** Centre on the Sun and zoom so a half-extent of {@code spanMeters} spans {@code frac} of the view. */
     private void focusSystemHeadless(double spanMeters, int w, int h, double frac) {
         followingPlanet = followingMoon = false;
@@ -4131,6 +4903,12 @@ public class SolarSystemSimulation extends JPanel
         if (shotDir != null) {
             new SolarSystemSimulation().renderHeadlessShots(shotDir);
             System.out.println("Headless shots complete: " + shotDir);
+            System.exit(0);
+        }
+        String lessonDir = System.getProperty("sss.lessonshot");
+        if (lessonDir != null) {
+            new SolarSystemSimulation().renderLessonShots(lessonDir);
+            System.out.println("Lesson shots complete: " + lessonDir);
             System.exit(0);
         }
         if (System.getProperty("sss.bench") != null) {
@@ -4463,60 +5241,67 @@ public class SolarSystemSimulation extends JPanel
         educationMenu.add(guidedTourItem);
         educationMenu.addSeparator();
 
-        // Lesson selector submenu
+        // Lesson selector — the full curriculum, grouped by tier
         JMenu lessonMenu = new JMenu("Select Lesson");
         ButtonGroup lessonGroup = new ButtonGroup();
-        String[] lessonNames = {
-            "Lesson 1: Orbital Motion",
-            "Lesson 2: Velocity & Kepler's 2nd Law",
-            "Lesson 3: Scale of Solar System",
-            "Lesson 4: Moon Systems",
-            "Lesson 5: Time Control"
-        };
-        for (int i = 0; i < lessonNames.length; i++) {
-            final int lessonNum = i + 1;
-            JRadioButtonMenuItem lessonItem = new JRadioButtonMenuItem(lessonNames[i], i == 0);
+        String prevTier = null;
+        JMenu tierMenu = null;
+        for (Lesson lsn : panel.curriculum()) {
+            if (!lsn.tier.equals(prevTier)) {
+                tierMenu = new JMenu("Tier " + lsn.tier);
+                lessonMenu.add(tierMenu);
+                prevTier = lsn.tier;
+            }
+            final int lessonNum = lsn.number;
+            String label = lsn.number + ".  " + lsn.title
+                    + (lsn.kind == LessonKind.PANEL ? "   (reading)" : "");
+            JRadioButtonMenuItem lessonItem = new JRadioButtonMenuItem(label, lsn.number == 1);
             lessonGroup.add(lessonItem);
             lessonItem.addActionListener(_ -> {
                 panel.currentLesson = lessonNum;
+                // If a tour/panel is mid-run, restart it cleanly on the new lesson.
+                if (panel.guidedTourActive) {
+                    panel.tourStep = 0;
+                    panel.tourStepStartTime = 0;
+                    panel.tourMessageAlpha = 0.0;
+                    panel.tourMessage = "";
+                    panel.tourStepReady = false;
+                    panel.restorePlanetVisibility();
+                }
                 panel.repaint();
             });
-            lessonMenu.add(lessonItem);
+            tierMenu.add(lessonItem);
         }
         educationMenu.add(lessonMenu);
         educationMenu.addSeparator();
 
-        // Lesson 1 specific features
-        JMenu lesson1Menu = new JMenu("Lesson 1 Features");
-        StayOpenCheckBoxMenuItem keplersLawItem = new StayOpenCheckBoxMenuItem("Show Kepler's 3rd Law", false);
+        // Lesson overlays — extra annotations, usable inside any lesson
+        JMenu overlaysMenu = new JMenu("Overlays");
+        StayOpenCheckBoxMenuItem keplersLawItem = new StayOpenCheckBoxMenuItem("Kepler's 3rd Law (P²/a³)", false);
         keplersLawItem.addActionListener(_ -> {
             panel.showKeplersLaw = keplersLawItem.isSelected();
             panel.repaint();
         });
-        StayOpenCheckBoxMenuItem periAphelionItem = new StayOpenCheckBoxMenuItem("Show Perihelion/Aphelion", false);
+        StayOpenCheckBoxMenuItem periAphelionItem = new StayOpenCheckBoxMenuItem("Perihelion / Aphelion markers", false);
         periAphelionItem.addActionListener(_ -> {
             panel.showPerihelionAphelion = periAphelionItem.isSelected();
             panel.repaint();
         });
-        lesson1Menu.add(keplersLawItem);
-        lesson1Menu.add(periAphelionItem);
-        educationMenu.add(lesson1Menu);
-
-        // Lesson 2 specific features (Velocity & Kepler's 2nd Law)
-        JMenu lesson2Menu = new JMenu("Lesson 2 Features");
-        StayOpenCheckBoxMenuItem velocityVectorsItem = new StayOpenCheckBoxMenuItem("Show Velocity Vectors", false);
+        StayOpenCheckBoxMenuItem velocityVectorsItem = new StayOpenCheckBoxMenuItem("Velocity vectors", false);
         velocityVectorsItem.addActionListener(_ -> {
             panel.showVelocityVectors = velocityVectorsItem.isSelected();
             panel.repaint();
         });
-        StayOpenCheckBoxMenuItem velocityComparisonItem = new StayOpenCheckBoxMenuItem("Show Velocity Labels", false);
+        StayOpenCheckBoxMenuItem velocityComparisonItem = new StayOpenCheckBoxMenuItem("Velocity labels", false);
         velocityComparisonItem.addActionListener(_ -> {
             panel.showVelocityComparison = velocityComparisonItem.isSelected();
             panel.repaint();
         });
-        lesson2Menu.add(velocityVectorsItem);
-        lesson2Menu.add(velocityComparisonItem);
-        educationMenu.add(lesson2Menu);
+        overlaysMenu.add(keplersLawItem);
+        overlaysMenu.add(periAphelionItem);
+        overlaysMenu.add(velocityVectorsItem);
+        overlaysMenu.add(velocityComparisonItem);
+        educationMenu.add(overlaysMenu);
 
         JMenuItem lessonGuideItem = new JMenuItem("Lesson Guide...");
         lessonGuideItem.addActionListener(_ -> panel.showLessonGuide(frame));
@@ -5160,171 +5945,59 @@ public class SolarSystemSimulation extends JPanel
      * Display a lesson guide dialog for the current lesson.
      */
     private void showLessonGuide(Window owner) {
-        String[] lessonContent = {
-            // Lesson 1: Introduction to Orbital Motion
-            """
-            Lesson 1: Introduction to Orbital Motion
-            ========================================
-            
-            Learning Objectives:
-            • Understand elliptical vs. circular orbits
-            • Identify key orbital elements (a, e, perihelion, aphelion)
-            • Relate orbital period to distance from Sun
-            
-            Activities:
-            
-            1. Orbit Comparison
-               - Press 'O' to show all planet orbits
-               - Click Venus (nearly circular orbit)
-               - Click Pluto (highly elliptical orbit)
-               - Compare eccentricities in the info panel
-            
-            2. Kepler's Third Law Verification
-               - Enable: Education → Lesson 1 Features → Show Kepler's 3rd Law
-               - Click Mercury: note P² / a³ ratio
-               - Click Earth: note P² / a³ ratio (should be ~1.0)
-               - Click Jupiter: verify the ratio is constant
-               - The ratio P² / a³ should be the same for all planets!
-            
-            3. Speed Variations
-               - Click Mercury to follow it
-               - Press Ctrl+Scroll to speed up time
-               - Watch the speed value change in the info panel
-               - Observe: faster near the Sun (perihelion), slower far away (aphelion)
-               - Enable: Education → Lesson 1 Features → Show Perihelion/Aphelion
-            
-            Assessment Questions:
-            - Why is Mercury's orbit more elliptical than Earth's?
-            - How does orbital speed relate to distance from the Sun?
-            - Calculate: If a planet orbits at 4 AU, what would its period be?
-              (Hint: Use P² = a³ with a = 4, so P² = 64, P = 8 years)
-            """,
+        Lesson L = currentLessonObj();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Lesson ").append(L.number).append(" of ").append(curriculum().size())
+          .append("     Tier ").append(L.tier).append("\n");
+        sb.append(L.title).append("\n");
+        sb.append("=".repeat(Math.min(60, Math.max(20, L.title.length())))).append("\n\n");
+        sb.append(L.subtitle).append("\n\n");
 
-            // Lesson 2: Scale of the Solar System
-            """
-            Lesson 2: Scale of the Solar System
-            ===================================
-            
-            Learning Objectives:
-            • Appreciate the vast distances in the Solar System
-            • Understand the AU (Astronomical Unit) as a measurement
-            • Compare planet sizes and distances
-            
-            Activities:
-            
-            1. Distance Exploration
-               - Zoom out to see the full system
-               - Use the dynamic scale ruler (bottom-left) to measure distances
-               - Drag the ruler to different positions
-               - Compare inner planet spacing vs. outer planets
-            
-            2. Zoom Challenge
-               - Click Earth → auto-zoom to planet view
-               - Press 'X' to cycle zoom modes (Planet → Orbit → Manual)
-               - Observe how small Earth is compared to its orbit
-            
-            3. Belt Visualization
-               - View → Belts & Lines → Asteroid Belt
-               - View → Belts & Lines → Kuiper Belt
-               - View → Belts & Lines → Frost Lines
-               - Discuss where different materials can exist
-            """,
+        sb.append("Learning objectives:\n");
+        if (L.objectives != null)
+            for (String o : L.objectives) sb.append("   - ").append(o).append("\n");
+        sb.append("\n");
 
-            // Lesson 3: Moon Systems
-            """
-            Lesson 3: Moon Systems and Hierarchical Orbits
-            ==============================================
-            
-            Learning Objectives:
-            • Understand moons as satellites orbiting planets
-            • Compare moon systems of different planets
-            • Observe orbital relationships
-            
-            Activities:
-            
-            1. Earth-Moon System
-               - Click Earth, then zoom in
-               - Click the Moon to see its orbit details
-               - Note the Moon's orbital period (27.3 days)
-            
-            2. Jupiter's Galilean Moons
-               - Click Jupiter and zoom in
-               - Observe Io, Europa, Ganymede, Callisto
-               - Speed up time to see their orbital motions
-            
-            3. Saturn's Moons
-               - Click Saturn
-               - Toggle rings with 'R'
-               - Observe Titan and other moons
-            """,
-
-            // Lesson 4: Time Control
-            """
-            Lesson 4: Time and Simulation Control
-            =====================================
-            
-            Learning Objectives:
-            • Understand different time scales in astronomy
-            • Use simulation controls for observation
-            
-            Activities:
-            
-            1. Time Scale Manipulation
-               - Use Ctrl+Scroll to speed up time
-               - Watch Mercury complete one orbit (~88 days)
-               - Press Space or 'P' to pause
-            
-            2. Study Configurations
-               - Pause simulation at interesting moments
-               - Record data from info panels
-               - Resume and observe changes
-            """,
-
-            // Lesson 5: Planetary Characteristics
-            """
-            Lesson 5: Planetary Characteristics
-            ==================================
-            
-            Learning Objectives:
-            • Compare physical properties of planets
-            • Understand planet classification
-            
-            Activities:
-            
-            1. Size Comparison
-               - Click different planets to compare radii
-               - Earth: 6,371 km
-               - Jupiter: 69,911 km (11× Earth)
-               - Mercury: 2,439 km (0.38× Earth)
-            
-            2. Orbit Color Coding
-               - Purple/magenta: terrestrial planets
-               - Golden/tan: gas giants
-               - Purple-gray: dwarf planets
-            
-            3. Features
-               - Toggle shading with 'S'
-               - Toggle Saturn's rings with 'R'
-            """
-        };
-
-        int lessonIndex = currentLesson - 1;
-        if (lessonIndex < 0 || lessonIndex >= lessonContent.length) {
-            lessonIndex = 0;
+        if (L.kind == LessonKind.TOUR) {
+            sb.append("Format:  interactive 3-D guided tour (")
+              .append(L.steps.size()).append(" steps)\n\n");
+            sb.append("How to run it:\n");
+            sb.append("   1. Education -> Enable Lesson Mode\n");
+            sb.append("   2. Education -> Start Guided Tour\n");
+            sb.append("   3. Press 'N' to advance through each step\n\n");
+            sb.append("The tour moves the camera, sets planet visibility and turns on\n");
+            sb.append("the relevant overlays for you. You can also toggle those yourself\n");
+            sb.append("under Education -> Overlays.\n");
+        } else {
+            sb.append("Format:  illustrated reading panel (")
+              .append(L.pages.size()).append(" pages)\n\n");
+            sb.append("These topics happen inside a star, not out in the solar-system\n");
+            sb.append("scene, so they are taught with diagrams drawn in the app.\n\n");
+            sb.append("How to run it:\n");
+            sb.append("   1. Education -> Enable Lesson Mode\n");
+            sb.append("   2. Education -> Start Guided Tour\n");
+            sb.append("   3. Press 'N' to turn each page\n\n");
+            sb.append("Pages in this lesson:\n");
+            for (int i = 0; i < L.pages.size(); i++)
+                sb.append("   ").append(i + 1).append(". ").append(L.pages.get(i).heading).append("\n");
         }
 
-        JTextArea textArea = new JTextArea(lessonContent[lessonIndex]);
+        sb.append("\nWhere this sits on the ladder (beginner -> AST 221):\n");
+        sb.append("   I Foundations -> II Orbital Mechanics ->\n");
+        sb.append("   III Planetary Science -> IV Stellar Astrophysics\n");
+
+        JTextArea textArea = new JTextArea(sb.toString());
         textArea.setEditable(false);
         textArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
         textArea.setCaretPosition(0);
 
         JScrollPane scrollPane = new JScrollPane(textArea);
-        scrollPane.setPreferredSize(new Dimension(650, 500));
+        scrollPane.setPreferredSize(new Dimension(660, 520));
 
         JOptionPane.showMessageDialog(
             owner,
             scrollPane,
-            "Lesson " + currentLesson + " Guide",
+            "Lesson " + L.number + " Guide  -  " + L.title,
             JOptionPane.INFORMATION_MESSAGE
         );
     }
