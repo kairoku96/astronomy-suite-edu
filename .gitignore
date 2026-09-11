@@ -1,0 +1,29 @@
+# ---- Build output ----
+out/
+out2d/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+
+# ---- NetBeans ----
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
