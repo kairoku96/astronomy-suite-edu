@@ -190,6 +190,16 @@ public class SolarSystemSimulation extends JPanel
     private double sunBarycenterX = 0.0;
     /** Sun's Y position offset due to barycentric motion */
     private double sunBarycenterY = 0.0;
+    /**
+     * When true the whole system is drawn in the barycentric frame, so the Sun (and
+     * with it every Sun-centred orbit ring) performs its real reflex wobble around the
+     * system barycentre. Off by default: in a barycentric frame that wobble — ~1.2 M km,
+     * dominated by Jupiter+Saturn — makes the Sun and all orbit rings visibly swing at
+     * high time-acceleration, which reads as the planets "oscillating off their orbits".
+     * With it off the Sun is fixed at the origin (heliocentric frame) and planets glide
+     * on perfectly stationary rings.
+     */
+    private boolean barycentricFrame = false;
 
     /** Toggle: auto-adjust zoom when following bodies */
     private boolean autoZoomEnabled = false;
@@ -3814,6 +3824,13 @@ public class SolarSystemSimulation extends JPanel
 
     /** Compute system barycenter and set sunBarycenterX/Y accordingly. */
     private void computeBarycenter() {
+        // Heliocentric frame (default): Sun fixed at the origin, no reflex wobble, so
+        // planets sit rock-steady on their orbit rings at any time-acceleration.
+        if (!barycentricFrame) {
+            sunBarycenterX = 0.0;
+            sunBarycenterY = 0.0;
+            return;
+        }
         double totalPx = 0.0, totalPy = 0.0;
         for (int i = 0; i < NAMES.length; i++) {
             double m = PLANET_MASS[i];
@@ -5045,6 +5062,14 @@ public class SolarSystemSimulation extends JPanel
             panel.showOnlySelected = selectedOnlyItem.isSelected();
             panel.repaint();
         });
+        StayOpenCheckBoxMenuItem baryItem = new StayOpenCheckBoxMenuItem("Sun reflex wobble (barycentric frame)", false);
+        baryItem.setToolTipText("Off: Sun fixed, orbits steady. On: Sun wobbles about the barycentre "
+                + "(the real motion that reveals exoplanets) — noticeable at high time speed.");
+        baryItem.addActionListener(_ -> {
+            panel.barycentricFrame = baryItem.isSelected();
+            panel.computeBarycenter();
+            panel.repaint();
+        });
         viewMenu.add(orbitsItem);
         viewMenu.add(ringsItem);
         viewMenu.add(labelsItem);
@@ -5056,6 +5081,7 @@ public class SolarSystemSimulation extends JPanel
         viewMenu.add(gpuItem);
         viewMenu.addSeparator();
         viewMenu.add(selectedOnlyItem);
+        viewMenu.add(baryItem);
 
         // Add planet visibility submenu
         viewMenu.addSeparator();
