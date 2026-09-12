@@ -56,15 +56,17 @@ epoch` are there too. `simTimeSec = 0` is the J2000.0 epoch, and the planets are
 seeded from real J2000 mean elements, so dates map to true sky configurations
 (good to well under a degree over a range of decades).
 
-## Adding comets and asteroids
+## Real comets and minor bodies
 
-**Objects → Add comet / asteroid…** adds a body from six classical orbital
-elements; comets are drawn with an anti-sunward dust + ion tail that grows as
-they near the Sun. **Objects → Load orbital-elements file…** loads many at once
-from a CSV — see [`samples/orbital-elements-example.csv`](samples/orbital-elements-example.csv)
-for the format (`name, a_AU, e, i, node, varpi, M0, type`). **Add demo comets**
-drops in 1P/Halley plus a tail demo — then use *Go to date… → 1986-02-09* to
-watch Halley round the Sun.
+The sim ships with a catalog of real Solar-System objects on their true orbits —
+comets (1P/Halley, 2P/Encke, 55P/Tempel-Tuttle, 109P/Swift-Tuttle,
+C/1995 O1 Hale-Bopp), asteroids and near-Earth objects (Vesta, Pallas, Juno,
+Hygiea, Eros, Bennu), and distant objects (Chiron, Quaoar, Sedna). The
+**Objects** menu toggles each category and the labels. Comets grow a diffuse
+anti-sunward ion + dust tail as they near the Sun, drawn at true physical scale.
+
+Pair this with **Simulation → Go to date…**: e.g. jump to `1986-02-09` to watch
+1P/Halley round the Sun with its tail.
 
 ## Repository layout
 
@@ -74,7 +76,6 @@ src/GLSphereRenderer.java        GPU sphere shader for the 2-D sim
 src/astrosim/                    3-D OpenGL sim
 src/tools/ScreenGrab.java        screenshot helper
 assets/textures/                 planet / moon / sun texture maps
-samples/                         example orbital-elements file
 libs/                            bundled FlatLaf look-and-feel
 run.ps1 / run2d.ps1              build + launch scripts
 ```

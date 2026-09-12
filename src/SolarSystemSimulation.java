@@ -562,8 +562,12 @@ public class SolarSystemSimulation extends JPanel
     /** Mean anomaly for each moon (per planet) */
     private final double[][] moonMean = new double[NAMES.length][];
 
-    /** User-added minor bodies (comets / asteroids) loaded from orbital elements. */
+    /** Built-in catalog of real minor bodies (comets, asteroids, distant objects). */
     private final java.util.List<SmallBody> smallBodies = new java.util.ArrayList<>();
+    private boolean showComets = true;      // comets visible by default
+    private boolean showAsteroids = true;   // named asteroids visible by default
+    private boolean showDistantBodies = false;  // far centaurs/TNOs off by default (huge orbits)
+    private boolean showSmallBodyLabels = true;
 
     /** Number of points to use when drawing orbits */
     private static final int ORBIT_RESOLUTION = 10000;
@@ -667,6 +671,9 @@ public class SolarSystemSimulation extends JPanel
             int num = MOON_NAMES[i].length;
             moonMean[i] = new double[num];
         }
+
+        // Load the built-in catalog of real comets, asteroids and distant objects.
+        smallBodies.addAll(buildBodyCatalog());
         // Planet orbit rings are built on the fly (getADouble) from current precessed 3-D
         // elements, so there is no static orbit-path table to precompute here anymore.
 
@@ -2597,11 +2604,14 @@ public class SolarSystemSimulation extends JPanel
         return keplerXYZ(A_METERS[i], ECC[i], E, planetIncl(i), planetOmega(i), planetVarpi(i));
     }
 
+    /** Which built-in catalog a minor body belongs to (drives the View toggles). */
+    enum BodyClass { COMET, ASTEROID, DISTANT }
+
     /**
-     * A user-added minor body — an asteroid or a comet — propagated on its own fixed
-     * Keplerian orbit from six classical elements. Comets are flagged so they get an
-     * anti-sunward tail. Elements follow the JPL Small-Body Database convention;
-     * {@code M0} is the mean anomaly at the J2000 epoch (simTimeSec = 0).
+     * A real minor body — comet, asteroid, or distant object — propagated on its own fixed
+     * Keplerian orbit from six classical elements (JPL Small-Body Database convention).
+     * Comets are flagged so they get an anti-sunward tail. {@code M0} is the mean anomaly
+     * at the J2000 epoch (simTimeSec = 0).
      */
     static final class SmallBody {
         final String name;
@@ -2609,11 +2619,12 @@ public class SolarSystemSimulation extends JPanel
         final double ecc;
         final double inclRad, omegaRad, varpiRad, M0Rad;
         final boolean comet;
+        final BodyClass cls;
         final Color color;
         double x, y, z;                  // current heliocentric position (m)
 
         SmallBody(String name, double aAU, double ecc, double inclDeg, double nodeDeg,
-                  double varpiDeg, double M0Deg, boolean comet, Color color) {
+                  double varpiDeg, double M0Deg, BodyClass cls, Color color) {
             this.name = name;
             this.aM = aAU * AU;
             this.ecc = ecc;
@@ -2621,7 +2632,8 @@ public class SolarSystemSimulation extends JPanel
             this.omegaRad = Math.toRadians(nodeDeg);
             this.varpiRad = Math.toRadians(varpiDeg);
             this.M0Rad = Math.toRadians(M0Deg);
-            this.comet = comet;
+            this.cls = cls;
+            this.comet = (cls == BodyClass.COMET);
             this.color = color;
             updatePosition(0);
         }
@@ -2643,16 +2655,59 @@ public class SolarSystemSimulation extends JPanel
         double sunDistM() { return Math.sqrt(x * x + y * y + z * z); }
     }
 
-    /** Draw every added comet/asteroid: its orbit ring, an anti-sunward tail (comets), a nucleus + label. */
+    private static final Color COMET_COLOR = new Color(180, 230, 255);
+    private static final Color ASTEROID_COLOR = new Color(205, 200, 175);
+    private static final Color DISTANT_COLOR = new Color(200, 190, 225);
+
+    /**
+     * A small catalog of real Solar-System minor bodies with their J2000 orbital elements
+     * (semi-major axis AU, eccentricity, inclination, node Ω, longitude of perihelion
+     * ϖ = Ω + ω, and mean anomaly at J2000, all in degrees). Positions are close but not
+     * ephemeris-exact — good enough to show each object on its true-shape, true-tilt orbit.
+     */
+    private static java.util.List<SmallBody> buildBodyCatalog() {
+        java.util.List<SmallBody> c = new java.util.ArrayList<>();
+        // ---- Comets (get tails near the Sun) ----
+        c.add(new SmallBody("1P/Halley",         17.834, 0.96714, 162.26,  58.42, 169.75,  66.4, BodyClass.COMET, COMET_COLOR));
+        c.add(new SmallBody("2P/Encke",           2.2155, 0.84833,  11.78, 334.57, 161.12, 285.0, BodyClass.COMET, COMET_COLOR));
+        c.add(new SmallBody("55P/Tempel-Tuttle", 10.337, 0.90551, 162.49, 235.27,  47.77,  20.0, BodyClass.COMET, COMET_COLOR));
+        c.add(new SmallBody("109P/Swift-Tuttle", 26.092, 0.96322, 113.45, 139.38, 292.36,  19.0, BodyClass.COMET, COMET_COLOR));
+        c.add(new SmallBody("C/1995 O1 Hale-Bopp", 186.0, 0.99509, 89.43, 282.47,  53.06,   0.4, BodyClass.COMET, COMET_COLOR));
+        // ---- Asteroids / near-Earth objects ----
+        c.add(new SmallBody("4 Vesta",            2.3617, 0.0887,   7.14, 103.81, 255.0,   20.0, BodyClass.ASTEROID, ASTEROID_COLOR));
+        c.add(new SmallBody("2 Pallas",           2.7729, 0.2302,  34.84, 173.02, 123.9,   40.0, BodyClass.ASTEROID, ASTEROID_COLOR));
+        c.add(new SmallBody("3 Juno",             2.6693, 0.2563,  12.99, 169.85,  57.6,   90.0, BodyClass.ASTEROID, ASTEROID_COLOR));
+        c.add(new SmallBody("10 Hygiea",          3.1415, 0.1125,   3.83, 283.20, 195.0,  150.0, BodyClass.ASTEROID, ASTEROID_COLOR));
+        c.add(new SmallBody("433 Eros",           1.4580, 0.2226,  10.83, 304.30, 122.19, 320.0, BodyClass.ASTEROID, ASTEROID_COLOR));
+        c.add(new SmallBody("101955 Bennu",       1.1264, 0.2037,   6.03,   2.02,  68.0,  100.0, BodyClass.ASTEROID, ASTEROID_COLOR));
+        // ---- Distant objects (centaurs / TNOs; off by default — very large orbits) ----
+        c.add(new SmallBody("2060 Chiron",       13.648, 0.3823,   6.93, 209.29, 339.0,  120.0, BodyClass.DISTANT, DISTANT_COLOR));
+        c.add(new SmallBody("50000 Quaoar",      43.69,  0.0389,   7.99, 188.93, 158.0,  280.0, BodyClass.DISTANT, DISTANT_COLOR));
+        c.add(new SmallBody("90377 Sedna",      506.0,   0.8590,  11.93, 144.40,  96.0,  358.0, BodyClass.DISTANT, DISTANT_COLOR));
+        return c;
+    }
+
+    /** True when body {@code sb} should be shown/updated under the current category toggles. */
+    private boolean bodyVisible(SmallBody sb) {
+        return switch (sb.cls) {
+            case COMET -> showComets;
+            case ASTEROID -> showAsteroids;
+            case DISTANT -> showDistantBodies;
+        };
+    }
+
+    /** Draw the enabled real minor bodies: orbit ring, anti-sunward tail (comets), nucleus + label. */
     private void drawSmallBodies(Graphics2D g2) {
         double sunSX = projX(sunBarycenterX), sunSY = projY(sunBarycenterY, 0);
         Object oldAA = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         Font oldFont = g2.getFont();
         for (SmallBody sb : smallBodies) {
+            if (!bodyVisible(sb)) continue;
             double px = projX(sb.x + sunBarycenterX), py = projY(sb.y + sunBarycenterY, sb.z);
 
-            if (showPlanetOrbits) {
+            // Orbit ring — skipped for very large orbits (a > 90 AU) whose ellipse would be absurd.
+            if (showPlanetOrbits && sb.aM / AU <= 90.0) {
                 Path2D.Double path = new Path2D.Double();
                 final int seg = 360;
                 for (int j = 0; j <= seg; j++) {
@@ -2662,23 +2717,21 @@ public class SolarSystemSimulation extends JPanel
                     if (j == 0) path.moveTo(sx, sy); else path.lineTo(sx, sy);
                 }
                 path.closePath();
-                g2.setColor(new Color(sb.color.getRed(), sb.color.getGreen(), sb.color.getBlue(), 70));
+                g2.setColor(new Color(sb.color.getRed(), sb.color.getGreen(), sb.color.getBlue(), 55));
                 g2.setStroke(new BasicStroke(1f));
                 g2.draw(path);
             }
 
             if (sb.comet) drawCometTail(g2, sb, px, py, sunSX, sunSY);
 
-            double r = sb.comet ? 3.2 : 2.6;
+            double r = sb.comet ? 2.6 : 2.4;
             g2.setColor(sb.color);
             g2.fill(new Ellipse2D.Double(px - r, py - r, 2 * r, 2 * r));
-            if (sb.comet) {   // bright coma glow around the nucleus
-                g2.setColor(new Color(sb.color.getRed(), sb.color.getGreen(), sb.color.getBlue(), 90));
-                g2.fill(new Ellipse2D.Double(px - r * 2.2, py - r * 2.2, r * 4.4, r * 4.4));
+            if (showSmallBodyLabels) {
+                g2.setColor(new Color(225, 232, 245, 190));
+                g2.setFont(oldFont.deriveFont(Font.PLAIN, 10.5f));
+                g2.drawString(sb.name, (int) (px + r + 4), (int) (py - r - 2));
             }
-            g2.setColor(new Color(235, 240, 250, 210));
-            g2.setFont(oldFont.deriveFont(Font.PLAIN, 11f));
-            g2.drawString(sb.name, (int) (px + r + 4), (int) (py - r - 2));
         }
         g2.setFont(oldFont);
         if (oldAA != null) g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
@@ -2699,7 +2752,14 @@ public class SolarSystemSimulation extends JPanel
         double rAU = sb.sunDistM() / AU;
         double activity = Math.max(0.0, Math.min(1.0, (3.5 - rAU) / 3.5));
         if (activity <= 0.02) return;
-        double lenPx = Math.max(activity * 0.55 * AU * METERS_TO_PIXELS * currentZoom, 70 + 240 * activity);
+        // TRUE physical tail lengths (AU -> px at the current zoom), so the tail is drawn at
+        // actual size and scales with everything else — no fixed on-screen enlargement.
+        double pxPerAU = METERS_TO_PIXELS * currentZoom * AU;
+        double ionLenPx  = 0.30 * activity * pxPerAU;   // ion tail up to ~0.30 AU near perihelion
+        double dustLenPx = 0.16 * activity * pxPerAU;   // dust tail up to ~0.16 AU
+        if (ionLenPx < 3 && dustLenPx < 3) return;      // too far away to be worth drawing
+        double visLen = Math.max(ionLenPx, dustLenPx);
+        double densf = Math.max(0.25, Math.min(1.0, visLen / 200.0));  // fewer specks when short
 
         // Comet's screen-space motion direction (dust lags toward the orbital wake).
         double dtv = 5.0 * 86400.0;
@@ -2715,8 +2775,8 @@ public class SolarSystemSimulation extends JPanel
         // Stable per-comet speckle pattern so the tail flows smoothly instead of flickering.
         java.util.Random rnd = new java.util.Random(sb.name.hashCode() * 0x9E3779B97F4A7C15L + 17);
 
-        // ---- Dust tail: curved fan of warm specks ----
-        int nDust = 90 + (int) (240 * activity);
+        // ---- Dust tail: curved fan of warm specks (widths are a fraction of its length) ----
+        int nDust = (int) ((40 + 260 * activity) * densf);
         for (int i = 0; i < nDust; i++) {
             double s = Math.pow(rnd.nextDouble(), 1.8);               // dense near the head
             double curve = 0.60 * s;                                  // older dust curves toward the wake
@@ -2724,39 +2784,39 @@ public class SolarSystemSimulation extends JPanel
             double diry = uy * (1 - curve) + traily * curve;
             double dl = Math.hypot(dirx, diry); dirx /= dl; diry /= dl;
             double perpx = -diry, perpy = dirx;
-            double spread = (4 + 30 * s) * (0.5 + 0.5 * activity);    // widens downstream
+            double spread = (0.02 + 0.12 * s) * dustLenPx;            // widens downstream, physical
             double j = gauss(rnd) * spread;
-            double along = s * lenPx * 0.9;
+            double along = s * dustLenPx;
             double x = px + dirx * along + perpx * j;
             double y = py + diry * along + perpy * j;
             double fall = (1 - s) * (1 - s);
             int alpha = (int) (60 * fall * activity);
             if (alpha < 3) continue;
-            double rad = 1.4 + 3.0 * fall;
+            double rad = 1.0 + 2.0 * fall;
             gg.setColor(new Color(255, 226, 168, Math.min(90, alpha)));
             gg.fill(new Ellipse2D.Double(x - rad, y - rad, 2 * rad, 2 * rad));
         }
 
-        // ---- Ion tail: straight, narrow, bluish, slightly longer ----
-        int nIon = 70 + (int) (170 * activity);
+        // ---- Ion tail: straight, narrow, bluish ----
+        int nIon = (int) ((30 + 200 * activity) * densf);
         double perpIx = -uy, perpIy = ux;
         for (int i = 0; i < nIon; i++) {
             double s = Math.pow(rnd.nextDouble(), 1.3);
-            double along = s * lenPx * 1.18;
-            double spread = (1.5 + 7 * s) * (0.5 + 0.5 * activity); // stays close to the axis
+            double along = s * ionLenPx;
+            double spread = (0.006 + 0.03 * s) * ionLenPx;           // stays close to the axis
             double j = gauss(rnd) * spread;
             double x = px + ux * along + perpIx * j;
             double y = py + uy * along + perpIy * j;
             double fall = (1 - s);
             int alpha = (int) (55 * fall * fall * activity);
             if (alpha < 3) continue;
-            double rad = 1.0 + 1.6 * fall;
+            double rad = 0.8 + 1.3 * fall;
             gg.setColor(new Color(150, 195, 255, Math.min(85, alpha)));
             gg.fill(new Ellipse2D.Double(x - rad, y - rad, 2 * rad, 2 * rad));
         }
 
-        // ---- Coma: soft radial glow around the nucleus (greenish, like real comets) ----
-        float comaR = (float) (7 + 12 * activity);
+        // ---- Coma: soft radial glow around the head (greenish, like real comets) ----
+        float comaR = (float) Math.max(2.5, Math.min(60.0, 0.006 * activity * pxPerAU));
         gg.setPaint(new RadialGradientPaint(new Point2D.Double(px, py), comaR,
                 new float[]{0f, 0.45f, 1f},
                 new Color[]{new Color(205, 255, 215, (int) (170 * activity)),
@@ -2803,110 +2863,6 @@ public class SolarSystemSimulation extends JPanel
         }
         simulationPaused = true;
         goToDate(dt);
-    }
-
-    /** A small labelled text field for the add-body form. */
-    private static JTextField field(String val) {
-        JTextField f = new JTextField(val, 8);
-        return f;
-    }
-
-    /** Form to add a comet/asteroid from six classical orbital elements. */
-    private void promptAddSmallBody(Window owner) {
-        JTextField name = field("New Comet");
-        JTextField a = field("3.0"), e = field("0.8"), inc = field("20"),
-                   node = field("80"), varpi = field("100"), m0 = field("0");
-        JCheckBox comet = new JCheckBox("Comet (draw a tail)", true);
-        JPanel form = new JPanel(new GridLayout(0, 2, 6, 4));
-        form.add(new JLabel("Name")); form.add(name);
-        form.add(new JLabel("Semi-major axis a (AU)")); form.add(a);
-        form.add(new JLabel("Eccentricity e (0–0.999)")); form.add(e);
-        form.add(new JLabel("Inclination i (deg)")); form.add(inc);
-        form.add(new JLabel("Long. of asc. node Ω (deg)")); form.add(node);
-        form.add(new JLabel("Long. of perihelion ϖ (deg)")); form.add(varpi);
-        form.add(new JLabel("Mean anomaly at J2000 (deg)")); form.add(m0);
-        form.add(new JLabel("")); form.add(comet);
-        int ok = JOptionPane.showConfirmDialog(owner, form, "Add Comet / Asteroid from Orbital Elements",
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        if (ok != JOptionPane.OK_OPTION) return;
-        try {
-            double aAU = Double.parseDouble(a.getText().trim());
-            double ecc = Double.parseDouble(e.getText().trim());
-            if (aAU <= 0 || ecc < 0 || ecc >= 1.0) throw new NumberFormatException("a>0 and 0<=e<1 required");
-            SmallBody sb = new SmallBody(name.getText().trim().isEmpty() ? "Body" : name.getText().trim(),
-                    aAU, ecc, Double.parseDouble(inc.getText().trim()),
-                    Double.parseDouble(node.getText().trim()), Double.parseDouble(varpi.getText().trim()),
-                    Double.parseDouble(m0.getText().trim()), comet.isSelected(),
-                    comet.isSelected() ? new Color(180, 230, 255) : new Color(200, 200, 180));
-            sb.updatePosition(simTimeSec);
-            smallBodies.add(sb);
-            repaint();
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(owner, "Invalid element value:\n" + ex.getMessage(),
-                    "Add body", JOptionPane.WARNING_MESSAGE);
-        }
-    }
-
-    /**
-     * Load minor bodies from a text/CSV file, one per line:
-     * {@code name,a_AU,e,i_deg,node_deg,varpi_deg,M0_deg,type}  (type: comet|asteroid).
-     * Blank lines and lines starting with '#' are ignored.
-     */
-    private void loadElementsFile(Window owner) {
-        JFileChooser fc = new JFileChooser();
-        fc.setDialogTitle("Load orbital-elements file (name,a,e,i,node,varpi,M0,type)");
-        if (fc.showOpenDialog(owner) != JFileChooser.APPROVE_OPTION) return;
-        int added = 0, bad = 0;
-        try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(fc.getSelectedFile()))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                String t = line.trim();
-                if (t.isEmpty() || t.startsWith("#")) continue;
-                String[] f = t.split("\\s*,\\s*");
-                if (f.length < 7) { bad++; continue; }
-                try {
-                    boolean isComet = f.length >= 8 && f[7].toLowerCase().startsWith("c");
-                    SmallBody sb = new SmallBody(f[0], Double.parseDouble(f[1]), Double.parseDouble(f[2]),
-                            Double.parseDouble(f[3]), Double.parseDouble(f[4]), Double.parseDouble(f[5]),
-                            Double.parseDouble(f[6]), isComet,
-                            isComet ? new Color(180, 230, 255) : new Color(200, 200, 180));
-                    sb.updatePosition(simTimeSec);
-                    smallBodies.add(sb);
-                    added++;
-                } catch (Exception ex) { bad++; }
-            }
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(owner, "Couldn't read the file:\n" + ex.getMessage(),
-                    "Load elements", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-        repaint();
-        JOptionPane.showMessageDialog(owner,
-                "Loaded " + added + " object(s)" + (bad > 0 ? " (" + bad + " line(s) skipped)." : "."),
-                "Load elements", JOptionPane.INFORMATION_MESSAGE);
-    }
-
-    /** Add 1P/Halley on its real orbit, and a demo comet placed at perihelion so a tail shows now. */
-    private void addDemoComets(Window owner) {
-        // 1P/Halley (J2000 elements; retrograde). Near aphelion at J2000 — scrub to 1986 or 2061 for its tail.
-        SmallBody halley = new SmallBody("1P/Halley", 17.834, 0.96714, 162.26, 58.42, 169.75, 66.5,
-                true, new Color(180, 230, 255));
-        // Demo comet sitting near perihelion at J2000, so its tail is visible immediately.
-        SmallBody demo = new SmallBody("Demo Comet", 3.2, 0.82, 24.0, 80.0, 110.0, 0.0,
-                true, new Color(200, 240, 255));
-        halley.updatePosition(simTimeSec);
-        demo.updatePosition(simTimeSec);
-        smallBodies.add(halley);
-        smallBodies.add(demo);
-        repaint();
-        if (owner != null) {
-            JOptionPane.showMessageDialog(owner,
-                    "Added 1P/Halley and a demo comet.\n\n"
-                    + "The demo comet is near the Sun now, so its tail shows immediately.\n"
-                    + "Halley is near aphelion at J2000 — use Simulation → Go to date…\n"
-                    + "and enter 1986-02-09 (or 2061-07-28) to watch it round the Sun.",
-                    "Demo comets added", JOptionPane.INFORMATION_MESSAGE);
-        }
     }
 
     // ------- View projection (world -> screen), pitch-aware -------
@@ -5402,21 +5358,21 @@ public class SolarSystemSimulation extends JPanel
         simMenu.addSeparator();
         simMenu.add(exitItem);
 
-        // Objects menu — add comets/asteroids from orbital elements (item 6)
+        // Objects menu — toggle the built-in catalog of real minor bodies
         JMenu objectsMenu = new JMenu("Objects");
-        JMenuItem addBodyItem = new JMenuItem("Add comet / asteroid…");
-        addBodyItem.addActionListener(_ -> panel.promptAddSmallBody(frame));
-        JMenuItem loadFileItem = new JMenuItem("Load orbital-elements file…");
-        loadFileItem.addActionListener(_ -> panel.loadElementsFile(frame));
-        JMenuItem demoCometItem = new JMenuItem("Add demo comets (Halley + tail demo)");
-        demoCometItem.addActionListener(_ -> panel.addDemoComets(frame));
-        JMenuItem clearBodiesItem = new JMenuItem("Clear added objects");
-        clearBodiesItem.addActionListener(_ -> { panel.smallBodies.clear(); panel.repaint(); });
-        objectsMenu.add(addBodyItem);
-        objectsMenu.add(loadFileItem);
+        StayOpenCheckBoxMenuItem cometsItem = new StayOpenCheckBoxMenuItem("Comets  (with tails)", true);
+        cometsItem.addActionListener(_ -> { panel.showComets = cometsItem.isSelected(); panel.repaint(); });
+        StayOpenCheckBoxMenuItem asteroidsItem = new StayOpenCheckBoxMenuItem("Asteroids & near-Earth objects", true);
+        asteroidsItem.addActionListener(_ -> { panel.showAsteroids = asteroidsItem.isSelected(); panel.repaint(); });
+        StayOpenCheckBoxMenuItem distantItem = new StayOpenCheckBoxMenuItem("Distant objects (centaurs / TNOs)", false);
+        distantItem.addActionListener(_ -> { panel.showDistantBodies = distantItem.isSelected(); panel.repaint(); });
+        StayOpenCheckBoxMenuItem bodyLabelsItem = new StayOpenCheckBoxMenuItem("Show object labels", true);
+        bodyLabelsItem.addActionListener(_ -> { panel.showSmallBodyLabels = bodyLabelsItem.isSelected(); panel.repaint(); });
+        objectsMenu.add(cometsItem);
+        objectsMenu.add(asteroidsItem);
+        objectsMenu.add(distantItem);
         objectsMenu.addSeparator();
-        objectsMenu.add(demoCometItem);
-        objectsMenu.add(clearBodiesItem);
+        objectsMenu.add(bodyLabelsItem);
 
         // View menu – mirrors keyboard toggles
         JMenu viewMenu = new JMenu("View");
