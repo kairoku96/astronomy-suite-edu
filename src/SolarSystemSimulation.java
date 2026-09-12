@@ -86,6 +86,14 @@ public class SolarSystemSimulation extends JPanel
     private double viewPitchRad = 0.0;
     private double viewCosP = 1.0, viewSinP = 0.0;
     static final double MAX_PITCH_RAD = Math.toRadians(88);
+    /**
+     * View yaw (azimuth): rotation of the camera around the vertical (ecliptic-normal) axis
+     * through the camera target, so you can swing fully around the system. 0 = the original
+     * orientation. Free-dragged horizontally with the mouse; {@link #viewCosY}/{@link #viewSinY}
+     * cache its cos/sin and are refreshed by {@link #setViewYaw}.
+     */
+    private double viewYawRad = 0.0;
+    private double viewCosY = 1.0, viewSinY = 0.0;
     /** Interactive launches start slightly oblique so the scene reads as 3-D; press \ for top-down. */
     private static final double DEFAULT_VIEW_PITCH_DEG = 24.0;
 
@@ -746,6 +754,8 @@ public class SolarSystemSimulation extends JPanel
                 // (Head-less showcase/lesson renders stay top-down so their framing is unchanged.)
                 setViewPitch(Math.toRadians(DEFAULT_VIEW_PITCH_DEG));
             }
+            String yawProp = System.getProperty("sss.yaw");   // optional initial azimuth (deg)
+            if (yawProp != null) setViewYaw(Math.toRadians(Double.parseDouble(yawProp)));
         } catch (NumberFormatException ignored) { }
         lastNanos = System.nanoTime();
         if (System.getProperty("sss.shot") == null) {
@@ -788,7 +798,9 @@ public class SolarSystemSimulation extends JPanel
             // View pitch: [ tilts back toward top-down, ] tilts toward edge-on, \ resets.
             case KeyEvent.VK_OPEN_BRACKET  -> setViewPitch(viewPitchRad - Math.toRadians(5));
             case KeyEvent.VK_CLOSE_BRACKET -> setViewPitch(viewPitchRad + Math.toRadians(5));
-            case KeyEvent.VK_BACK_SLASH    -> setViewPitch(0.0);
+            case KeyEvent.VK_COMMA         -> setViewYaw(viewYawRad - Math.toRadians(5));  // orbit left
+            case KeyEvent.VK_PERIOD        -> setViewYaw(viewYawRad + Math.toRadians(5));  // orbit right
+            case KeyEvent.VK_BACK_SLASH    -> { setViewPitch(0.0); setViewYaw(0.0); }      // reset view
             case KeyEvent.VK_O -> showPlanetOrbits = !showPlanetOrbits;
             case KeyEvent.VK_R -> showRings = !showRings;
             case KeyEvent.VK_L -> showLabels = !showLabels;
@@ -863,8 +875,8 @@ public class SolarSystemSimulation extends JPanel
                 double moonWorldY = planetY[p] + sunBarycenterY + rel[1];
                 double moonWorldZ = planetZ[p] + rel[2];
 
-                double mpx = projX(moonWorldX);
-                double mpy = projY(moonWorldY, moonWorldZ);
+                double mpx = projX(moonWorldX, moonWorldY);
+                double mpy = projY(moonWorldX, moonWorldY, moonWorldZ);
                 double mr  = Math.max(RADIUS_M[p] * MOON_SIZE_RATIO[p][m] * METERS_TO_PIXELS * currentZoom, 2.0);
 
                 double dx = mx - mpx, dy = my - mpy;
@@ -898,8 +910,8 @@ public class SolarSystemSimulation extends JPanel
         // PLANET CLICK
         for (int i = 0; i < NAMES.length; i++) {
             // Use barycentric coordinates for click detection
-            double px = projX(planetX[i] + sunBarycenterX);
-            double py = projY(planetY[i] + sunBarycenterY, planetZ[i]);
+            double px = projX(planetX[i] + sunBarycenterX, planetY[i] + sunBarycenterY);
+            double py = projY(planetX[i] + sunBarycenterX, planetY[i] + sunBarycenterY, planetZ[i]);
             double pr = Math.max(RADIUS_M[i] * METERS_TO_PIXELS * currentZoom, 4);
 
             double dx = mx - px, dy = my - py;
@@ -946,7 +958,8 @@ public class SolarSystemSimulation extends JPanel
     }
     @Override public void mousePressed(MouseEvent e) {
         boolean onRuler = handleScaleRulerClick(e.getX(), e.getY(), getHeight());
-        draggingView = !onRuler;                 // otherwise a bare drag tilts the view
+        draggingView = !onRuler;                 // otherwise a bare drag orbits the view
+        lastDragX = e.getX();
         lastDragY = e.getY();
     }
     @Override public void mouseReleased(MouseEvent e) {
@@ -958,10 +971,14 @@ public class SolarSystemSimulation extends JPanel
 
     @Override public void mouseDragged(MouseEvent e) {
         if (draggingView) {
-            // Vertical drag freely pitches the camera: down tilts toward edge-on (reveals
-            // orbital inclination + the out-of-plane oscillation), up returns to top-down.
+            // Free-orbit the camera: horizontal drag swings the azimuth (yaw) around the system;
+            // vertical drag pitches from top-down toward edge-on (reveals orbital inclination and
+            // the out-of-plane oscillation).
+            int dx = e.getX() - lastDragX;
             int dy = e.getY() - lastDragY;
+            setViewYaw(viewYawRad + dx * 0.01);
             setViewPitch(viewPitchRad + dy * 0.005);
+            lastDragX = e.getX();
             lastDragY = e.getY();
         } else {
             updateScaleRulerDrag(e.getX(), e.getY());
@@ -969,9 +986,10 @@ public class SolarSystemSimulation extends JPanel
         repaint();
     }
 
-    /** Mouse-drag view-pitch state (see {@link #mouseDragged}). */
+    /** Mouse-drag view-orbit state (see {@link #mouseDragged}). */
     private boolean draggingView = false;
     private int lastDragY = 0;
+    private int lastDragX = 0;
 
     @Override public void mouseMoved(MouseEvent e) {}
 
@@ -1042,8 +1060,8 @@ public class SolarSystemSimulation extends JPanel
         double sunR = SUN_RADIUS_M * METERS_TO_PIXELS * currentZoom;
         double sunWorldX = sunBarycenterX;  // Apply barycenter offset for Sun motion
         double sunWorldY = sunBarycenterY;  // Apply barycenter offset for Sun motion
-        double sunCX = projX(sunWorldX);
-        double sunCY = projY(sunWorldY, 0);
+        double sunCX = projX(sunWorldX, sunWorldY);
+        double sunCY = projY(sunWorldX, sunWorldY, 0);
         double sunXpix = sunCX - sunR;
         double sunYpix = sunCY - sunR;
 
@@ -1120,8 +1138,8 @@ public class SolarSystemSimulation extends JPanel
         Integer[] drawOrder = new Integer[NAMES.length];
         for (int k = 0; k < drawOrder.length; k++) drawOrder[k] = k;
         Arrays.sort(drawOrder, (p, q) -> Double.compare(
-                viewDepth(planetY[p] + sunBarycenterY, planetZ[p]),
-                viewDepth(planetY[q] + sunBarycenterY, planetZ[q])));
+                viewDepth(planetX[p] + sunBarycenterX, planetY[p] + sunBarycenterY, planetZ[p]),
+                viewDepth(planetX[q] + sunBarycenterX, planetY[q] + sunBarycenterY, planetZ[q])));
         for (int oi = 0; oi < drawOrder.length; oi++) {
             int i = drawOrder[oi];
             if (isPlanetVisible(i)) continue;
@@ -1130,8 +1148,8 @@ public class SolarSystemSimulation extends JPanel
             double worldX = planetX[i] + sunBarycenterX;
             double worldY = planetY[i] + sunBarycenterY;
             double worldZ = planetZ[i];
-            double px = projX(worldX);
-            double py = projY(worldY, worldZ);
+            double px = projX(worldX, worldY);
+            double py = projY(worldX, worldY, worldZ);
             double pr = RADIUS_M[i] * METERS_TO_PIXELS * currentZoom;
             if (pr < 0.5) pr = 0.5;
 
@@ -1140,8 +1158,8 @@ public class SolarSystemSimulation extends JPanel
             // orbits are huge off-screen ellipses that are pure cost to draw.
             boolean orbitOnScreen = true;
             {
-                double sunSXo = projX(sunBarycenterX);
-                double sunSYo = projY(sunBarycenterY, 0);
+                double sunSXo = projX(sunBarycenterX, sunBarycenterY);
+                double sunSYo = projY(sunBarycenterX, sunBarycenterY, 0);
                 double periPx = A_METERS[i] * (1 - ECC[i]) * METERS_TO_PIXELS * currentZoom;
                 double apoPx  = A_METERS[i] * (1 + ECC[i]) * METERS_TO_PIXELS * currentZoom;
                 double dxL = Math.max(0, Math.max(-sunSXo, sunSXo - getWidth()));
@@ -1170,10 +1188,10 @@ public class SolarSystemSimulation extends JPanel
                                 planetIncl(i), planetOmega(i), planetVarpi(i));
                         double[] apoW = keplerXYZ(A_METERS[i], ECC[i], Math.PI,
                                 planetIncl(i), planetOmega(i), planetVarpi(i));
-                        double periX = projX(periW[0] + sunBarycenterX);
-                        double periY = projY(periW[1] + sunBarycenterY, periW[2]);
-                        double apoX = projX(apoW[0] + sunBarycenterX);
-                        double apoY = projY(apoW[1] + sunBarycenterY, apoW[2]);
+                        double periX = projX(periW[0] + sunBarycenterX, periW[1] + sunBarycenterY);
+                        double periY = projY(periW[0] + sunBarycenterX, periW[1] + sunBarycenterY, periW[2]);
+                        double apoX = projX(apoW[0] + sunBarycenterX, apoW[1] + sunBarycenterY);
+                        double apoY = projY(apoW[0] + sunBarycenterX, apoW[1] + sunBarycenterY, apoW[2]);
 
                         // Smart marker sizing: scale with zoom but maintain minimum visibility
                         // At low zoom (zoomed out), markers are smaller but still visible
@@ -1231,8 +1249,8 @@ public class SolarSystemSimulation extends JPanel
             // Prefer a textured 3-D sphere (correct tilt + sidereal spin, Sun-lit);
             // fall back to flat shading / color when no map exists for the body.
             // Sun position on screen: drives lighting, eclipse-shadow direction and glow.
-            double sunSX = projX(sunBarycenterX);
-            double sunSY = projY(sunBarycenterY, 0);
+            double sunSX = projX(sunBarycenterX, sunBarycenterY);
+            double sunSY = projY(sunBarycenterX, sunBarycenterY, 0);
 
             // Eclipse occluders: this planet's moons cast shadow transits onto its disc
             // (e.g. Io's shadow on Jupiter, the Moon's shadow on Earth during a solar eclipse).
@@ -1300,7 +1318,7 @@ public class SolarSystemSimulation extends JPanel
                 if (i == selectedPlanet || i == cameraFocusIndex) pri += 40;
                 float labelSize = (float)(11f + Math.min(3f, currentZoom * 0.5f));
                 pendingLabels.add(new LabelReq(NAMES[i], px, py, pr, Color.WHITE,
-                        labelSize, i < 8, pri, viewDepth(worldY, worldZ)));
+                        labelSize, i < 8, pri, viewDepth(worldX, worldY, worldZ)));
             }
 
 
@@ -1310,13 +1328,13 @@ public class SolarSystemSimulation extends JPanel
                 for (ArrayList<Point2D.Double> morb : moonOrbits) {
                     Path2D.Double mpath = new Path2D.Double();
                     Point2D.Double first = morb.getFirst();
-                    double msx = projX(worldX + first.x);
-                    double msy = projY(worldY + first.y, worldZ);
+                    double msx = projX(worldX + first.x, worldY + first.y);
+                    double msy = projY(worldX + first.x, worldY + first.y, worldZ);
                     mpath.moveTo(msx, msy);
                     for (int j = 1; j < morb.size(); j++) {
                         Point2D.Double p = morb.get(j);
-                        double x = projX(worldX + p.x);
-                        double y = projY(worldY + p.y, worldZ);
+                        double x = projX(worldX + p.x, worldY + p.y);
+                        double y = projY(worldX + p.x, worldY + p.y, worldZ);
                         mpath.lineTo(x, y);
                     }
                     mpath.closePath();
@@ -1338,14 +1356,14 @@ public class SolarSystemSimulation extends JPanel
                         double moonWorldY = planetY[i] + sunBarycenterY + ry;
                         double moonWorldZ = planetZ[i] + rz;   // planet height + moon out-of-plane
 
-                        double mpx = projX(moonWorldX);
-                        double mpy = projY(moonWorldY, moonWorldZ);
+                        double mpx = projX(moonWorldX, moonWorldY);
+                        double mpy = projY(moonWorldX, moonWorldY, moonWorldZ);
                         double mr = Math.max(RADIUS_M[i] * MOON_SIZE_RATIO[i][m] * METERS_TO_PIXELS * currentZoom, 0.6);
 
                         // Depth cue: a moon on the far side of the planet, projected inside its
                         // disc, is hidden behind it — skip it rather than drawing it on top.
-                        double moonDepth = viewDepth(moonWorldY, moonWorldZ);
-                        double planetDepth = viewDepth(worldY, worldZ);
+                        double moonDepth = viewDepth(moonWorldX, moonWorldY, moonWorldZ);
+                        double planetDepth = viewDepth(worldX, worldY, worldZ);
                         if (moonDepth < planetDepth && Math.hypot(mpx - px, mpy - py) < pr - mr) {
                             continue;
                         }
@@ -2339,8 +2357,8 @@ public class SolarSystemSimulation extends JPanel
         double outerPx = outerAU * pxPerAU;
         if (outerPx < 1.0) return;
 
-        double sunScreenX = projX(sunBarycenterX);
-        double sunScreenY = projY(sunBarycenterY, 0);
+        double sunScreenX = projX(sunBarycenterX, sunBarycenterY);
+        double sunScreenY = projY(sunBarycenterX, sunBarycenterY, 0);
 
         // Soft annulus glow (transparent core -> band color -> transparent edge)
         if (outerPx > 4) {
@@ -2401,8 +2419,8 @@ public class SolarSystemSimulation extends JPanel
         if (!showIceLines) return;
 
         // Center on Sun's barycentric position
-        double sunScreenX = projX(sunBarycenterX);
-        double sunScreenY = projY(sunBarycenterY, 0);
+        double sunScreenX = projX(sunBarycenterX, sunBarycenterY);
+        double sunScreenY = projY(sunBarycenterX, sunBarycenterY, 0);
 
         // H2O frost line (water ice): ~4.85 AU
         double h2oFrostLineAU = 4.85;
@@ -2470,7 +2488,7 @@ public class SolarSystemSimulation extends JPanel
             double E = 2 * Math.PI * j / seg;
             double[] w = keplerXYZ(a, e, E, incl, Om, vp);       // {wx, wy, wz} heliocentric
             double wx = w[0] + sunBarycenterX, wy = w[1] + sunBarycenterY, wz = w[2];
-            double sx = projX(wx), sy = projY(wy, wz);
+            double sx = projX(wx, wy), sy = projY(wx, wy, wz);
             if (j == 0) path.moveTo(sx, sy); else path.lineTo(sx, sy);
         }
         path.closePath();
@@ -2703,13 +2721,13 @@ public class SolarSystemSimulation extends JPanel
 
     /** Draw the enabled real minor bodies: orbit ring, anti-sunward tail (comets), nucleus + label. */
     private void drawSmallBodies(Graphics2D g2) {
-        double sunSX = projX(sunBarycenterX), sunSY = projY(sunBarycenterY, 0);
+        double sunSX = projX(sunBarycenterX, sunBarycenterY), sunSY = projY(sunBarycenterX, sunBarycenterY, 0);
         Object oldAA = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         Font oldFont = g2.getFont();
         for (SmallBody sb : smallBodies) {
             if (!bodyVisible(sb)) continue;
-            double px = projX(sb.x + sunBarycenterX), py = projY(sb.y + sunBarycenterY, sb.z);
+            double px = projX(sb.x + sunBarycenterX, sb.y + sunBarycenterY), py = projY(sb.x + sunBarycenterX, sb.y + sunBarycenterY, sb.z);
 
             // Orbit ring — skipped for very large orbits (a > 90 AU) whose ellipse would be absurd.
             if (showPlanetOrbits && sb.aM / AU <= 90.0) {
@@ -2718,7 +2736,7 @@ public class SolarSystemSimulation extends JPanel
                 for (int j = 0; j <= seg; j++) {
                     double E = 2 * Math.PI * j / seg;
                     double[] w = keplerXYZ(sb.aM, sb.ecc, E, sb.inclRad, sb.omegaRad, sb.varpiRad);
-                    double sx = projX(w[0] + sunBarycenterX), sy = projY(w[1] + sunBarycenterY, w[2]);
+                    double sx = projX(w[0] + sunBarycenterX, w[1] + sunBarycenterY), sy = projY(w[0] + sunBarycenterX, w[1] + sunBarycenterY, w[2]);
                     if (j == 0) path.moveTo(sx, sy); else path.lineTo(sx, sy);
                 }
                 path.closePath();
@@ -2736,7 +2754,7 @@ public class SolarSystemSimulation extends JPanel
                 // Lowest priority: minor-body labels yield to planets/moons and are dropped first.
                 int pri = (sb.cls == BodyClass.DISTANT) ? 12 : 18;
                 pendingLabels.add(new LabelReq(sb.name, px, py, r, new Color(225, 232, 245, 220),
-                        10.5f, false, pri, viewDepth(sb.y + sunBarycenterY, sb.z)));
+                        10.5f, false, pri, viewDepth(sb.x + sunBarycenterX, sb.y + sunBarycenterY, sb.z)));
             }
         }
         g2.setFont(oldFont);
@@ -2772,7 +2790,7 @@ public class SolarSystemSimulation extends JPanel
         double[] pFut = keplerXYZ(sb.aM, sb.ecc,
                 solveEccentricAnomaly(sb.M0Rad + sb.meanMotion() * (simTimeSec + dtv), sb.ecc),
                 sb.inclRad, sb.omegaRad, sb.varpiRad);
-        double fx = projX(pFut[0] + sunBarycenterX), fy = projY(pFut[1] + sunBarycenterY, pFut[2]);
+        double fx = projX(pFut[0] + sunBarycenterX, pFut[1] + sunBarycenterY), fy = projY(pFut[0] + sunBarycenterX, pFut[1] + sunBarycenterY, pFut[2]);
         double mvx = fx - px, mvy = fy - py, mvl = Math.hypot(mvx, mvy);
         double trailx = mvl > 1e-6 ? -mvx / mvl : ux, traily = mvl > 1e-6 ? -mvy / mvl : uy;
 
@@ -2883,25 +2901,44 @@ public class SolarSystemSimulation extends JPanel
         geomCache.clear();   // sphere lighting frame depends on the view elevation (= 90° - pitch)
     }
 
+    /** Set the view yaw/azimuth (radians, wrapped) and refresh cached cos/sin. */
+    private void setViewYaw(double rad) {
+        double y = rad % (2 * Math.PI);
+        if (y == viewYawRad) return;
+        viewYawRad = y;
+        viewCosY = Math.cos(y);
+        viewSinY = Math.sin(y);
+        // Sphere geometry/lighting is derived in screen space, so it needs no rebuild on yaw.
+    }
+
     /** Camera elevation above the ecliptic used by the sphere lighting frame (deg); 90 = top-down. */
     private double viewElevDeg() { return 90.0 - Math.toDegrees(viewPitchRad); }
 
-    /** Project a world X (m) to a screen x (px). X is unaffected by pitch (tilt is about this axis). */
-    private double projX(double worldX) {
-        return getWidth() / 2.0 + (worldX - camX) * METERS_TO_PIXELS * currentZoom;
+    // ---- Orthographic camera: yaw (about the vertical axis) then pitch (about the screen X axis). ----
+    // Both cos/sin are cached; at yaw = pitch = 0 these reduce to the original top-down projection.
+
+    /** Project a world point to screen x (px). Depends on X and Y because yaw couples them. */
+    private double projX(double worldX, double worldY) {
+        double dx = worldX - camX, dy = worldY - camY;
+        double xr = dx * viewCosY - dy * viewSinY;
+        return getWidth() / 2.0 + xr * (METERS_TO_PIXELS * currentZoom);
     }
-    /** Project a world (Y, Z) (m) to a screen y (px): tilt rotates the ecliptic about the screen X axis. */
-    private double projY(double worldY, double worldZ) {
+    /** Project a world point to screen y (px): yaw rotates in-plane, then pitch tilts about screen X. */
+    private double projY(double worldX, double worldY, double worldZ) {
+        double dx = worldX - camX, dy = worldY - camY, dz = worldZ - camZ;
+        double yr = dx * viewSinY + dy * viewCosY;
         double s = METERS_TO_PIXELS * currentZoom;
-        return getHeight() / 2.0 + ((worldY - camY) * viewCosP - (worldZ - camZ) * viewSinP) * s;
+        return getHeight() / 2.0 + (yr * viewCosP - dz * viewSinP) * s;
     }
     /**
      * Camera-forward depth of a world point (metres along the view direction); larger = nearer the
      * viewer. Drives the painter's-algorithm draw order so nearer bodies occlude farther ones —
-     * the main depth cue once the view is tilted off top-down. Independent of screen-x (orthographic).
+     * the main depth cue once the view is tilted off top-down.
      */
-    private double viewDepth(double worldY, double worldZ) {
-        return (worldY - camY) * viewSinP + (worldZ - camZ) * viewCosP;
+    private double viewDepth(double worldX, double worldY, double worldZ) {
+        double dx = worldX - camX, dy = worldY - camY, dz = worldZ - camZ;
+        double yr = dx * viewSinY + dy * viewCosY;
+        return yr * viewSinP + dz * viewCosP;
     }
 
     // ===================== Textured 3-D sphere rendering =====================
@@ -6322,8 +6359,8 @@ public class SolarSystemSimulation extends JPanel
             // Planet position
             double worldX = planetX[i] + sunBarycenterX;
             double worldY = planetY[i] + sunBarycenterY;
-            double px = projX(worldX);
-            double py = projY(worldY, planetZ[i]);
+            double px = projX(worldX, worldY);
+            double py = projY(worldX, worldY, planetZ[i]);
 
             // Calculate velocity direction (perpendicular to radius vector)
             double dx = worldX - sunBarycenterX;
@@ -6335,14 +6372,16 @@ public class SolarSystemSimulation extends JPanel
             double vx = -dy / dist;  // perpendicular
             double vy = dx / dist;
 
-            // Scale velocity vector by actual speed
+            // Scale velocity vector by actual speed. Build the tip as a world-space point (in the
+            // ecliptic plane) and project it, so the arrow rotates correctly with camera yaw/pitch
+            // rather than being pinned to the screen axes. The world length is chosen so the
+            // on-screen size matches the previous behaviour.
             double speed = planetSpeedKmS[i];
-            double vectorScale = 0.00015 * currentZoom;  // Adjust this for visibility
-            double vLength = speed * vectorScale;
-
-            // Draw velocity vector as an arrow
-            double endX = px + vx * vLength;
-            double endY = py + vy * vLength;
+            double vLengthWorld = speed * 0.00015 / METERS_TO_PIXELS;
+            double tipWX = worldX + vx * vLengthWorld;
+            double tipWY = worldY + vy * vLengthWorld;
+            double endX = projX(tipWX, tipWY);
+            double endY = projY(tipWX, tipWY, planetZ[i]);
 
             // Dynamic arrow sizing based on UI size
             float arrowWidth = switch (uiSize) {

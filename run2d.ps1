@@ -15,7 +15,7 @@
 #
 # In-app view tilt (reveals orbital inclination + out-of-plane oscillation): drag the mouse
 # vertically, or press [ / ] to tilt and \ to snap back to top-down.
-param([switch]$BuildOnly, [switch]$Gpu, [switch]$Bench, [string]$Shot, [double]$Pitch)
+param([switch]$BuildOnly, [switch]$Gpu, [switch]$Bench, [string]$Shot, [double]$Pitch, [double]$Yaw)
 
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
@@ -50,6 +50,7 @@ if ($Gpu)   { $props += "-Dsss.gpu=1" }
 if ($Bench) { $props += "-Dsss.bench=1" }
 if ($Shot)  { $props += "-Dsss.shot=$Shot" }
 if ($Pitch) { $props += "-Dsss.pitch=$Pitch" }   # initial view tilt in degrees off top-down
+if ($Yaw)   { $props += "-Dsss.yaw=$Yaw" }       # initial view azimuth (orbit angle) in degrees
 
 Write-Host "Launching..." -ForegroundColor Cyan
 & "$jdk/java.exe" @props -cp "$out;$cp" SolarSystemSimulation
