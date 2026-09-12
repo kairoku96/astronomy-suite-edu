@@ -2494,9 +2494,13 @@ public class SolarSystemSimulation extends JPanel
 
         // Depth cue: split the loop into a near half and a far half (by camera-forward depth) and
         // draw the far half dimmer, so the ellipse reads as a 3-D ring rather than a flat outline.
+        // The contrast scales with how tilted the view is — at (near) top-down there is no near/far
+        // side, so the ring stays a uniform, fully-visible ellipse instead of looking half-drawn.
         Color base = getOrbitColor(i);
-        int aFar  = Math.max(18, (int) (base.getAlpha() * 0.34));
-        int aNear = Math.min(255, (int) (base.getAlpha() * 1.35));
+        double tilt = viewSinP;                                   // 0 = top-down, 1 = edge-on
+        int baseA = base.getAlpha();
+        int aFar  = (int) Math.max(35.0, baseA * (1.0 - 0.5 * tilt));
+        int aNear = (int) Math.min(230.0, baseA * (1.0 + 0.45 * tilt));
         double mid = 0.5 * (minD + maxD);
         Path2D.Double nearP = new Path2D.Double(), farP = new Path2D.Double();
         for (int j = 1; j <= seg; j++) {
