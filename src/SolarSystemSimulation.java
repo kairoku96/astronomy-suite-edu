@@ -113,7 +113,7 @@ public class SolarSystemSimulation extends JPanel
     }
     private final java.util.ArrayList<LabelReq> pendingLabels = new java.util.ArrayList<>();
     /** Reusable per-frame buffers for projecting an orbit ring (sized to the max adaptive segments). */
-    private double[] ringSX = new double[16386], ringSY = new double[16386], ringDepth = new double[16386];
+    private double[] ringSX = new double[16386], ringSY = new double[16386];
 
     /** True if camera is still moving toward target (smooth approach) */
     private boolean cameraIsApproaching = false;
@@ -1154,20 +1154,6 @@ public class SolarSystemSimulation extends JPanel
             double py = projY(worldX, worldY, worldZ);
             double pr = RADIUS_M[i] * METERS_TO_PIXELS * currentZoom;
             if (pr < 0.5) pr = 0.5;
-
-            // Depth cue: a faint stalk from the body down to the ecliptic plane conveys its height
-            // above/below the plane. Self-limiting — zero length for near-planar orbits (e.g. Earth)
-            // and only present once the view is tilted; drawn first so the body sits on top of it.
-            if (viewSinP > 0.02) {
-                double planeY = projY(worldX, worldY, 0.0);   // same screen x; z = 0 is the ecliptic
-                if (Math.abs(planeY - py) > 2.0) {
-                    g2.setStroke(new BasicStroke(1f));
-                    g2.setColor(new Color(150, 170, 210, 70));
-                    g2.draw(new java.awt.geom.Line2D.Double(px, py, px, planeY));
-                    g2.setColor(new Color(150, 170, 210, 110));
-                    g2.fill(new Ellipse2D.Double(px - 1.5, planeY - 1.5, 3, 3));
-                }
-            }
 
             // Draw orbit (respect visibility toggle). drawOrbitRing culls by the ring's true
             // projected bounding box and returns whether it is on screen, so a tilted/zoomed-in
@@ -2476,43 +2462,28 @@ public class SolarSystemSimulation extends JPanel
         double a = A_METERS[i], e = ECC[i];
         double incl = planetIncl(i), Om = planetOmega(i), vp = planetVarpi(i);
         int seg = orbitSegments(a);
-        double minX = 1e18, minY = 1e18, maxX = -1e18, maxY = -1e18, minD = 1e300, maxD = -1e300;
+        double minX = 1e18, minY = 1e18, maxX = -1e18, maxY = -1e18;
         for (int j = 0; j <= seg; j++) {
             double E = 2 * Math.PI * j / seg;
             double[] w = keplerXYZ(a, e, E, incl, Om, vp);       // {wx, wy, wz} heliocentric
             double wx = w[0] + sunBarycenterX, wy = w[1] + sunBarycenterY, wz = w[2];
-            double sx = projX(wx, wy), sy = projY(wx, wy, wz), d = viewDepth(wx, wy, wz);
-            ringSX[j] = sx; ringSY[j] = sy; ringDepth[j] = d;
+            double sx = projX(wx, wy), sy = projY(wx, wy, wz);
+            ringSX[j] = sx; ringSY[j] = sy;
             if (sx < minX) minX = sx; if (sx > maxX) maxX = sx;
             if (sy < minY) minY = sy; if (sy > maxY) maxY = sy;
-            if (d < minD) minD = d;   if (d > maxD) maxD = d;
         }
         // Cull by the ring's TRUE projected bounding box (tilt/yaw-aware), so a foreshortened,
         // zoomed-in orbit is not wrongly hidden — the bug the old Sun-radius test had under tilt.
         double m = 48;
         if (maxX < -m || minX > getWidth() + m || maxY < -m || minY > getHeight() + m) return false;
 
-        // Depth cue: split the loop into a near half and a far half (by camera-forward depth) and
-        // draw the far half dimmer, so the ellipse reads as a 3-D ring rather than a flat outline.
-        // The contrast scales with how tilted the view is — at (near) top-down there is no near/far
-        // side, so the ring stays a uniform, fully-visible ellipse instead of looking half-drawn.
-        Color base = getOrbitColor(i);
-        double tilt = viewSinP;                                   // 0 = top-down, 1 = edge-on
-        int baseA = base.getAlpha();
-        int aFar  = (int) Math.max(35.0, baseA * (1.0 - 0.5 * tilt));
-        int aNear = (int) Math.min(230.0, baseA * (1.0 + 0.45 * tilt));
-        double mid = 0.5 * (minD + maxD);
-        Path2D.Double nearP = new Path2D.Double(), farP = new Path2D.Double();
-        for (int j = 1; j <= seg; j++) {
-            Path2D.Double t = (0.5 * (ringDepth[j - 1] + ringDepth[j]) >= mid) ? nearP : farP;
-            t.moveTo(ringSX[j - 1], ringSY[j - 1]);
-            t.lineTo(ringSX[j], ringSY[j]);
-        }
+        // Draw the ring as a single uniform ellipse (same colour all the way round).
+        Path2D.Double path = new Path2D.Double();
+        path.moveTo(ringSX[0], ringSY[0]);
+        for (int j = 1; j <= seg; j++) path.lineTo(ringSX[j], ringSY[j]);
         g2.setStroke(new BasicStroke(1f));
-        g2.setColor(new Color(base.getRed(), base.getGreen(), base.getBlue(), aFar));
-        g2.draw(farP);
-        g2.setColor(new Color(base.getRed(), base.getGreen(), base.getBlue(), aNear));
-        g2.draw(nearP);
+        g2.setColor(getOrbitColor(i));
+        g2.draw(path);
         return true;
     }
 
