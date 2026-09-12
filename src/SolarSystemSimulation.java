@@ -2684,49 +2684,91 @@ public class SolarSystemSimulation extends JPanel
         if (oldAA != null) g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
     }
 
-    /** A comet's twin tails: a straight bluish ion tail + a broader, curved warm dust tail, both anti-sunward. */
+    /**
+     * A physically-styled comet head + twin tails, built from many soft translucent
+     * specks so it reads as a diffuse gas/dust stream rather than a solid shape:
+     *   • a straight, narrow, bluish ION tail pointing almost exactly anti-sunward,
+     *   • a broader, warm DUST tail that curves back toward the comet's orbital wake,
+     *   • a fuzzy green-white COMA glow around the nucleus.
+     * Length and density grow as the comet nears the Sun (sublimation).
+     */
     private void drawCometTail(Graphics2D g2, SmallBody sb, double px, double py, double sunSX, double sunSY) {
         double dx = px - sunSX, dy = py - sunSY, dlen = Math.hypot(dx, dy);
         if (dlen < 1e-6) return;
-        double ux = dx / dlen, uy = dy / dlen;             // anti-sunward (away from Sun)
+        double ux = dx / dlen, uy = dy / dlen;                        // anti-sunward
         double rAU = sb.sunDistM() / AU;
-        double activity = Math.max(0.0, Math.min(1.0, (3.5 - rAU) / 3.5));  // sublimation grows near the Sun
+        double activity = Math.max(0.0, Math.min(1.0, (3.5 - rAU) / 3.5));
         if (activity <= 0.02) return;
-        double lenPx = Math.max(activity * 0.35 * AU * METERS_TO_PIXELS * currentZoom, activity * 160);
-        double perpx = -uy, perpy = ux;
-        // Ion tail: straight, narrow, bluish.
-        drawTailPoly(g2, px, py, ux, uy, perpx, perpy, lenPx, 5 + 7 * activity,
-                new Color(150, 190, 255), activity, 0.0);
-        // Dust tail: broader, warmer, curved gently to one side.
-        drawTailPoly(g2, px, py, ux, uy, perpx, perpy, lenPx * 0.72, 10 + 14 * activity,
-                new Color(255, 224, 168), activity * 0.85, 0.20);
+        double lenPx = Math.max(activity * 0.55 * AU * METERS_TO_PIXELS * currentZoom, 70 + 240 * activity);
+
+        // Comet's screen-space motion direction (dust lags toward the orbital wake).
+        double dtv = 5.0 * 86400.0;
+        double[] pFut = keplerXYZ(sb.aM, sb.ecc,
+                solveEccentricAnomaly(sb.M0Rad + sb.meanMotion() * (simTimeSec + dtv), sb.ecc),
+                sb.inclRad, sb.omegaRad, sb.varpiRad);
+        double fx = projX(pFut[0] + sunBarycenterX), fy = projY(pFut[1] + sunBarycenterY, pFut[2]);
+        double mvx = fx - px, mvy = fy - py, mvl = Math.hypot(mvx, mvy);
+        double trailx = mvl > 1e-6 ? -mvx / mvl : ux, traily = mvl > 1e-6 ? -mvy / mvl : uy;
+
+        Graphics2D gg = (Graphics2D) g2.create();
+        gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        // Stable per-comet speckle pattern so the tail flows smoothly instead of flickering.
+        java.util.Random rnd = new java.util.Random(sb.name.hashCode() * 0x9E3779B97F4A7C15L + 17);
+
+        // ---- Dust tail: curved fan of warm specks ----
+        int nDust = 90 + (int) (240 * activity);
+        for (int i = 0; i < nDust; i++) {
+            double s = Math.pow(rnd.nextDouble(), 1.8);               // dense near the head
+            double curve = 0.60 * s;                                  // older dust curves toward the wake
+            double dirx = ux * (1 - curve) + trailx * curve;
+            double diry = uy * (1 - curve) + traily * curve;
+            double dl = Math.hypot(dirx, diry); dirx /= dl; diry /= dl;
+            double perpx = -diry, perpy = dirx;
+            double spread = (4 + 30 * s) * (0.5 + 0.5 * activity);    // widens downstream
+            double j = gauss(rnd) * spread;
+            double along = s * lenPx * 0.9;
+            double x = px + dirx * along + perpx * j;
+            double y = py + diry * along + perpy * j;
+            double fall = (1 - s) * (1 - s);
+            int alpha = (int) (60 * fall * activity);
+            if (alpha < 3) continue;
+            double rad = 1.4 + 3.0 * fall;
+            gg.setColor(new Color(255, 226, 168, Math.min(90, alpha)));
+            gg.fill(new Ellipse2D.Double(x - rad, y - rad, 2 * rad, 2 * rad));
+        }
+
+        // ---- Ion tail: straight, narrow, bluish, slightly longer ----
+        int nIon = 70 + (int) (170 * activity);
+        double perpIx = -uy, perpIy = ux;
+        for (int i = 0; i < nIon; i++) {
+            double s = Math.pow(rnd.nextDouble(), 1.3);
+            double along = s * lenPx * 1.18;
+            double spread = (1.5 + 7 * s) * (0.5 + 0.5 * activity); // stays close to the axis
+            double j = gauss(rnd) * spread;
+            double x = px + ux * along + perpIx * j;
+            double y = py + uy * along + perpIy * j;
+            double fall = (1 - s);
+            int alpha = (int) (55 * fall * fall * activity);
+            if (alpha < 3) continue;
+            double rad = 1.0 + 1.6 * fall;
+            gg.setColor(new Color(150, 195, 255, Math.min(85, alpha)));
+            gg.fill(new Ellipse2D.Double(x - rad, y - rad, 2 * rad, 2 * rad));
+        }
+
+        // ---- Coma: soft radial glow around the nucleus (greenish, like real comets) ----
+        float comaR = (float) (7 + 12 * activity);
+        gg.setPaint(new RadialGradientPaint(new Point2D.Double(px, py), comaR,
+                new float[]{0f, 0.45f, 1f},
+                new Color[]{new Color(205, 255, 215, (int) (170 * activity)),
+                            new Color(150, 235, 205, (int) (70 * activity)),
+                            new Color(150, 235, 205, 0)}));
+        gg.fill(new Ellipse2D.Double(px - comaR, py - comaR, 2 * comaR, 2 * comaR));
+        gg.dispose();
     }
 
-    /** Fill one tapered, optionally curved tail, fading from the nucleus (bright) to a transparent tip. */
-    private void drawTailPoly(Graphics2D g2, double px, double py, double ux, double uy,
-                              double perpx, double perpy, double len, double halfW,
-                              Color base, double alphaScale, double curve) {
-        final int N = 18;
-        double[] ax = new double[N + 1], ay = new double[N + 1], w = new double[N + 1];
-        for (int k = 0; k <= N; k++) {
-            double t = k / (double) N;
-            double along = t * len, bend = curve * len * t * t;
-            ax[k] = px + ux * along + perpx * bend;
-            ay[k] = py + uy * along + perpy * bend;
-            w[k] = halfW * (1.0 - t) * (1.0 - t) + 0.6;    // taper to a point
-        }
-        Path2D.Double poly = new Path2D.Double();
-        poly.moveTo(ax[0] + perpx * w[0], ay[0] + perpy * w[0]);
-        for (int k = 1; k <= N; k++) poly.lineTo(ax[k] + perpx * w[k], ay[k] + perpy * w[k]);
-        for (int k = N; k >= 0; k--) poly.lineTo(ax[k] - perpx * w[k], ay[k] - perpy * w[k]);
-        poly.closePath();
-        float a = (float) Math.min(1.0, Math.max(0.0, alphaScale));
-        Color c0 = new Color(base.getRed(), base.getGreen(), base.getBlue(), (int) (150 * a));
-        Color c1 = new Color(base.getRed(), base.getGreen(), base.getBlue(), 0);
-        float tx = (float) ax[N], ty = (float) ay[N];
-        if (Math.abs(tx - px) < 0.5f && Math.abs(ty - py) < 0.5f) return;   // degenerate gradient guard
-        g2.setPaint(new GradientPaint((float) px, (float) py, c0, tx, ty, c1));
-        g2.fill(poly);
+    /** Approximately-normal random in ~[-1,1] (sum of two uniforms), for tail speckle spread. */
+    private static double gauss(java.util.Random r) {
+        return (r.nextDouble() + r.nextDouble() - 1.0);
     }
 
     /* ---------- Real-date scrubbing + adding minor bodies (UI) ---------- */
