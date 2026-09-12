@@ -86,6 +86,24 @@ public class SolarSystemSimulation extends JPanel
     private double viewPitchRad = 0.0;
     private double viewCosP = 1.0, viewSinP = 0.0;
     static final double MAX_PITCH_RAD = Math.toRadians(88);
+    /** Interactive launches start slightly oblique so the scene reads as 3-D; press \ for top-down. */
+    private static final double DEFAULT_VIEW_PITCH_DEG = 24.0;
+
+    /**
+     * One on-screen text label, collected during the paint pass and placed afterwards by
+     * {@link #drawPendingLabels} so labels never overlap: higher-priority / nearer bodies claim
+     * their spot first and lower-priority ones that can't find clear space are dropped.
+     */
+    private static final class LabelReq {
+        final String text; final double ax, ay, bodyR, depth; final Color color;
+        final float size; final boolean bold; final int priority;
+        LabelReq(String text, double ax, double ay, double bodyR, Color color,
+                 float size, boolean bold, int priority, double depth) {
+            this.text = text; this.ax = ax; this.ay = ay; this.bodyR = bodyR; this.color = color;
+            this.size = size; this.bold = bold; this.priority = priority; this.depth = depth;
+        }
+    }
+    private final java.util.ArrayList<LabelReq> pendingLabels = new java.util.ArrayList<>();
 
     /** True if camera is still moving toward target (smooth approach) */
     private boolean cameraIsApproaching = false;
@@ -564,7 +582,7 @@ public class SolarSystemSimulation extends JPanel
 
     /** Built-in catalog of real minor bodies (comets, asteroids, distant objects). */
     private final java.util.List<SmallBody> smallBodies = new java.util.ArrayList<>();
-    private boolean showComets = true;      // comets visible by default
+    private boolean showComets = false;     // comets off by default (toggle in the Objects menu)
     private boolean showAsteroids = true;   // named asteroids visible by default
     private boolean showDistantBodies = false;  // far centaurs/TNOs off by default (huge orbits)
     private boolean showSmallBodyLabels = true;
@@ -645,12 +663,8 @@ public class SolarSystemSimulation extends JPanel
         addMouseListener(this);
         addMouseMotionListener(this);
 
-        // Initialize all planets as visible by default
+        // All planets and dwarf planets (Pluto, Ceres, Haumea, Eris) visible by default.
         Arrays.fill(planetVisible, true);
-        // Hide dwarf planets except Pluto (Pluto=8, Ceres=9, Haumea=10, Eris=11)
-        planetVisible[9] = false;  // Ceres
-        planetVisible[10] = false; // Haumea
-        planetVisible[11] = false; // Eris
 
         // Initialize planet positions at J2000 epoch
         for (int i = 0; i < NAMES.length; i++) {
@@ -724,7 +738,14 @@ public class SolarSystemSimulation extends JPanel
         // Optional initial view tilt (degrees off top-down), e.g. -Dsss.pitch=25 or for shots.
         try {
             String pitchProp = System.getProperty("sss.pitch");
-            if (pitchProp != null) setViewPitch(Math.toRadians(Double.parseDouble(pitchProp)));
+            if (pitchProp != null) {
+                setViewPitch(Math.toRadians(Double.parseDouble(pitchProp)));
+            } else if (System.getProperty("sss.shot") == null
+                    && System.getProperty("sss.lessonshot") == null) {
+                // Interactive launch: start slightly oblique for an immediate sense of depth.
+                // (Head-less showcase/lesson renders stay top-down so their framing is unchanged.)
+                setViewPitch(Math.toRadians(DEFAULT_VIEW_PITCH_DEG));
+            }
         } catch (NumberFormatException ignored) { }
         lastNanos = System.nanoTime();
         if (System.getProperty("sss.shot") == null) {
@@ -1012,7 +1033,7 @@ public class SolarSystemSimulation extends JPanel
         g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
 
         int cx = getWidth() / 2, cy = getHeight() / 2;
-        java.util.List<Rectangle> labelBoxes = new ArrayList<>();
+        pendingLabels.clear();   // collected during this paint, placed non-overlapping at the end
 
         // Deep-space background + starfield
         drawStarfield(g2, getWidth(), getHeight());
@@ -1094,8 +1115,15 @@ public class SolarSystemSimulation extends JPanel
         // Draw ice lines
         drawIceLines(g2, cx, cy);
 
-        // Draw planets and moons
-        for (int i = 0; i < NAMES.length; i++) {
+        // Draw planets and moons, far side first so nearer bodies occlude farther ones
+        // (painter's algorithm) — the depth cue that makes the tilted view read as 3-D.
+        Integer[] drawOrder = new Integer[NAMES.length];
+        for (int k = 0; k < drawOrder.length; k++) drawOrder[k] = k;
+        Arrays.sort(drawOrder, (p, q) -> Double.compare(
+                viewDepth(planetY[p] + sunBarycenterY, planetZ[p]),
+                viewDepth(planetY[q] + sunBarycenterY, planetZ[q])));
+        for (int oi = 0; oi < drawOrder.length; oi++) {
+            int i = drawOrder[oi];
             if (isPlanetVisible(i)) continue;
 
             // Planet positions are heliocentric, so add Sun's barycentric offset
@@ -1264,66 +1292,15 @@ public class SolarSystemSimulation extends JPanel
                         ATMO_RGB[i], ATMO_STRENGTH[i], ATMO_HEIGHT[i]);
             }
 
-            // Draw label with overlap avoidance and zoom-aware sizing
+            // Queue the name for the non-overlapping label pass. Major planets outrank dwarf
+            // planets, and the selected/followed body outranks everything, so crowded views drop
+            // the least important labels rather than letting them collide.
             if (showLabels) {
-                // Scale labels based on zoom level
+                int pri = (i < 8) ? 80 : 62;
+                if (i == selectedPlanet || i == cameraFocusIndex) pri += 40;
                 float labelSize = (float)(11f + Math.min(3f, currentZoom * 0.5f));
-                Font labelFont = g2.getFont().deriveFont(Font.PLAIN, labelSize);
-                g2.setFont(labelFont);
-
-                g2.setColor(Color.WHITE);
-                String name = NAMES[i];
-                FontMetrics labelFm = g2.getFontMetrics();
-                int w = labelFm.stringWidth(name), h = labelFm.getHeight();
-
-                // Position label away from planet, scaling offset inversely with zoom
-                // When zoomed out, labels should be closer to planets
-                double angle = Math.atan2(py - cy, px - cx);
-                double baseOffset = 8.0; // Minimum offset from planet edge
-                double zoomScaledOffset = Math.min(15.0, baseOffset * Math.max(1.0, currentZoom));
-                double labelOffset = pr + zoomScaledOffset;
-                int lx = (int)(px + Math.cos(angle) * labelOffset);
-                int ly = (int)(py + Math.sin(angle) * labelOffset);
-                Rectangle box = new Rectangle(lx, ly - h, w, h);
-
-                // Smart overlap avoidance with limited retries
-                int maxTries = (currentZoom < 1.0) ? 2 : 4; // Fewer retries when zoomed out
-                int tries = 0;
-                boolean foundSpot = false;
-                while (tries < maxTries) {
-                    boolean overlap = false;
-                    for (Rectangle r : labelBoxes) {
-                        if (r.intersects(box)) {
-                            // When zoomed out, try moving horizontally as well as vertically
-                            if (currentZoom < 1.0 && tries % 2 == 1) {
-                                box.x += w / 2;
-                            } else {
-                                box.y += h;
-                            }
-                            overlap = true;
-                            tries++;
-                            break;
-                        }
-                    }
-                    if (!overlap) {
-                        foundSpot = true;
-                        break;
-                    }
-                }
-
-                // Only draw if we found a non-overlapping spot or if zoomed in enough
-                if (foundSpot || currentZoom > 3.0) {
-                    labelBoxes.add(box);
-                    // Add subtle shadow for better readability when zoomed out
-                    if (currentZoom < 2.0) {
-                        g2.setColor(new Color(0, 0, 0, 150));
-                        g2.drawString(name, box.x + 1, box.y + h - 2);
-                        g2.setColor(Color.WHITE);
-                    }
-                    g2.drawString(name, box.x, box.y + h - 3);
-                }
-
-                g2.setFont(g2.getFont().deriveFont(Font.PLAIN, 12f)); // Reset font
+                pendingLabels.add(new LabelReq(NAMES[i], px, py, pr, Color.WHITE,
+                        labelSize, i < 8, pri, viewDepth(worldY, worldZ)));
             }
 
 
@@ -1364,6 +1341,14 @@ public class SolarSystemSimulation extends JPanel
                         double mpx = projX(moonWorldX);
                         double mpy = projY(moonWorldY, moonWorldZ);
                         double mr = Math.max(RADIUS_M[i] * MOON_SIZE_RATIO[i][m] * METERS_TO_PIXELS * currentZoom, 0.6);
+
+                        // Depth cue: a moon on the far side of the planet, projected inside its
+                        // disc, is hidden behind it — skip it rather than drawing it on top.
+                        double moonDepth = viewDepth(moonWorldY, moonWorldZ);
+                        double planetDepth = viewDepth(worldY, worldZ);
+                        if (moonDepth < planetDepth && Math.hypot(mpx - px, mpy - py) < pr - mr) {
+                            continue;
+                        }
 
                         // Textured sphere when a map exists (Luna), else shading/flat
                         String moonKey = MOON_NAMES[i][m].toLowerCase();
@@ -1419,6 +1404,9 @@ public class SolarSystemSimulation extends JPanel
         if (showVelocityVectors) {
             drawVelocityVectors(g2, cx, cy);
         }
+
+        // Place all collected body labels in one non-overlapping pass (over every body).
+        drawPendingLabels(g2);
 
         // Draw dynamic scale ruler at bottom-left
         drawDynamicScale(g2, getHeight());
@@ -2477,7 +2465,7 @@ public class SolarSystemSimulation extends JPanel
         Path2D.Double path = new Path2D.Double();
         double a = A_METERS[i], e = ECC[i];
         double incl = planetIncl(i), Om = planetOmega(i), vp = planetVarpi(i);
-        final int seg = 512;   // smooth enough for an on-screen ellipse; rebuilt every frame
+        int seg = orbitSegments(a);
         for (int j = 0; j <= seg; j++) {
             double E = 2 * Math.PI * j / seg;
             double[] w = keplerXYZ(a, e, E, incl, Om, vp);       // {wx, wy, wz} heliocentric
@@ -2487,6 +2475,23 @@ public class SolarSystemSimulation extends JPanel
         }
         path.closePath();
         return path;
+    }
+
+    /**
+     * Number of straight segments to approximate an orbit of semi-major axis {@code aMeters}
+     * so the polyline stays visually smooth <em>at the current zoom</em>. A fixed segment count
+     * (the old 512) is fine zoomed out, but when zoomed in on a body the chords of a coarse
+     * polygon bow visibly inside the true ellipse — the chord sagitta grows with on-screen
+     * radius — so the planet, which is drawn at its exact position, appears to sit off its own
+     * ring and to "oscillate" toward and away from it as it crosses successive chords. Scaling
+     * the count with the on-screen size keeps the chord error sub-pixel: sagitta ≈ R·(π/seg)²/2,
+     * so seg ≈ π·√(R_px / targetSagitta). Clamped so it is cheap zoomed out and bounded when
+     * zoomed extremely far in (only on-screen orbits are ever tessellated, see the cull in paint).
+     */
+    private int orbitSegments(double aMeters) {
+        double rPx = aMeters * METERS_TO_PIXELS * currentZoom;   // on-screen semi-major axis (px)
+        int seg = (int) Math.ceil(Math.PI * Math.sqrt(Math.max(1.0, rPx) / 0.3));
+        return Math.max(256, Math.min(seg, 16384));
     }
 
     // ------- 3-D Keplerian state + secular precession -------
@@ -2709,7 +2714,7 @@ public class SolarSystemSimulation extends JPanel
             // Orbit ring — skipped for very large orbits (a > 90 AU) whose ellipse would be absurd.
             if (showPlanetOrbits && sb.aM / AU <= 90.0) {
                 Path2D.Double path = new Path2D.Double();
-                final int seg = 360;
+                int seg = orbitSegments(sb.aM);   // zoom-adaptive so the ring stays smooth up close
                 for (int j = 0; j <= seg; j++) {
                     double E = 2 * Math.PI * j / seg;
                     double[] w = keplerXYZ(sb.aM, sb.ecc, E, sb.inclRad, sb.omegaRad, sb.varpiRad);
@@ -2728,9 +2733,10 @@ public class SolarSystemSimulation extends JPanel
             g2.setColor(sb.color);
             g2.fill(new Ellipse2D.Double(px - r, py - r, 2 * r, 2 * r));
             if (showSmallBodyLabels) {
-                g2.setColor(new Color(225, 232, 245, 190));
-                g2.setFont(oldFont.deriveFont(Font.PLAIN, 10.5f));
-                g2.drawString(sb.name, (int) (px + r + 4), (int) (py - r - 2));
+                // Lowest priority: minor-body labels yield to planets/moons and are dropped first.
+                int pri = (sb.cls == BodyClass.DISTANT) ? 12 : 18;
+                pendingLabels.add(new LabelReq(sb.name, px, py, r, new Color(225, 232, 245, 220),
+                        10.5f, false, pri, viewDepth(sb.y + sunBarycenterY, sb.z)));
             }
         }
         g2.setFont(oldFont);
@@ -2888,6 +2894,14 @@ public class SolarSystemSimulation extends JPanel
     private double projY(double worldY, double worldZ) {
         double s = METERS_TO_PIXELS * currentZoom;
         return getHeight() / 2.0 + ((worldY - camY) * viewCosP - (worldZ - camZ) * viewSinP) * s;
+    }
+    /**
+     * Camera-forward depth of a world point (metres along the view direction); larger = nearer the
+     * viewer. Drives the painter's-algorithm draw order so nearer bodies occlude farther ones —
+     * the main depth cue once the view is tilted off top-down. Independent of screen-x (orthographic).
+     */
+    private double viewDepth(double worldY, double worldZ) {
+        return (worldY - camY) * viewSinP + (worldZ - camZ) * viewCosP;
     }
 
     // ===================== Textured 3-D sphere rendering =====================
@@ -3622,52 +3636,34 @@ public class SolarSystemSimulation extends JPanel
         int scaleX = scaleRulerX;
         int scaleY = (scaleRulerY < 0) ? (canvasHeight + scaleRulerY) : scaleRulerY;
 
-        // Determine the scale distance in pixels
-        // We want a nice round number: 50, 100, 200, 500, etc.
-        double pixelsPerAU = METERS_TO_PIXELS * currentZoom * AU;
+        // Determine the scale distance in pixels, choosing a nice round number in a unit
+        // appropriate to the current zoom: AU out at planetary scales, kilometres closer in,
+        // metres when zoomed onto a surface. A second line always shows the light-travel time
+        // across the bar (light-hours down to light-nanoseconds), so "ls" is covered too.
+        double pixelsPerMeter = METERS_TO_PIXELS * currentZoom;
         double minPixels = 80.0; // Minimum pixels for the scale bar
         double maxPixels = 150.0; // Maximum pixels for the scale bar
 
-        // Calculate what 1 AU represents in pixels at current zoom
-        double distanceInAUForMinPixels = minPixels / pixelsPerAU;
+        double minMeters = minPixels / pixelsPerMeter;   // shortest physical length the bar may show
 
-        // Find a nice round number (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, etc.)
-        double scaleAU = findNiceRoundNumber(distanceInAUForMinPixels);
-        double scalePixels = scaleAU * pixelsPerAU;
+        double unitMeters; String unitName;
+        if (minMeters >= 0.001 * AU)  { unitMeters = AU;     unitName = "AU"; }
+        else if (minMeters >= 1000.0) { unitMeters = 1000.0; unitName = "km"; }
+        else                          { unitMeters = 1.0;    unitName = "m";  }
 
-        // Limit scale bar size
-        while (scalePixels > maxPixels && scaleAU >= 0.01) {
-            scaleAU = scaleAU / 2.0;
-            scalePixels = scaleAU * pixelsPerAU;
-        }
-        while (scalePixels < minPixels && scaleAU < 100000) {
-            scaleAU = scaleAU * 2.0;
-            scalePixels = scaleAU * pixelsPerAU;
-        }
-
-        // Convert AU to other units
-        double scaleMeters = scaleAU * AU;
-        double lightSecond = 299792458.0; // meters per light-second
-        double scaleLightSeconds = scaleMeters / lightSecond;
-
-        String distanceLabel;
-        if (scaleAU >= 1.0) {
-            distanceLabel = String.format("%.2f AU", scaleAU);
-        } else {
-            distanceLabel = String.format("%.4f AU", scaleAU);
+        // Smallest nice 1-2-5 count in that unit whose bar is at least minPixels, then halved
+        // as needed so it never exceeds maxPixels.
+        double niceCount = findNiceRoundNumber(minMeters / unitMeters);
+        double scaleMeters = niceCount * unitMeters;
+        double scalePixels = scaleMeters * pixelsPerMeter;
+        while (scalePixels > maxPixels && niceCount > 1e-12) {
+            niceCount /= 2.0;
+            scaleMeters = niceCount * unitMeters;
+            scalePixels = scaleMeters * pixelsPerMeter;
         }
 
-        // Format light-time distance
-        String timeLightLabel;
-        if (scaleLightSeconds >= 3600.0) {
-            double hours = scaleLightSeconds / 3600.0;
-            timeLightLabel = String.format("%.2f light-hours", hours);
-        } else if (scaleLightSeconds >= 60.0) {
-            double minutes = scaleLightSeconds / 60.0;
-            timeLightLabel = String.format("%.2f light-minutes", minutes);
-        } else {
-            timeLightLabel = String.format("%.2f light-seconds", scaleLightSeconds);
-        }
+        String distanceLabel = formatScaleCount(niceCount, unitName);
+        String timeLightLabel = formatLightTime(scaleMeters);
 
         // Modern panel: soft shadow, gradient fill, subtle accent border
         int panelWidth = 200;
@@ -3736,6 +3732,87 @@ public class SolarSystemSimulation extends JPanel
             }
         }
         return 10 * magnitude;
+    }
+
+    /** Format a scale-bar count with its unit, trimming trailing zeros (e.g. "2 km", "0.5 AU"). */
+    private String formatScaleCount(double v, String unit) {
+        String num = (v >= 1000.0) ? String.format("%,.0f", v) : trimZeros(String.format("%.4f", v));
+        return num + " " + unit;
+    }
+
+    private static String trimZeros(String s) {
+        if (s.indexOf('.') >= 0) {
+            s = s.replaceAll("0+$", "");
+            if (s.endsWith(".")) s = s.substring(0, s.length() - 1);
+        }
+        return s;
+    }
+
+    /**
+     * Light-travel time across a physical length, in the most readable unit — light-hours out
+     * at planetary distances, down through light-seconds to light-nanoseconds when zoomed in
+     * onto a surface (1 m of light-travel ≈ 3.3 light-ns).
+     */
+    private String formatLightTime(double meters) {
+        double ls = meters / 299_792_458.0;                     // light-seconds
+        if (ls >= 3600.0) return String.format("%.2f light-hours",   ls / 3600.0);
+        if (ls >= 60.0)   return String.format("%.2f light-minutes", ls / 60.0);
+        if (ls >= 1.0)    return String.format("%.2f light-seconds", ls);
+        if (ls >= 1e-3)   return String.format("%.2f light-ms", ls * 1e3);
+        if (ls >= 1e-6)   return String.format("%.2f light-µs", ls * 1e6);
+        return String.format("%.2f light-ns", ls * 1e9);
+    }
+
+    /**
+     * Place and draw every label collected during the paint pass so none overlap. Labels are
+     * honoured in priority order (Sun/planets &gt; dwarf planets &gt; moons &gt; minor bodies, with the
+     * selected body boosted, ties broken by nearer depth): each claims the first of several
+     * candidate slots around its body that is on-screen and clear of already-placed labels, and
+     * any label that can't find room is dropped. This declutters crowded views instead of letting
+     * names pile on top of each other.
+     */
+    private void drawPendingLabels(Graphics2D g2) {
+        if (pendingLabels.isEmpty()) return;
+        pendingLabels.sort((a, b) -> {
+            if (a.priority != b.priority) return Integer.compare(b.priority, a.priority);
+            if (a.depth != b.depth)       return Double.compare(b.depth, a.depth);   // nearer first
+            return Double.compare(b.bodyR, a.bodyR);
+        });
+        // Candidate directions around a body, tried in order (right, left, up, down, diagonals).
+        final double[][] dirs = {{1, 0}, {-1, 0}, {0, -1}, {0, 1}, {1, -1}, {-1, -1}, {1, 1}, {-1, 1}};
+        final int W = getWidth(), H = getHeight();
+        java.util.ArrayList<Rectangle> placed = new java.util.ArrayList<>();
+        Font baseFont = g2.getFont();
+        for (LabelReq L : pendingLabels) {
+            g2.setFont(baseFont.deriveFont(L.bold ? Font.BOLD : Font.PLAIN, L.size));
+            FontMetrics fm = g2.getFontMetrics();
+            int tw = fm.stringWidth(L.text), th = fm.getHeight();
+            double gap = L.bodyR + 6;
+            Rectangle chosen = null;
+            search:
+            for (int ring = 0; ring < 3 && chosen == null; ring++) {
+                double off = gap + ring * (th + 5);
+                for (double[] d : dirs) {
+                    double ax = L.ax + d[0] * off, ay = L.ay + d[1] * off;
+                    int lx = (d[0] > 0) ? (int) ax : (d[0] < 0) ? (int) (ax - tw) : (int) (ax - tw / 2.0);
+                    int top = (int) (ay - th / 2.0);
+                    Rectangle box = new Rectangle(lx, top, tw, th);
+                    if (box.x < 3 || box.y < 3 || box.x + box.width > W - 3 || box.y + box.height > H - 3)
+                        continue;
+                    boolean clear = true;
+                    for (Rectangle r : placed) if (r.intersects(box)) { clear = false; break; }
+                    if (clear) { chosen = box; break search; }
+                }
+            }
+            if (chosen == null) continue;   // no room — drop this label
+            placed.add(chosen);
+            int baseline = chosen.y + fm.getAscent();
+            g2.setColor(new Color(0, 0, 0, 170));
+            g2.drawString(L.text, chosen.x + 1, baseline + 1);
+            g2.setColor(L.color);
+            g2.drawString(L.text, chosen.x, baseline);
+        }
+        g2.setFont(baseFont);
     }
 
     /**
@@ -5360,7 +5437,7 @@ public class SolarSystemSimulation extends JPanel
 
         // Objects menu — toggle the built-in catalog of real minor bodies
         JMenu objectsMenu = new JMenu("Objects");
-        StayOpenCheckBoxMenuItem cometsItem = new StayOpenCheckBoxMenuItem("Comets  (with tails)", true);
+        StayOpenCheckBoxMenuItem cometsItem = new StayOpenCheckBoxMenuItem("Comets  (with tails)", false);
         cometsItem.addActionListener(_ -> { panel.showComets = cometsItem.isSelected(); panel.repaint(); });
         StayOpenCheckBoxMenuItem asteroidsItem = new StayOpenCheckBoxMenuItem("Asteroids & near-Earth objects", true);
         asteroidsItem.addActionListener(_ -> { panel.showAsteroids = asteroidsItem.isSelected(); panel.repaint(); });
