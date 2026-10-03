@@ -221,7 +221,7 @@ final class NBodyEphemeris {
     /** A copy of the canonical state at grid step k, integrating from the nearest cache. */
     private double[] stateAt(long k) {
         long base = curStep;
-        for (Map.Entry<Long, double[]> c : new Map.Entry[]{ checkpoints.floorEntry(k), checkpoints.ceilingEntry(k) }) {
+        for (Map.Entry<Long, double[]> c : java.util.Arrays.asList(checkpoints.floorEntry(k), checkpoints.ceilingEntry(k))) {
             if (c != null && Math.abs(k - c.getKey()) < Math.abs(k - base)) base = c.getKey();
         }
         double[] s = (base == curStep ? cur : checkpoints.get(base)).clone();

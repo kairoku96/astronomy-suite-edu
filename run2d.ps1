@@ -1,4 +1,4 @@
-# Build and run the 2-D Solar System simulation (src/SolarSystemSimulation.java).
+# Build and run the Solar System simulation (src/SolarSystemSimulation.java and friends).
 #
 # The sim depends on JOGL (Tier-2 GPU sphere shader in GLSphereRenderer.java),
 # so it is built/run with the jogl-all + gluegen classpath below.
@@ -35,13 +35,12 @@ $cp = @(
 $out = Join-Path $root "out2d"
 New-Item -ItemType Directory -Force $out | Out-Null
 
-Write-Host "Compiling 2-D sim (+ GPU sphere shader)..." -ForegroundColor Cyan
-& "$jdk/javac.exe" -cp $cp -d $out `
-    (Join-Path $root "src\SolarSystemSimulation.java") `
-    (Join-Path $root "src\GLSphereRenderer.java") `
-    (Join-Path $root "src\MoonEphemeris.java") `
-    (Join-Path $root "src\LessonStudio.java")
-if (-not $?) { throw "Compilation failed" }
+Write-Host "Compiling the sim..." -ForegroundColor Cyan
+$sources = Get-ChildItem (Join-Path $root "src") -Recurse -Filter *.java | ForEach-Object { $_.FullName }
+$ErrorActionPreference = "Continue"     # javac notes on stderr are not failures; the exit code is
+& "$jdk/javac.exe" -encoding UTF-8 -cp $cp -d $out @sources
+$ErrorActionPreference = "Stop"
+if ($LASTEXITCODE -ne 0) { throw "Compilation failed" }
 Write-Host "Build OK" -ForegroundColor Green
 if ($BuildOnly) { return }
 

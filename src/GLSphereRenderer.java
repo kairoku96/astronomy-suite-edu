@@ -428,7 +428,7 @@ final class GLSphereRenderer implements GLEventListener {
         "  vec3 N = vec3(vP.x, vP.y, nz);\n" +
         "  float lat = asin(clamp(dot(N, uPole), -1.0, 1.0));\n" +
         "  float lon = atan(dot(N, uB), dot(N, uA));\n" +
-        "  float u = fract(-(lon + uSpin) / (2.0*PI));\n" +   // negated: correct east-west (un-mirror)
+        "  float u = fract(0.5 + (lon - uSpin) / (2.0*PI));\n" +   // prime meridian at frame lon uSpin
         "  float v = 0.5 - lat/PI;\n" +
         "  vec3 base = texture2D(uDiffuse, vec2(u, v)).rgb;\n" +
         "  if (uEmissive == 1){ gl_FragColor = vec4(base, 1.0); return; }\n" +
@@ -462,7 +462,7 @@ final class GLSphereRenderer implements GLEventListener {
         "  vec3 s = base;\n" +
         "  float cloud = 0.0;\n" +
         "  if (uHasClouds == 1){\n" +
-        "    float cu = fract(-(lon + uCloudSpin) / (2.0*PI));\n" +   // match surface (un-mirror)
+        "    float cu = fract(0.5 + (lon - uCloudSpin) / (2.0*PI));\n" +   // same mapping as the surface
         "    vec3 cp = texture2D(uClouds, vec2(cu, v)).rgb;\n" +
         "    cloud = (cp.r + cp.g + cp.b) / 3.0;\n" +
         "    cloud = clamp((cloud - 0.12) / 0.88, 0.0, 1.0);\n" +

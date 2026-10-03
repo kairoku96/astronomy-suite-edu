@@ -18,6 +18,13 @@ of the **real star field** (Yale Bright Star Catalogue + Milky Way). It hosts th
 from any place on Earth, and a catalog of real comets and minor bodies. The 3-D view
 tilts off top-down to reveal orbital inclination and out-of-plane motion.
 
+Real **spacecraft** fly inside the same scene: Voyager 1 and 2, Cassini, New Horizons and
+Juno from JPL's trajectories, and the Moon missions from Apollo 8 to Artemis II played
+back in 3-D with a mission timeline. There is a **Lambert transfer planner** with porkchop
+plots, a **sky-events finder** (conjunctions, oppositions, elongations, transits,
+occultations, meteor showers, eclipses), and a **light-time** view that shows where things
+appear from Earth.
+
 ## Requirements
 
 - **JDK 24** (the sim uses unnamed `_ ->` variables and other Java 22+ features).
@@ -83,7 +90,9 @@ camera by a small depth-sorted renderer (`R3` in `LessonStudio.java`), and anyth
 behind the Sun's disc is hidden by it.
 
 Developer flags: `-Dsss.lesson=N` starts lesson N at start-up (0 = just open the lesson list);
-`-Dsss.lessonshot=<dir>` renders every step of every lesson to PNGs head-less and exits.
+`-Dsss.lessonshot=<dir>` renders every step of every lesson to PNGs head-less and exits;
+`-Dsss.missionshot=<dir>[,id…]` renders every timeline event of the missions (e.g.
+`out/m,apollo11`) head-less and exits.
 
 ## AI Assistant
 
@@ -230,6 +239,17 @@ planets follow their IAU prime meridian.
   monotonic penumbra, and is invariant under any 3-D camera rotation and any
   occluder distance along the Sun line (a true geometric shadow, never a
   screen-space band).
+- **`HandednessTest`** — the 3-D view is a proper picture, not a mirror image. Seen from
+  above the ecliptic the planets go round counter-clockwise, and the background sky shows
+  the constellations the right way round. (Both were once mirrored by a sign in the
+  projection, which also needed the textures and eclipse shadows to be flipped back.)
+- **`MoonOrientationTest`** — the Moon's IAU orientation keeps its near side to the
+  Earth within its librations (8.1° in longitude, 6.9° in latitude), and Tranquility Base
+  faced the Earth during Apollo 11.
+
+Every planet spins about its **IAU pole**, and the Moon's texture follows its IAU orientation
+(librations included), so the near side faces the Earth and the Apollo landing sites sit on
+the maria they landed in.
 
 ## Real comets and minor bodies
 
@@ -320,6 +340,165 @@ Controls: **drag** or arrows to look, **wheel** / `+` `-` to zoom (200° down to
 few arcminutes), `C` lines, `N` names, `G` alt-az grid, `Q` equatorial grid,
 `E` ecliptic, `F` ground, `A` atmosphere, `T` now, **`Esc`/`K`** back to space.
 
+## Spacecraft missions
+
+**Missions → Moon missions / Deep space** plays a real mission inside the solar-system view.
+The clock jumps to the launch, the camera follows the spacecraft, and a **mission panel**
+docks on the right of the canvas. It shows mission elapsed time, the current phase,
+distances and speeds, and a **timeline**; click any event to jump there, or use ◀ / ▶.
+The panel's buttons set the **pace** (×¼ to ×8), the **camera** (auto framing, free, or off
+after you click a planet), and for lunar flights the trail's **frame**:
+
+- *Rotating*: the Earth–Moon rotating frame of the classic figure-eight free-return
+  diagrams. Each past point is turned and scaled with the Moon's motion since then, so the
+  trail stays attached to the Moon as it is now.
+- *Inertial*: the path as it really ran relative to the stars.
+
+**Auto pace** sets the clock so the followed craft crosses the view in about twelve seconds,
+from its speed relative to the nearest body. It slows right down for a landing and races
+through a three-day coast. **Auto camera** frames each phase, and the timeline's events
+carry close-up hints for undocking, landing and rendezvous. Click a craft's marker to follow
+it (the lunar module, say). With **Missions → Show spacecraft in flight**, every probe whose
+mission spans the current date is marked even when no mission is playing.
+
+| Mission | Craft | Source of the trajectory |
+| ------- | ----- | ------------------------ |
+| Apollo 8, 11, 13, 17 | CSM (and LM for 11 and 17) | reconstructed (below) |
+| Chandrayaan-3 | Vikram | JPL Horizons −158 |
+| Artemis I | Orion | JPL Horizons −1023 |
+| Artemis II | Orion *Integrity* | JPL Horizons −1024 |
+| Voyager 1, Voyager 2 | | JPL Horizons −31, −32 (to 2030) |
+| Cassini | | JPL Horizons −82 |
+| New Horizons | | JPL Horizons −98 (to 2030) |
+| Juno | | JPL Horizons −61 (to 2025-09-30) |
+
+**Playback.** Tracks are stored as segments of ecliptic-J2000 states relative to a centre
+body. The base segment is relative to the Sun (or the Earth for lunar flights), and local
+segments are relative to the planet or the Moon being visited. A craft is drawn at the sim's
+*own* position of that centre plus the interpolated offset, so a flyby hugs the rendered
+planet and a lunar orbit hugs the rendered Moon. `tools.FetchMissions` downloads each track
+from Horizons. It samples finer near close approaches, where the dynamical time √(r³/GM) is
+short, then keeps only the samples cubic Hermite interpolation needs to reproduce every
+dropped one within max(0.2 km, 10⁻⁵ r). That is exactly how the sim interpolates. Flybys
+and other events in the timeline are **measured from the track itself**, with
+golden-section searches on the interpolant.
+
+**Apollo, reconstructed.** JPL has no ephemerides for the Apollo command modules, so
+`ApolloReconstruction` flies them again. It integrates the craft through the sim's own
+Earth (+ J2), Moon (ELP-2000/82) and Sun with an adaptive Dormand–Prince 5(4), and targets
+the events NASA documented (Orloff, *Apollo by the Numbers*, NASA SP-2000-4029):
+
+1. **Translunar coast.** The state at pericynthion (documented time and altitude) is solved
+   for, integrating *backwards* until it matches the documented TLI altitude, inertial
+   speed, flight-path angle and orbital inclination. Levenberg–Marquardt runs first on a
+   smooth conic version of the residual, then on the exact one. For a landing mission, the
+   arrival plane must pass over the landing site at the landing instant. All Apollo lunar
+   orbits are retrograde.
+2. **Lunar orbit.** Each documented burn (LOI, circularisation, descent-orbit insertion) is
+   an impulse that sets the documented apolune × perilune. One burn is trimmed by a few km so
+   the LM arrives over the powered-descent point on time: −3.9 km for Apollo 11 and −9.8 km
+   for Apollo 17, starting from a natural phase error of ~14°.
+3. **Landing and ascent** follow polynomial-in-time guidance profiles (the form of Apollo's
+   P63/P12 guidance) between the real orbital states and the real site. The site is placed
+   on the Moon with its **IAU orientation model**, librations included. **Rendezvous** is a
+   two-impulse Lambert transfer from the documented TPI time, corrected for the
+   perturbations the two-body solution ignores.
+4. **Transearth injection** is the impulse, timed within a revolution of the documented burn
+   for least Δv, that reaches the entry interface (121.9 km) at the documented instant with
+   Apollo's −6.5° entry angle. For Apollo 13, the burn is the PC+2 burn at its documented
+   time.
+
+Independent checks that come out of the physics rather than being put in:
+- Apollo 13's computed Earth occultation behind the Moon, 077:08:22–077:33:24 GET, against
+  the documented 077:08:35–077:33:10.
+- Apollo 13's solved PC+2 burn, 252 m/s, against the 262 m/s (860.5 ft/s) flown.
+- The landing-phasing trims, a few km for a ~14° natural phase error.
+
+Rebuild the data with `java tools.FetchMissions [id…]` (needs network) and
+`java ApolloReconstruction [id…]`, run from the project root on the compiled classes.
+
+## Transfer planner
+
+**Missions → Transfer planner** docks a planner beside the view. Pick two bodies and a
+departure date (or **Sim date**), and a time of flight (or **Hohmann**).
+
+- **Solve transfer.** Takes both planets from the sim's N-body ephemeris (the departure
+  planet at departure, the target at arrival) and solves **Lambert's problem** around the
+  Sun (universal variables, bracketed Newton). It reports the hyperbolic excess speeds at
+  both ends, the launch energy **C3 = v∞²**, and the **Δv** to leave a low circular parking
+  orbit and to be captured into one: Δv = √(v∞² + 2μ/r) − √(μ/r).
+- **The 3-D view.** The transfer arc is drawn in the scene (the solved conic, propagated
+  exactly), with both planets where they will be. **Fly this transfer** runs the clock
+  through it with a virtual craft riding the arc.
+- **Porkchop plot.** Sweeps a grid of departure × arrival dates around the chosen date,
+  coloured by C3 or total Δv, with C3 contours. Click any cell to load that transfer.
+
+**`LambertTest`** checks the solver against Curtis' Example 5.2 and a Hohmann transfer, and
+that every solution, propagated exactly, lands on its target. It also checks the real
+**Perseverance** dates (launch 2020-07-30, arrival 2021-02-18). The planner gives
+**C3 = 14.46 km²/s²**; the mission's launch C3 was ≈14.5. The 2020 window's minimum falls on
+2020-07-20.
+
+## Sky events
+
+**Simulation → Next events** searches the sim's own ephemerides from the current date for:
+
+- conjunctions (with the Sun, and between the naked-eye planets) and oppositions;
+- greatest elongations of Mercury and Venus;
+- **transits** of Mercury and Venus;
+- **lunar occultations** of the planets and of Aldebaran, Regulus, Spica and Antares;
+- **meteor-shower peaks**;
+- eclipses.
+
+Clicking an event jumps the clock there; **See it from Earth** opens the Sky-from-Earth view
+on it.
+
+Geocentric positions are light-time corrected. A transit is an inferior conjunction whose
+minimum separation is smaller than the two discs' radii summed. An occultation is a
+conjunction closer than the Moon's semi-diameter plus its horizontal parallax, so the Moon
+covers the object from somewhere on Earth. A shower peaks when the Earth reaches the point of
+its orbit closest to the parent comet's current integrated orbit: 109P/Swift-Tuttle for the
+Perseids, 55P/Tempel-Tuttle for the Leonids, and 1P/Halley for the η Aquariids and Orionids.
+
+**`EventFinderTest`** checks against published almanac dates:
+
+- Mars oppositions 2003–2027, Jupiter and Saturn oppositions, and Venus' inferior
+  conjunctions and greatest elongations 2023–2025: all on the right UTC date.
+- Mercury's six greatest elongations of 2024, with the right side of the Sun and angle.
+- The 2020 Jupiter–Saturn great conjunction at 18:20 UT, 0.10° apart.
+- Every transit of Mercury (2003, 2006, 2016, 2019) and Venus (2004, 2012), with greatest
+  transit **within a minute** of the published instant, and none in 2020–mid 2032.
+- The Moon's occultations of Mars (2022-12-08) and Venus (2023-11-09).
+- The 2025 Perseids and Leonids within a day of their IMO solar longitudes.
+
+## Light-time: true or apparent positions
+
+**View → Apparent positions** (or **`T`**) draws every body where it *appears* from Earth: where it
+was when the light now arriving left it. Jupiter is drawn 35–52 minutes back along its orbit,
+with its moons and its rotation as they were then. A hollow ring with a dashed line marks
+where each body really is now, labels show the delay ("seen 43.2 min ago"), and the info
+panel gives the light-time to Earth. The retarded position comes from a second-order step
+under the Sun's gravity, iterated to convergence; the error is under a kilometre even at
+Pluto's 5½ hours.
+
+## Saturn's rings
+
+The rings lie in Saturn's **real equator plane** (its IAU pole), so they open and close on
+the right dates. **`SaturnRingTest`** finds the Sun crossing the ring plane (Saturn's
+equinox) on 2009-08-11 and 2025-05-06, and the Earth crossing on 2009-09-04 and 2025-03-23,
+all within half a day.
+
+Their brightness is a physical slab model: single-scattering particles in a layer of optical
+depth τ (from the ring map's opacity), lit at μ₀ = sin(Sun elevation) and seen at μ:
+
+- The **lit face** reflects ∝ μ₀/(μ₀+μ)·(1 − e^(−τ(1/μ₀+1/μ))), so the rings go **dark
+  as the Sun reaches the ring plane**.
+- The **unlit face** glows only by light diffusing through it: ∝ μ₀/(μ₀−μ)·(e^(−τ/μ₀) −
+  e^(−τ/μ)).
+- The rings' opacity grows as they turn edge-on, 1 − e^(−τ/μ).
+- The **ring shadow on the planet** is sunlight transmitted through the slab, e^(−τ/μ₀).
+- The **planet's shadow on the rings** is ray-traced.
+
 ## Data sources
 
 - Planet, dwarf-planet, comet, asteroid and satellite states: **JPL Horizons**
@@ -331,12 +510,26 @@ few arcminutes), `C` lines, `N` names, `G` alt-az grid, `Q` equatorial grid,
   BSD-3-Clause (`assets/sky/LICENSE-d3-celestial.txt`); the Milky Way contours are
   rasterised into `assets/sky/milkyway.png`.
 - Lunar theory: ELP-2000/82 as truncated in Meeus, *Astronomical Algorithms*, ch. 47;
-  rotation models: IAU WGCCRE 2015.
+  rotation models (planets and the Moon): IAU WGCCRE.
+- Spacecraft trajectories: **JPL Horizons** (Voyager 1/2, Cassini, New Horizons, Juno,
+  Chandrayaan-3, Artemis I and II). Apollo flight data: R. W. Orloff, *Apollo by the
+  Numbers*, NASA SP-2000-4029 (the scanned table reads Apollo 13's TLI speed as 35,938.4
+  ft/s; the cutoff speed and every other flight's 10-second drop show it is 35,538.4).
 
 ## Repository layout
 
 ```
-src/SolarSystemSimulation.java   Swing sim
+src/SolarSystemSimulation.java   the simulation canvas: dynamics hookup, camera, rendering
+src/AppWindow.java               the window: menus, search bar, object tree, time controls, dock
+src/AiAssistant.java             Help → Ask AI Assistant (Gemini chat with live sim context)
+src/MissionPlayer.java           spacecraft playback: trails, markers, mission panel, auto camera
+src/Missions.java                the mission catalogue and timelines
+src/SpacecraftTrack.java         track files: segments, Hermite interpolation, thinning
+src/ApolloReconstruction.java    Apollo 8/11/13/17 rebuilt by integration + targeting
+src/Lambert.java                 Lambert's problem (universal variables)
+src/TransferPlanner.java         transfer planner panel, porkchop plot, 3-D transfer arc
+src/EventFinder.java             conjunctions, oppositions, elongations, transits, occultations…
+src/EventsPanel.java             the "Next events" panel
 src/NBodyEphemeris.java          symplectic N-body integrator (Wisdom–Holman, GR, Horizons ICs)
 src/SatelliteEphemeris.java      planetary moons: theory fitted to JPL satellite ephemerides
 src/MoonEphemeris.java           Earth's Moon: ELP-2000/82 (Meeus ch. 47)
@@ -346,8 +539,10 @@ src/SkyView.java                 Sky from Earth: the planetarium view
 src/LessonStudio.java            lessons: docked panel, 3-D stage, software 3-D renderer
 src/GLSphereRenderer.java        GPU sphere shader for textured planets
 src/tools/ScreenGrab.java        screenshot helper
+src/tools/FetchMissions.java     downloads + compresses spacecraft tracks from JPL Horizons
 assets/textures/                 planet / moon / sun texture maps
 assets/sky/                      star catalogue, constellation data, Milky Way map
+assets/missions/                 spacecraft tracks (*.trk.gz)
 libs/                            bundled FlatLaf look-and-feel
 build.gradle / settings.gradle   Gradle build (./gradlew run)
 run2d.ps1                        Windows build + launch script

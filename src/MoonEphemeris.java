@@ -1,18 +1,18 @@
 /**
  * Geocentric lunar position from the ELP-2000/82 theory, truncated to the terms in
- * Meeus, <i>Astronomical Algorithms</i> (2nd ed.) chapter 47. This replaces the pure
- * two-body Kepler Moon used elsewhere: it carries the real periodic inequalities
- * (equation of the centre, evection, variation, annual equation, …) plus the correctly
- * regressing node and precessing perigee that live in the mean arguments, so new/full
- * moons and node crossings — and therefore eclipse dates and geometry — line up with the
- * real sky. Accuracy is ~10&Prime; in longitude and ~4&Prime; in latitude over 2000&ndash;2050,
- * i.e. Moon positions good to well under an arc-minute and eclipse instants good to a
- * minute or two.
+ * Meeus, <i>Astronomical Algorithms</i> (2nd ed.) chapter 47. It carries the real periodic
+ * inequalities (equation of the centre, evection, variation, annual equation, …) plus the
+ * correctly regressing node and precessing perigee that live in the mean arguments, so
+ * new/full moons and node crossings — and therefore eclipse dates and geometry — line up
+ * with the real sky. Accuracy is ~10&Prime; in longitude and ~4&Prime; in latitude over
+ * 2000&ndash;2050, i.e. Moon positions good to well under an arc-minute and eclipse instants
+ * good to a minute or two.
  *
  * <p>Coordinates are returned in the sim's frame: geocentric ecliptic, referred to the
  * <b>mean equinox of J2000.0</b> (the accumulated general precession in longitude is
- * removed), matching the J2000 mean elements the planets use so Sun&ndash;Moon syzygy
- * comparisons are self-consistent.
+ * removed) — the frame of the N-body planetary ephemeris ({@link NBodyEphemeris}), so
+ * Sun&ndash;Moon syzygy comparisons are self-consistent. {@link #bodyToEcliptic} adds the
+ * Moon's IAU orientation (pole, prime meridian and librations).
  */
 final class MoonEphemeris {
     private MoonEphemeris() {}
@@ -170,4 +170,56 @@ final class MoonEphemeris {
 
     /** TT − UT1 in seconds (see {@link Astro#deltaTSeconds}). */
     static double deltaTSeconds(double year) { return Astro.deltaTSeconds(year); }
+
+    // ------------------------------------------------------------------ orientation
+
+    /**
+     * The Moon's orientation from the IAU WGCCRE model (Archinal et al. 2011/2018): pole
+     * right ascension α₀, declination δ₀ and prime meridian W, with the periodic terms in the
+     * arguments E1–E13 that carry the physical librations. Returns the row-major 3×3 rotation
+     * taking a selenographic (body-fixed, mean-Earth/polar-axis) vector to ecliptic J2000:
+     * {@code r_ecl = M · r_body}. {@code ttSec} = TT seconds since J2000.
+     */
+    static double[] bodyToEcliptic(double ttSec) {
+        double d = ttSec / 86400.0, T = d / 36525.0;
+        double[] E = new double[14];
+        double[][] arg = {
+            {0, 0}, {125.045, -0.0529921}, {250.089, -0.1059842}, {260.008, 13.0120009},
+            {176.625, 13.3407154}, {357.529, 0.9856003}, {311.589, 26.4057084},
+            {134.963, 13.0649930}, {276.617, 0.3287146}, {34.226, 1.7484877},
+            {15.134, -0.1589763}, {119.743, 0.0036096}, {239.961, 0.1643573}, {25.053, 12.9590088}};
+        for (int k = 1; k <= 13; k++) E[k] = (arg[k][0] + arg[k][1] * d) * DEG;
+        double a0 = 269.9949 + 0.0031 * T - 3.8787 * Math.sin(E[1]) - 0.1204 * Math.sin(E[2])
+                + 0.0700 * Math.sin(E[3]) - 0.0172 * Math.sin(E[4]) + 0.0072 * Math.sin(E[6])
+                - 0.0052 * Math.sin(E[10]) + 0.0043 * Math.sin(E[13]);
+        double d0 = 66.5392 + 0.0130 * T + 1.5419 * Math.cos(E[1]) + 0.0239 * Math.cos(E[2])
+                - 0.0278 * Math.cos(E[3]) + 0.0068 * Math.cos(E[4]) - 0.0029 * Math.cos(E[6])
+                + 0.0009 * Math.cos(E[7]) + 0.0008 * Math.cos(E[10]) - 0.0009 * Math.cos(E[13]);
+        double W = 38.3213 + 13.17635815 * d - 1.4e-12 * d * d + 3.5610 * Math.sin(E[1])
+                + 0.1208 * Math.sin(E[2]) - 0.0642 * Math.sin(E[3]) + 0.0158 * Math.sin(E[4])
+                + 0.0252 * Math.sin(E[5]) - 0.0066 * Math.sin(E[6]) - 0.0047 * Math.sin(E[7])
+                - 0.0046 * Math.sin(E[8]) + 0.0028 * Math.sin(E[9]) + 0.0052 * Math.sin(E[10])
+                + 0.0040 * Math.sin(E[11]) + 0.0019 * Math.sin(E[12]) - 0.0044 * Math.sin(E[13]);
+        // Body → ICRF: Rz(α₀ + 90°) · Rx(90° − δ₀) · Rz(W)  (active rotations).
+        double[] m = mulA(rotA(2, (a0 + 90) * DEG), mulA(rotA(0, (90 - d0) * DEG), rotA(2, W * DEG)));
+        // ICRF → ecliptic J2000: rotate by −ε about x.
+        double e = Astro.EPS_J2000, c = Math.cos(e), s = Math.sin(e);
+        double[] q = {1, 0, 0, 0, c, s, 0, -s, c};
+        return mulA(q, m);
+    }
+
+    /** Selenographic (lat, east lon in degrees, height above the mean radius in km) → ecliptic-J2000 Moon-centred vector (km). */
+    static double[] siteEcliptic(double latDeg, double lonDeg, double heightKm, double ttSec) {
+        double r = 1737.4 + heightKm, la = latDeg * DEG, lo = lonDeg * DEG;
+        double[] b = {r * Math.cos(la) * Math.cos(lo), r * Math.cos(la) * Math.sin(lo), r * Math.sin(la)};
+        return Astro.apply(bodyToEcliptic(ttSec), b[0], b[1], b[2]);
+    }
+
+    /** Active rotation matrix about axis 0 (x) or 2 (z). */
+    private static double[] rotA(int axis, double a) {
+        double c = Math.cos(a), s = Math.sin(a);
+        return axis == 0 ? new double[]{1, 0, 0, 0, c, -s, 0, s, c} : new double[]{c, -s, 0, s, c, 0, 0, 0, 1};
+    }
+
+    private static double[] mulA(double[] A, double[] B) { return Astro.mul(A, B); }
 }

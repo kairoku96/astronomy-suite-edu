@@ -121,42 +121,6 @@ class ShadowTest {
     }
 
     // ------------------------------------------------------------------------------------
-    // East-west handedness correction: reflecting an occluder across the sub-solar meridian
-    // flips only its east-west offset, so an eclipse shadow tracks the correct ground path.
-    // It must preserve distance-toward-Sun and miss distance (umbra size + latitude unchanged).
-    // ------------------------------------------------------------------------------------
-    @Test
-    void subSolarReflectionFlipsOnlyEastWest() {
-        // pole = +z (north), Sun = +x. Sub-solar meridian normal = pole × Sun = +y (east-west axis).
-        double[] occ = {2.0, 3.0, 1.0, 0.5};
-        double along0 = occ[0];                              // occ·Sun with Sun=+x
-        double mag0 = Math.hypot(Math.hypot(occ[0], occ[1]), occ[2]);
-        SolarSystemSimulation.reflectAcrossSubSolarMeridian(occ, 0, 0, 1, 1, 0, 0);
-        assertEquals(2.0, occ[0], 1e-12, "toward-Sun component unchanged");
-        assertEquals(-3.0, occ[1], 1e-12, "east-west offset flipped");
-        assertEquals(1.0, occ[2], 1e-12, "north-south (pole) component unchanged");
-        assertEquals(0.5, occ[3], 1e-12, "radius unchanged");
-        assertEquals(along0, occ[0], 1e-12, "distance toward Sun preserved");
-        assertEquals(mag0, Math.hypot(Math.hypot(occ[0], occ[1]), occ[2]), 1e-12, "magnitude preserved");
-    }
-
-    @Test
-    void subSolarReflectionPreservesAlongAndMissForAnyGeometry() {
-        Random r = new Random(99L);
-        for (int t = 0; t < 500; t++) {
-            double[] pole = randomUnit(r), sun = randomUnit(r);
-            double[] occ = {r.nextGaussian()*3, r.nextGaussian()*3, r.nextGaussian()*3, 0.3};
-            double along0 = occ[0]*sun[0] + occ[1]*sun[1] + occ[2]*sun[2];
-            double mag0 = occ[0]*occ[0] + occ[1]*occ[1] + occ[2]*occ[2];
-            SolarSystemSimulation.reflectAcrossSubSolarMeridian(occ, pole[0], pole[1], pole[2], sun[0], sun[1], sun[2]);
-            double along1 = occ[0]*sun[0] + occ[1]*sun[1] + occ[2]*sun[2];
-            double mag1 = occ[0]*occ[0] + occ[1]*occ[1] + occ[2]*occ[2];
-            assertEquals(along0, along1, 1e-9, "distance toward Sun must be preserved");
-            assertEquals(mag0, mag1, 1e-9, "magnitude (hence miss distance) must be preserved");
-        }
-    }
-
-    // ------------------------------------------------------------------------------------
     // Perceptual response: the raw Sun-visible fraction is physically exact, but a partly
     // eclipsed patch of ground is still brightly lit. perceptualEclipse keeps the wide penumbra
     // bright and only darkens near totality, so the visible shadow hugs the umbra.
