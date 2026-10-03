@@ -51,7 +51,7 @@ final class GLSphereRenderer implements GLEventListener {
     // Cached uniform locations.
     private int uPole, uA, uB, uL, uSpin, uCloudSpin, uAmbient;
     private int uEmissive, uEarth, uHasNight, uHasClouds, uOceanGlint, uHasNormal, uHasSpec;
-    private int uOccN, uOcc;
+    private int uOccN, uOcc, uSunAlpha;
     private int uDiffuse, uNight, uClouds, uNormal, uSpec;
 
     /** GL texture handles by cache key (diffuse keyed by body name; layers by their own key). */
@@ -69,7 +69,7 @@ final class GLSphereRenderer implements GLEventListener {
     private boolean reqEmissive, reqEarth, reqOceanGlint;
     private int[] reqNightRGB; private int reqNightW, reqNightH;
     private int[] reqCloudRGB; private int reqCloudW, reqCloudH;
-    private float[] reqOcc; private int reqOccN;
+    private float[] reqOcc; private int reqOccN; private float reqSunAlpha;
     private boolean requestOk;
     private ByteBuffer readBuf;   // reused readback buffer (MAX_SIZE^2 * 4 bytes)
     private IntBuffer readInts;   // int view of readBuf (packed ARGB)
@@ -119,7 +119,7 @@ final class GLSphereRenderer implements GLEventListener {
             uEmissive = loc(gl, "uEmissive"); uEarth = loc(gl, "uEarth");
             uHasNight = loc(gl, "uHasNight"); uHasClouds = loc(gl, "uHasClouds");
             uOceanGlint = loc(gl, "uOceanGlint"); uHasNormal = loc(gl, "uHasNormal"); uHasSpec = loc(gl, "uHasSpec");
-            uOccN = loc(gl, "uOccN"); uOcc = loc(gl, "uOcc");
+            uOccN = loc(gl, "uOccN"); uOcc = loc(gl, "uOcc"); uSunAlpha = loc(gl, "uSunAlpha");
             uDiffuse = loc(gl, "uDiffuse"); uNight = loc(gl, "uNight"); uClouds = loc(gl, "uClouds");
             uNormal = loc(gl, "uNormal"); uSpec = loc(gl, "uSpec");
             // Fixed sampler->unit bindings.
@@ -190,6 +190,7 @@ final class GLSphereRenderer implements GLEventListener {
         gl.glUniform1i(uHasNormal, nrm);
         gl.glUniform1i(uHasSpec, spc);
         gl.glUniform1i(uOccN, reqOccN);
+        gl.glUniform1f(uSunAlpha, reqSunAlpha);
         if (reqOccN > 0) gl.glUniform4fv(uOcc, reqOccN, reqOcc, 0);
 
         gl.glBegin(GL2.GL_QUADS);
@@ -233,7 +234,7 @@ final class GLSphereRenderer implements GLEventListener {
                   int[] nightRGB, int nightW, int nightH,
                   int[] cloudRGB, int cloudW, int cloudH,
                   boolean oceanGlint,
-                  double[] occ, int occN) {
+                  double[] occ, int occN, double sunAlpha) {
         if (!isAvailable() || out == null || n < 2 || n > MAX_SIZE || rgb == null) return false;
         this.outPixels = out;
         this.reqN = n;
@@ -244,6 +245,7 @@ final class GLSphereRenderer implements GLEventListener {
         this.reqEmissive = emissive; this.reqEarth = earth; this.reqOceanGlint = oceanGlint;
         this.reqNightRGB = nightRGB; this.reqNightW = nightW; this.reqNightH = nightH;
         this.reqCloudRGB = cloudRGB; this.reqCloudW = cloudW; this.reqCloudH = cloudH;
+        this.reqSunAlpha = (float) sunAlpha;
         int cappedOccN = Math.min(occN, 8);
         this.reqOccN = cappedOccN;
         if (cappedOccN > 0) {
@@ -384,9 +386,14 @@ final class GLSphereRenderer implements GLEventListener {
         "uniform float uSpin, uCloudSpin, uAmbient;\n" +
         "uniform int uEmissive, uEarth, uHasNight, uHasClouds, uOceanGlint, uHasNormal, uHasSpec, uOccN;\n" +
         "uniform vec4 uOcc[8];\n" +
-        // Mirror of SolarSystemSimulation.eclipseFactor (3-D ray-vs-sphere umbra + penumbra).
+        "uniform float uSunAlpha;\n" +   // Sun's angular radius (rad) as seen from the receiver
+        // Mirror of SolarSystemSimulation.eclipseFactor: the Sun is an extended disc, so the
+        // shadow is 1 - (fraction of the Sun's disc the occluder covers). This makes the umbra
+        // shrink to a thin track (total), leave a bright ring (annular), or dim softly (partial).
         "float eclipse(vec3 N){\n" +
         "  float f = 1.0;\n" +
+        "  float rs = max(uSunAlpha, 1e-9);\n" +
+        "  float rs2 = rs*rs;\n" +
         "  for (int k=0;k<8;k++){\n" +
         "    if (k >= uOccN) break;\n" +
         "    vec3 o = uOcc[k].xyz; float orad = uOcc[k].w;\n" +
@@ -394,11 +401,20 @@ final class GLSphereRenderer implements GLEventListener {
         "    float along = dot(w, uL);\n" +
         "    if (along <= 0.0) continue;\n" +
         "    float perp = sqrt(max(dot(w,w) - along*along, 0.0));\n" +
-        "    float e0 = orad*0.80, e1 = orad*1.25 + 0.01;\n" +
-        "    if (perp >= e1) continue;\n" +
-        "    float s = perp <= e0 ? 1.0 : (e1-perp)/(e1-e0);\n" +
-        "    s = s*s*(3.0-2.0*s);\n" +
-        "    f *= 1.0 - 0.90*s;\n" +
+        "    float ro = orad / along;\n" +               // occluder angular radius
+        "    float d  = perp / along;\n" +                // angular separation of disc centres
+        "    float blocked;\n" +
+        "    if (d >= rs + ro) { continue; }\n" +
+        "    else if (d <= abs(rs - ro)) {\n" +
+        "      float rmin = min(rs, ro); blocked = (rmin*rmin)/rs2;\n" +
+        "    } else {\n" +
+        "      float ro2 = ro*ro, d2 = d*d;\n" +
+        "      float a1 = acos(clamp((d2 + rs2 - ro2)/(2.0*d*rs), -1.0, 1.0));\n" +
+        "      float a2 = acos(clamp((d2 + ro2 - rs2)/(2.0*d*ro), -1.0, 1.0));\n" +
+        "      float tri = 0.5*sqrt(max(0.0, (-d+rs+ro)*(d+rs-ro)*(d-rs+ro)*(d+rs+ro)));\n" +
+        "      blocked = (rs2*a1 + ro2*a2 - tri)/(PI*rs2);\n" +
+        "    }\n" +
+        "    f *= 1.0 - clamp(blocked, 0.0, 1.0);\n" +
         "  }\n" +
         "  return f;\n" +
         "}\n" +
@@ -412,7 +428,7 @@ final class GLSphereRenderer implements GLEventListener {
         "  vec3 N = vec3(vP.x, vP.y, nz);\n" +
         "  float lat = asin(clamp(dot(N, uPole), -1.0, 1.0));\n" +
         "  float lon = atan(dot(N, uB), dot(N, uA));\n" +
-        "  float u = fract((lon + uSpin) / (2.0*PI));\n" +
+        "  float u = fract(-(lon + uSpin) / (2.0*PI));\n" +   // negated: correct east-west (un-mirror)
         "  float v = 0.5 - lat/PI;\n" +
         "  vec3 base = texture2D(uDiffuse, vec2(u, v)).rgb;\n" +
         "  if (uEmissive == 1){ gl_FragColor = vec4(base, 1.0); return; }\n" +
@@ -426,7 +442,13 @@ final class GLSphereRenderer implements GLEventListener {
         "  }\n" +
         "  float d = max(0.0, dot(Nsh, uL));\n" +
         "  float shade = uAmbient + (1.0 - uAmbient)*d;\n" +
-        "  if (uOccN > 0 && d > 0.0) shade *= eclipse(N);\n" +
+        // Mirror of the CPU cast-shadow logic: the ray-traced shadow darkens the whole surface
+        // (direct sun and ambient alike), so it reads as one complete disc across the terminator;
+        // city lights are added afterwards so they shine through the shadowed ground.
+        "  float ecl = 1.0;\n" +
+        // Perceptual darkening: keep the wide penumbra bright, concentrate the visible shadow
+        // into the umbra (mirror of SolarSystemSimulation.perceptualEclipse).
+        "  if (uOccN > 0) { float o = 1.0 - eclipse(N); float o2=o*o; ecl = 1.0 - o2*o2*o2; shade *= ecl; }\n" +
         "  if (uEarth == 0){\n" +
         "    vec3 col = base*shade;\n" +
         "    if (uHasSpec == 1 && d > 0.0){\n" +
@@ -440,7 +462,7 @@ final class GLSphereRenderer implements GLEventListener {
         "  vec3 s = base;\n" +
         "  float cloud = 0.0;\n" +
         "  if (uHasClouds == 1){\n" +
-        "    float cu = fract((lon + uCloudSpin) / (2.0*PI));\n" +
+        "    float cu = fract(-(lon + uCloudSpin) / (2.0*PI));\n" +   // match surface (un-mirror)
         "    vec3 cp = texture2D(uClouds, vec2(cu, v)).rgb;\n" +
         "    cloud = (cp.r + cp.g + cp.b) / 3.0;\n" +
         "    cloud = clamp((cloud - 0.12) / 0.88, 0.0, 1.0);\n" +

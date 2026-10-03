@@ -1,0 +1,105 @@
+import org.gradle.internal.os.OperatingSystem
+
+plugins {
+    id 'application'
+}
+
+// ---------------------------------------------------------------------------
+// JOGL / GlueGen location
+//
+// Modern JOGL (2.6) is NOT published to Maven Central (Central stops at the
+// 2015-era 2.3.2), so the OpenGL bindings are resolved from a local JogAmp
+// build. By default we look in the sibling folders the run scripts already use;
+// override on any platform with, e.g.:
+//
+//   ./gradlew run -PjoglDir=/path/to/jogl/jar -PgluegenDir=/path/to/gluegen/jar
+//
+// or set joglDir / gluegenDir in gradle.properties. Download builds from
+// https://jogamp.org/deployment/archive/master/ .
+// ---------------------------------------------------------------------------
+def defaultJogl = new File(rootDir.parentFile, 'jogl-2.6-b1548-20250831-windows-amd64/jogl-2.6-b1548-20250831-windows-amd64/jar')
+def defaultGlue = new File(rootDir.parentFile, 'gluegen-2.6-b987-20250831-windows-amd64/gluegen-2.6-b987-20250831-windows-amd64/jar')
+def joglDir = file(project.findProperty('joglDir') ?: defaultJogl)
+def gluegenDir = file(project.findProperty('gluegenDir') ?: defaultGlue)
+
+// Native-library jar classifier for the current platform (JogAmp naming).
+def os = OperatingSystem.current()
+def rawArch = System.getProperty('os.arch')
+def arch = (rawArch in ['amd64', 'x86_64']) ? 'amd64' : (rawArch in ['aarch64', 'arm64'] ? 'aarch64' : rawArch)
+def natives = os.windows ? "windows-${arch}" : os.macOsX ? 'macosx-universal' : "linux-${arch}"
+
+def joglCore = new File(joglDir, 'jogl-all.jar')
+def glueCore = new File(gluegenDir, 'gluegen-rt.jar')
+def joglNatives = new File(joglDir, "jogl-all-natives-${natives}.jar")
+def glueNatives = new File(gluegenDir, "gluegen-rt-natives-${natives}.jar")
+
+def checkJogl = tasks.register('checkJogl') {
+    doFirst {
+        if (!joglCore.exists() || !glueCore.exists()) {
+            throw new GradleException(
+                "JOGL/GlueGen jars not found.\n" +
+                "  looked for: ${joglCore}\n" +
+                "              ${glueCore}\n" +
+                "Download a JogAmp build from https://jogamp.org/deployment/archive/master/\n" +
+                "and pass -PjoglDir=<...>/jar -PgluegenDir=<...>/jar (or set them in gradle.properties).")
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.formdev:flatlaf:3.5.4'
+    implementation files(joglCore, glueCore)
+    runtimeOnly files(joglNatives, glueNatives)
+
+    testImplementation platform('org.junit:junit-bom:5.11.3')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+java {
+    // JDK 24: the sim uses unnamed variables (`_ ->`) and other 22+ features.
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(24)
+    }
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src']   // SolarSystemSimulation, GLSphereRenderer, tools/ScreenGrab
+        }
+    }
+    test {
+        java {
+            srcDirs = ['test']
+        }
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    testLogging { events 'passed', 'failed', 'skipped' }
+}
+
+application {
+    mainClass = 'SolarSystemSimulation'
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
+// ./gradlew run                 GUI
+// ./gradlew run -Pgpu           GPU sphere shader on from the start   (-Dsss.gpu=1)
+// ./gradlew run -Pshot=out/dir  head-less showcase PNGs, then exit    (-Dsss.shot=...)
+// ./gradlew run -Ppitch=30      start tilted 30 deg off top-down      (-Dsss.pitch=...)
+// ./gradlew run -Pyaw=45        start rotated 45 deg in azimuth        (-Dsss.yaw=...)
+tasks.named('run') {
+    dependsOn checkJogl
+    if (project.hasProperty('gpu'))   jvmArgs '-Dsss.gpu=1'
+    if (project.hasProperty('bench')) jvmArgs '-Dsss.bench=1'
+    if (project.hasProperty('shot'))  jvmArgs "-Dsss.shot=${project.property('shot')}"
+    if (project.hasProperty('pitch')) jvmArgs "-Dsss.pitch=${project.property('pitch')}"
+    if (project.hasProperty('yaw'))   jvmArgs "-Dsss.yaw=${project.property('yaw')}"
+}

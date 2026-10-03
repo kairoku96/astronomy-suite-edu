@@ -4,6 +4,11 @@ out2d/
 !**/src/main/**/out/
 !**/src/test/**/out/
 
+# ---- Gradle ----
+.gradle/
+build/
+# keep the wrapper (gradlew, gradlew.bat, gradle/wrapper/*) committed
+
 # ---- IDE ----
 .idea/
 *.iml

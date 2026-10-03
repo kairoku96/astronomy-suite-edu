@@ -1,7 +1,7 @@
 # Build and run the 2-D Solar System simulation (src/SolarSystemSimulation.java).
 #
-# The 2-D file now depends on JOGL (Tier-2 GPU sphere shader in GLSphereRenderer.java),
-# so it must be built/run with the same jogl-all + gluegen classpath as the 3-D sim.
+# The sim depends on JOGL (Tier-2 GPU sphere shader in GLSphereRenderer.java),
+# so it is built/run with the jogl-all + gluegen classpath below.
 # It also uses `_ ->` unnamed variables (Java 22+), so it needs JDK 24, not the
 # system JDK 21.
 #
@@ -38,7 +38,9 @@ New-Item -ItemType Directory -Force $out | Out-Null
 Write-Host "Compiling 2-D sim (+ GPU sphere shader)..." -ForegroundColor Cyan
 & "$jdk/javac.exe" -cp $cp -d $out `
     (Join-Path $root "src\SolarSystemSimulation.java") `
-    (Join-Path $root "src\GLSphereRenderer.java")
+    (Join-Path $root "src\GLSphereRenderer.java") `
+    (Join-Path $root "src\MoonEphemeris.java") `
+    (Join-Path $root "src\LessonStudio.java")
 if (-not $?) { throw "Compilation failed" }
 Write-Host "Build OK" -ForegroundColor Green
 if ($BuildOnly) { return }

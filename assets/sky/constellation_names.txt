@@ -1,0 +1,91 @@
+# Constellation label positions, J2000 RA/Dec degrees (d3-celestial, BSD-3-Clause, (c) 2015 Olaf Frohn).
+# abbr,ra,dec,name
+And,0.75,43.00,Andromeda
+Ant,156.00,-36.00,Antlia
+Aps,240.00,-74.00,Apus
+Aqr,337.50,-5.00,Aquarius
+Aql,291.00,8.00,Aquila
+Ara,258.00,-56.00,Ara
+Ari,42.00,22.00,Aries
+Aur,82.50,37.00,Auriga
+Boo,223.50,35.00,Boötes
+Cae,73.50,-42.00,Caelum
+Cam,84.00,72.00,Camelopardalis
+Cnc,128.25,27.00,Cancer
+CVn,192.00,43.00,Canes Venatici
+CMa,97.50,-26.00,Canis Major
+CMi,109.50,5.00,Canis Minor
+Cap,315.00,-22.00,Capricornus
+Car,144.00,-66.00,Carina
+Cas,354.00,55.50,Cassiopeia
+Cen,199.50,-40.00,Centaurus
+Cep,337.50,71.00,Cepheus
+Cet,28.50,-5.00,Cetus
+Cha,189.00,-81.00,Chamaeleon
+Cir,217.50,-67.00,Circinus
+Col,85.50,-39.00,Columba
+Com,193.50,24.00,Coma Berenices
+CrA,282.00,-40.00,Corona Austrina
+CrB,238.50,32.00,Corona Borealis
+Crv,186.00,-19.50,Corvus
+Crt,174.75,-15.00,Crater
+Cru,193.50,-62.00,Crux
+Cyg,307.50,50.00,Cygnus
+Del,309.00,6.00,Delphinus
+Dor,76.50,-64.00,Dorado
+Dra,268.50,64.00,Draco
+Equ,320.25,11.50,Equuleus
+Eri,52.50,-18.00,Eridanus
+For,40.50,-28.00,Fornax
+Gem,107.25,23.50,Gemini
+Gru,342.00,-41.50,Grus
+Her,253.50,35.00,Hercules
+Hor,51.00,-52.00,Horologium
+Hya,150.00,-22.00,Hydra
+Hyi,34.50,-72.00,Hydrus
+Ind,318.00,-55.50,Indus
+Lac,342.00,47.00,Lacerta
+Leo,159.00,15.00,Leo
+LMi,157.50,30.00,Leo Minor
+Lep,88.50,-25.00,Lepus
+Lib,231.00,-26.00,Libra
+Lup,228.75,-35.00,Lupus
+Lyn,121.50,49.00,Lynx
+Lyr,279.00,30.00,Lyra
+Men,82.50,-80.00,Mensa
+Mic,316.50,-37.00,Microscopium
+Mon,114.75,-6.00,Monoceros
+Mus,195.00,-73.00,Musca
+Nor,243.00,-52.00,Norma
+Oct,300.00,-80.00,Octans
+Oph,258.00,3.00,Ophiuchus
+Ori,84.00,13.00,Orion
+Pav,297.00,-62.00,Pavo
+Peg,334.50,16.00,Pegasus
+Per,66.00,45.00,Perseus
+Phe,16.50,-43.00,Phoenix
+Pic,82.50,-50.00,Pictor
+Psc,19.50,15.00,Pisces
+PsA,333.00,-29.00,Piscis Austrinus
+Pup,111.00,-46.00,Puppis
+Pyx,132.00,-24.00,Pyxis
+Ret,55.50,-61.00,Reticulum
+Sge,291.00,18.00,Sagitta
+Sgr,292.50,-34.00,Sagittarius
+Sco,249.00,-38.00,Scorpius
+Scl,1.50,-33.00,Sculptor
+Sct,282.00,-12.50,Scutum
+Ser,232.50,5.00,Serpens Caput
+Ser,280.50,3.00,Serpens Cauda
+Sex,157.50,-7.00,Sextans
+Tau,54.00,15.00,Taurus
+Tel,277.50,-54.00,Telescopium
+Tri,27.00,34.00,Triangulum
+TrA,240.00,-67.50,Triangulum Australe
+Tuc,348.00,-64.00,Tucana
+UMa,165.00,48.00,Ursa Major
+UMi,226.50,68.00,Ursa Minor
+Vel,143.25,-46.00,Vela
+Vir,199.50,-4.00,Virgo
+Vol,111.00,-73.00,Volans
+Vul,295.50,21.00,Vulpecula

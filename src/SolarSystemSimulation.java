@@ -10,35 +10,51 @@ import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
+import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import javax.imageio.ImageIO;
+import javax.swing.text.BadLocationException;
+import javax.swing.text.Style;
+import javax.swing.text.StyleConstants;
+import javax.swing.text.StyledDocument;
 import com.formdev.flatlaf.FlatDarkLaf;
 
 /**
- * Solar System Simulation – real-time 2-D orbital mechanics with textures,
+ * Solar System Simulation – a real-date, 3-D model of the Solar System with textures,
  * smooth camera, moon-following and auto-zoom.
  *
- * <p>This program simulates the Sun and 9 major celestial bodies (including Pluto)
- * using Keplerian orbital elements. It supports:
+ * <p>Dynamics:
  * <ul>
- *   <li>Real-time Newtonian physics via Kepler's equation</li>
- *   <li>Interactive camera: click to follow planets/moons</li>
- *   <li>Smooth panning and exponential zoom interpolation</li>
- *   <li>Auto-zoom when following bodies</li>
- *   <li>Moon systems with independent orbits</li>
- *   <li>Orbit path rendering and dynamic HUD</li>
+ *   <li>Planets, dwarf planets, comets and asteroids move under mutual gravity, integrated by
+ *       a symplectic Wisdom–Holman map from JPL Horizons J2000 states ({@link NBodyEphemeris}),
+ *       including the Sun's general-relativistic term.</li>
+ *   <li>Earth's Moon follows the ELP-2000/82 lunar theory ({@link MoonEphemeris}); every other
+ *       moon a mean-element theory fitted to JPL's satellite ephemerides ({@link SatelliteEphemeris}).</li>
+ *   <li>Each planet's centre sits off its system barycentre by its moons' reflex (Earth by
+ *       ~4700 km, Pluto by ~2100 km), so planet and moons orbit their common centre of mass.</li>
+ *   <li>Orbit rings are the osculating ellipses of the bodies' current states.</li>
  * </ul>
  *
- * N-body mode (toggle with 'N') replaces the Kepler update with a velocity-Verlet
- * integrator that accounts for mutual gravitational attraction between planets
- * and the central Sun (Sun is fixed at origin).
- *
  * @author Ethan Lin (original)
- * @version 3.0
+ * @version 4.0
  */
-
-//TODO: Sympletic Integration - leapfrog, rebound, saturn ring shadow, UI polish, API for planet data
 
 public class SolarSystemSimulation extends JPanel
         implements ActionListener, MouseWheelListener, MouseListener, MouseMotionListener {
@@ -165,6 +181,166 @@ public class SolarSystemSimulation extends JPanel
     private JPanel searchBarPanel;
     /** Reference to the sidebar/navigation panel for toggling visibility */
     private JPanel sidebarPanel;
+    /** Education: lessons docked on the right; while one runs it drives this simulation. */
+    LessonStudio lessonStudio;
+
+    private boolean lessonActive() { return lessonStudio != null && lessonStudio.isLessonActive(); }
+
+    // ----- Lesson camera: eases to each step's framing until the user takes the view -----
+    /** {centreX m, centreY m, radius m, pitch deg, yaw deg}, or null. */
+    private double[] lessonAimGoal;
+    private boolean lessonSteer;
+    /** When set, the only catalogued small body a lesson shows (e.g. Halley's Comet). */
+    private String lessonOnlyBody;
+    /** Everything a lesson changes, captured when it starts so leaving restores the sim exactly. */
+    private Object[] lessonSaved;
+
+    /**
+     * A lesson started (true) or ended (false). The object sidebar (with the time controls) and
+     * the search bar step aside during a lesson, and on the way out every setting the lesson
+     * touched — visibility, clock, date, camera, overlays — is put back as it was.
+     */
+    private void onLessonActiveChanged(boolean active) {
+        if (active) {
+            lessonSaved = new Object[]{
+                planetVisible.clone(), showPlanetOrbits, showLabels, showComets, showAsteroids,
+                showDistantBodies, showAsteroidBelt, showKuiperBelt, showIceLines, showPerihelionAphelion,
+                showVelocityVectors, showVelocityComparison, showKeplersLaw, showOnlySelected, barycentricFrame,
+                timeScale, simulationPaused, simTimeSec, camX, camY, camZ, currentZoom, targetZoom,
+                autoZoomEnabled, zoomMode, followingPlanet, followingMoon, cameraFocusIndex, cameraFocusMoon,
+                selectedPlanet, selectedMoon, viewPitchRad, viewYawRad, showSunInfo};
+            showPerihelionAphelion = showVelocityVectors = showVelocityComparison = showKeplersLaw = false;
+            showOnlySelected = false;
+            showSunInfo = false;
+            barycentricFrame = false;
+            simulationPaused = false;
+            computeBarycenter();
+        } else if (lessonSaved != null) {
+            Object[] s = lessonSaved;
+            int k = 0;
+            System.arraycopy((boolean[]) s[k++], 0, planetVisible, 0, planetVisible.length);
+            showPlanetOrbits = (Boolean) s[k++]; showLabels = (Boolean) s[k++]; showComets = (Boolean) s[k++];
+            showAsteroids = (Boolean) s[k++]; showDistantBodies = (Boolean) s[k++]; showAsteroidBelt = (Boolean) s[k++];
+            showKuiperBelt = (Boolean) s[k++]; showIceLines = (Boolean) s[k++]; showPerihelionAphelion = (Boolean) s[k++];
+            showVelocityVectors = (Boolean) s[k++]; showVelocityComparison = (Boolean) s[k++]; showKeplersLaw = (Boolean) s[k++];
+            showOnlySelected = (Boolean) s[k++]; barycentricFrame = (Boolean) s[k++];
+            double ts = (Double) s[k++];
+            simulationPaused = (Boolean) s[k++];
+            goToSimTime((Double) s[k++]);
+            setTimeScaleAndSync(ts);
+            camX = (Double) s[k++]; camY = (Double) s[k++]; camZ = (Double) s[k++];
+            currentZoom = (Double) s[k++]; targetZoom = (Double) s[k++];
+            autoZoomEnabled = (Boolean) s[k++]; zoomMode = (Integer) s[k++];
+            followingPlanet = (Boolean) s[k++]; followingMoon = (Boolean) s[k++];
+            cameraFocusIndex = (Integer) s[k++]; cameraFocusMoon = (Integer) s[k++];
+            selectedPlanet = (Integer) s[k++]; selectedMoon = (Integer) s[k++];
+            setViewPitch((Double) s[k++]); setViewYaw((Double) s[k++]);
+            showSunInfo = (Boolean) s[k++];
+            moonCamX = camX; moonCamY = camY;
+            cameraIsApproaching = moonCameraIsApproaching = false;
+            lessonSaved = null;
+            lessonAimGoal = null;
+            lessonOnlyBody = null;
+            computeBarycenter();
+            updateTimeScaleLabel();
+        }
+        boolean showPanels = !active && uiPanelsVisible;
+        if (sidebarPanel != null) sidebarPanel.setVisible(showPanels);
+        if (searchBarPanel != null) searchBarPanel.setVisible(showPanels);
+        Container p = getParent();
+        if (p != null) { p.revalidate(); p.repaint(); }
+        requestFocusInWindow();
+        repaint();
+    }
+
+    /** Ease the lesson camera toward its goal (called each frame while nothing is followed). */
+    private void steerLessonCamera(double dtReal) {
+        double[] g = lessonAimGoal;
+        double k = 1 - Math.exp(-3.0 * dtReal);
+        double zoomGoal = 0.40 * Math.max(1, Math.min(getWidth(), getHeight())) / (g[2] * METERS_TO_PIXELS);
+        camX += (g[0] - camX) * k;
+        camY += (g[1] - camY) * k;
+        moonCamX = camX; moonCamY = camY;
+        currentZoom = Math.exp(Math.log(currentZoom) + (Math.log(zoomGoal) - Math.log(currentZoom)) * k);
+        targetZoom = currentZoom;
+        setViewPitch(viewPitchRad + (Math.toRadians(g[3]) - viewPitchRad) * k);
+        double dy = Math.IEEEremainder(Math.toRadians(g[4]) - viewYawRad, 2 * Math.PI);
+        setViewYaw(viewYawRad + dy * k);
+    }
+
+    /** The simulation as seen by the lessons (see {@link LessonStudio.Host}). */
+    private final class LessonHost implements LessonStudio.Host {
+        public int planet(String name) {
+            for (int i = 0; i < NAMES.length; i++) if (NAMES[i].equals(name)) return i;
+            return -1;
+        }
+        public void showOnly(String smallBody, String... planets) {
+            java.util.Arrays.fill(planetVisible, false);
+            for (String n : planets) { int i = planet(n); if (i >= 0) planetVisible[i] = true; }
+            lessonOnlyBody = smallBody;
+            showAsteroidBelt = showKuiperBelt = showIceLines = false;
+            showComets = showAsteroids = showDistantBodies = false;
+        }
+        public void setOrbits(boolean orbits, boolean labels) { showPlanetOrbits = orbits; showLabels = labels; }
+        public void setTime(double s) {
+            simulationPaused = s <= 0;
+            if (s > 0) setTimeScaleAndSync(s);
+            updateTimeScaleLabel();
+        }
+        public double timeScale() { return simulationPaused ? 0 : timeScale; }
+        public void goToDate(int y, int m, int d) { SolarSystemSimulation.this.goToDate(java.time.LocalDateTime.of(y, m, d, 12, 0)); }
+        public String dateString() { return simDateString(); }
+        public double simTime() { return simTimeSec; }
+        public void aim(double[] goal) {
+            followingPlanet = followingMoon = false;
+            cameraFocusIndex = cameraFocusMoon = -1;
+            selectedPlanet = selectedMoon = -1;
+            cameraIsApproaching = moonCameraIsApproaching = false;
+            autoZoomEnabled = false;
+            lessonAimGoal = goal.clone();
+            lessonSteer = true;
+        }
+        public double sunRadiusM() { return SUN_RADIUS_M; }
+
+        // The lessons draw the ellipse a body is on right now: its osculating orbit.
+        public double planetA(int i) { return oscA[i]; }
+        public double planetEcc(int i) { return oscE[i]; }
+        public double planetEccAnomaly(int i) { return oscEanom[i]; }
+        public double[] planetOrbit(int i, double E) { return planetOrbitPoint(i, E); }
+        private SmallBody body(String name) {
+            for (SmallBody sb : smallBodies) if (sb.name.equals(name)) return sb;
+            throw new IllegalArgumentException("no small body " + name);
+        }
+        public double bodyA(String n) { return body(n).aM; }
+        public double bodyEcc(String n) { return body(n).ecc; }
+        public double bodyEccAnomaly(String n) { return body(n).eccAnom; }
+        public double[] bodyOrbit(String n, double E) {
+            SmallBody sb = body(n);
+            return keplerXYZ(sb.aM, sb.ecc, E, sb.inclRad, sb.omegaRad, sb.varpiRad);
+        }
+
+        public boolean project(double x, double y, double z, double[] o) {
+            double wx = x + sunBarycenterX, wy = y + sunBarycenterY;
+            if (!inFront(wx, wy, z)) return false;
+            o[0] = projX(wx, wy, z);
+            o[1] = projY(wx, wy, z);
+            o[2] = cameraDistanceMeters() - viewDepth(wx, wy, z);
+            o[3] = perspScaleAt(wx, wy, z);
+            return true;
+        }
+        public double[] eye() {
+            double d = cameraDistanceMeters();
+            return new double[]{camX - sunBarycenterX + viewSinY * viewSinP * d,
+                                camY - sunBarycenterY + viewCosY * viewSinP * d,
+                                camZ + viewCosP * d};
+        }
+        public double[] sunDisc() {
+            double sx = sunBarycenterX, sy = sunBarycenterY;
+            if (!inFront(sx, sy, 0)) return null;
+            return new double[]{projX(sx, sy, 0), projY(sx, sy, 0), SUN_RADIUS_M * perspScaleAt(sx, sy, 0),
+                                cameraDistanceMeters() - viewDepth(sx, sy, 0)};
+        }
+    }
     /** Whether search bar and sidebar are currently visible */
     private boolean uiPanelsVisible = true;
     /** Text field used by the top search bar to jump to bodies */
@@ -201,6 +377,15 @@ public class SolarSystemSimulation extends JPanel
     private JLabel timeScaleLabel;
     /** Prevent slider event loops when syncing from code */
     private boolean suppressTimeSliderEvents = false;
+    /** Editable numeric field for the time-scale magnitude (paired with the unit combo). */
+    private JTextField timeScaleValueField;
+    /** Dropdown selecting the unit the value field is expressed in (s/s, hr/s, day/s, ...). */
+    private JComboBox<String> timeScaleUnitCombo;
+    /** Guards against feedback loops while syncing the value field / unit combo from code. */
+    private boolean suppressTimeFieldEvents = false;
+    /** Selectable time-scale units and their length in real seconds; index-aligned. */
+    private static final String[] TS_UNIT_NAMES   = {"s/s", "min/s", "hr/s", "day/s", "week/s", "month/s", "yr/s"};
+    private static final double[] TS_UNIT_SECONDS = {1.0, 60.0, 3600.0, DAY, 7 * DAY, 30 * DAY, YEAR};
 
 
     // ----- Scale ruler dragging -----
@@ -239,39 +424,129 @@ public class SolarSystemSimulation extends JPanel
     private static final double ZOOM_SPEED = 10.0;
     private int zoomMode = 0;                   // 0=Planet, 1=Orbit, 2=Manual
 
-    // ----- Educational features for lessons -----
-    private boolean lessonMode = false;
-    private int currentLesson = 1;              // Default to Lesson 1
+    /* ==============================
+       EARTH EXPLORER  ("Google Earth" mode)
+       ==============================
+       A self-contained, offline pan/zoom globe you drop into when you zoom into
+       Earth. It orthographically ray-casts the full-resolution Earth map centred
+       on a geographic point (geLat/geLon) at an arbitrary zoom (geZoom): far out
+       it reads as a globe hanging in space, and as you zoom in the visible cap
+       flattens into a smooth, keep-zooming-forever ground view — like Google
+       Earth, but sampled from the local textures with no network. */
+    /** Active while zoomed into Earth's surface. */
+    private boolean earthExplorerActive = false;
+
+    /* ==============================
+       SKY FROM EARTH (planetarium)
+       ============================== */
+    /** The planetarium view of the real sky from a place on Earth (see {@link SkyView}). */
+    private SkyView skyView;
+    private boolean skyViewActive = false;
+
+    private SkyView skyView() {
+        if (skyView == null) {
+            skyView = new SkyView(new SkyView.Host() {
+                public double simTimeSec() { return simTimeSec; }
+                public void repaint() { SolarSystemSimulation.this.repaint(); }
+                public Component component() { return SolarSystemSimulation.this; }
+                public void goToNow() { goToDate(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)); }
+            });
+        }
+        return skyView;
+    }
+
+    /** Switch the canvas to the sky as seen from the observer's location. */
+    void enterSkyView() {
+        if (earthExplorerActive) exitEarthExplorer();
+        skyView();
+        skyViewActive = true;
+        draggingView = false;
+        requestFocusInWindow();
+        repaint();
+    }
+
+    /** Look at the sky from a given place (e.g. the Earth Explorer's map centre). */
+    void enterSkyViewAt(String name, double lat, double lon) {
+        skyView().setLocation(name, lat, lon);
+        enterSkyView();
+    }
+
+    void exitSkyView() {
+        skyViewActive = false;
+        repaint();
+    }
+    /** Geographic point (deg) under the centre of the explorer view. */
+    private double geLat = 20.0, geLon = 0.0;
+    /** Zoom: 1.0 ≈ whole globe fits the frame; grows without bound as you zoom in. */
+    private double geZoom = 1.0, geTargetZoom = 1.0;
+    /** Entry/exit zoom: zooming back out past this leaves the explorer for the solar view. */
+    private static final double GE_MIN_ZOOM = 0.80;
+    /** Deep enough for street level once satellite tiles kick in (bounded only by over-zoom blur). */
+    private static final double GE_MAX_ZOOM = 5.0e5;
+    /** Cross-fade band (in geZoom) from the local-texture globe to the streamed satellite tiles.
+     *  geZoom ≈ 2·R_earth / (view-width); 3.3 ≈ 3900 km across, 5.8 ≈ 2200 km — so satellite
+     *  imagery starts fading in around a ~3000 km-wide view and is fully in a bit closer. */
+    private static final double GE_GLOBE_MAX = 3.3;    // below: pure globe
+    private static final double GE_TILE_MIN  = 5.8;    // above: pure tiles (globe ray-cast skipped)
+    /** Smooth fly-in transition when entering the explorer (0→1). */
+    private double geTransition = 0.0;
+    /** Screen-roll (rad) of Earth's axial tilt at the moment of entry, straightened to north-up
+     *  as you zoom in — so the hand-off keeps the tilted globe and only levels out on the way down. */
+    private double geRoll0 = 0.0;
+    /** Index of the body the explorer shows (Earth). */
+    private static final int EARTH_INDEX = 2;
+    /** Full-resolution Earth maps for the explorer (loaded once, uncapped by the 2K sim cap). */
+    private int[] geDiffuse, geNight, geClouds;
+    private int geDiffW, geDiffH, geNightW, geNightH, geCloudW, geCloudH;
+    private boolean geTexTried = false;
+    /** Reused offscreen raster the globe is ray-cast into (scaled to the panel on blit). */
+    private BufferedImage geBuf;
+    private int geBufW = -1, geBufH = -1;
+    /** Cached on-screen radius (internal-buffer px) of the globe last frame, for pan scaling. */
+    private double geLastRadiusPx = 1.0;
+    /** Ray-cast cache: reuse the last raster when the view + lighting are unchanged (idle frames). */
+    private boolean geBufValid = false;
+    private double geRLat, geRLon, geRZoom, geRSunX, geRSunY, geRSunZ;
+    private boolean geRShade, geRNight, geRClouds;
+
+    // ---- Satellite tile streaming (Esri World Imagery, Web-Mercator XYZ) for street-level zoom ----
+    // Three transparent-overlay layers, each {z}/{y}/{x}, 256 px tiles: satellite base, place +
+    // boundary labels, and road/transport labels — the "Google Maps hybrid" stack.
+    private static final int LYR_IMAGERY = 0, LYR_PLACES = 1, LYR_ROADS = 2;
+    private static final String[] GE_LAYER_URL = {
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/",
+        "https://services.arcgisonline.com/arcgis/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/",
+        "https://services.arcgisonline.com/arcgis/rest/services/Reference/World_Transportation/MapServer/tile/",
+    };
+    private static final String GE_TILE_ATTRIB = "Imagery © Esri, Maxar, Earthstar Geographics";
+    /** Overlay place/road labels on the satellite map (toggle with L in the explorer). */
+    private boolean geLabels = true;
+    /** Reused low-res buffer for the day/night terminator drawn over the tiles. */
+    private BufferedImage geLightBuf;
+    private static final int GE_TILE_PX = 256;
+    private static final int GE_MAX_TILE_Z = 19;                 // Esri World Imagery max detail
+    private static final double GE_EARTH_CIRC = 2 * Math.PI * 6_378_137.0;   // WGS84 equator (m)
+    /** In-memory LRU tile cache (bounded) shared with the fetch workers. */
+    private final Map<Long, BufferedImage> tileCache =
+            Collections.synchronizedMap(new LinkedHashMap<>(1024, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<Long, BufferedImage> e) {
+                    return size() > 768;
+                }
+            });
+    private final Set<Long> tileLoading = ConcurrentHashMap.newKeySet();
+    private final Set<Long> tileFailed = ConcurrentHashMap.newKeySet();
+    private ExecutorService tilePool;      // parallel fetch workers (LIFO: newest view first)
+    private ExecutorService tileDiskPool;  // off-thread disk-cache writes (kept off the fetch path)
+    private HttpClient tileHttp;           // shared HTTP/2 client: connection reuse + multiplexing
+    private File tileCacheDir;
+    private volatile boolean tilesReachable = true;   // flips false after repeated network failures
+    private int tileFailStreak = 0;
+
+    // ----- Educational overlays (Education > Overlays) -----
     private boolean showKeplersLaw = false;     // Show Kepler's 3rd Law calculations
     private boolean showPerihelionAphelion = false; // Highlight perihelion/aphelion points
     private boolean showVelocityVectors = false;    // Show velocity vectors on planets
     private boolean showVelocityComparison = false; // Show velocity comparison at perihelion vs aphelion
-
-    // ----- Curriculum: data-driven ladder from beginner to AST 221 level -----
-    /** All lessons, built once on first access. Ordered beginner -> advanced. */
-    private java.util.List<Lesson> curriculum;
-    /** Page index within a PANEL lesson (reuses tourStep as the page cursor). */
-    private java.util.List<Lesson> curriculum() {
-        if (curriculum == null) curriculum = buildCurriculum();
-        return curriculum;
-    }
-    /** The Lesson object currently selected (clamped to a valid index). */
-    private Lesson currentLessonObj() {
-        java.util.List<Lesson> c = curriculum();
-        int idx = currentLesson - 1;
-        if (idx < 0 || idx >= c.size()) idx = 0;
-        return c.get(idx);
-    }
-
-    // ----- Guided Tour System -----
-    private boolean guidedTourActive = false;
-    private int tourStep = 0;
-    private double tourStepStartTime = 0;
-    private String tourMessage = "";
-    private double tourMessageAlpha = 0.0;
-    private static final double TOUR_MESSAGE_FADE_SPEED = 2.0;
-    private boolean tourStepReady = false;  // True when user can advance to next step
-    private boolean[] savedPlanetVisibility = null;  // Save visibility state before tour
 
     // ----- UI Size Settings -----
     enum UISize { SMALL, NORMAL, LARGE }
@@ -292,7 +567,7 @@ public class SolarSystemSimulation extends JPanel
     private long   lastNanos;
 
     /* ==============================
-       PLANET DATA (Keplerian Elements)
+       PLANET DATA (physical; orbits are integrated)
        ============================== */
     /** Names of celestial bodies */
     private static final String[] NAMES = {
@@ -308,32 +583,22 @@ public class SolarSystemSimulation extends JPanel
             "dwarf_planet", "dwarf_planet", "dwarf_planet"
     };
 
-    /** Semi-major axis (m) */
+    /**
+     * Nominal mean distance from the Sun (m) — used only to size the UI (orbit tessellation,
+     * zoom framing). The real orbit is integrated (see {@link NBodyEphemeris}); its current
+     * osculating elements are in {@link #oscA} etc.
+     */
     private static final double[] A_METERS = {
             5.7909e10, 1.0821e11, 1.495978707e11, 2.2794e11,
             7.7854e11, 1.4298e12, 2.8725e12, 4.5045e12, 5.9064e12,
-            2.767 * AU, 43.335 * AU, 67.781 * AU
-    };
-
-    /** Orbital eccentricity */
-    private static final double[] ECC = {
-            0.205630, 0.006772, 0.016709, 0.093405,
-            0.048498, 0.055546, 0.046381, 0.008956, 0.248827,
-            0.0758, 0.1887, 0.4407
-    };
-
-    /** Orbital period (Earth years) */
-    private static final double[] PERIOD_Y = {
-            0.2408467, 0.61519726, 1.0000174, 1.8808476,
-            11.862615, 29.447498, 84.016846, 164.79132, 247.92065,
-            4.60, 284.0, 557.0
+            2.766496 * AU, 42.909258 * AU, 68.139869 * AU
     };
 
     /** Physical radius (m) */
     private static final double[] RADIUS_M = {
             2.439e6, 6.052e6, 6.371e6, 3.390e6,
             6.9911e7, 5.8232e7, 2.5362e7, 2.4622e7, 1.1883e6,
-            4.73e5, 8.16e5, 1.163e6
+            4.697e5, 8.16e5, 1.163e6
     };
 
     /**
@@ -361,64 +626,6 @@ public class SolarSystemSimulation extends JPanel
     /** Atmospheric scale height as a fraction of planet radius (halo bleed distance). */
     private static final double[] ATMO_HEIGHT = {
             0.0, 0.11, 0.060, 0.045, 0.050, 0.048, 0.052, 0.052, 0.030, 0.0, 0.0, 0.0
-    };
-
-    /** Mean longitude at J2000 (degrees) */
-    private static final double[] PLANET_L0 = {
-            252.25084, 181.97973, 100.46435, 355.45332, 34.40438,
-            49.94432, 313.23218, 304.88003, 238.92881,
-            181.0, 210.0, 35.0
-    };
-
-    /** Longitude of perihelion at J2000 (degrees) */
-    private static final double[] PLANET_VARPI0 = {
-            77.45736, 131.60261, 102.93735, 336.04084, 14.75385,
-            92.43194, 170.96424, 44.97135, 113.76329,
-            73.0, 122.0, 151.0
-    };
-
-    /** Longitude of ascending node at J2000 (degrees) */
-    private static final double[] PLANET_OMEGA0 = {
-            48.33167, 76.67992, 0.0, 49.57854, 100.55615,
-            113.71504, 74.22950, 131.72169, 110.30347,
-            80.0, 122.0, 36.0
-    };
-
-    /**
-     * Orbital inclination to the ecliptic at J2000 (degrees). This is what tilts each
-     * orbit out of the reference plane, so a body rises above the ecliptic near its
-     * ascending node and dips below near the descending node — the out-of-plane
-     * "orbital oscillation" of one period. Real values (true scale): most planets are
-     * within a few degrees, Pluto/dwarf bodies far steeper.
-     */
-    private static final double[] PLANET_INCL_DEG = {
-            7.00487, 3.39471, 0.00005, 1.85061, 1.30530,
-            2.48446, 0.76986, 1.76917, 17.14175,
-            10.593, 28.19, 44.04
-    };
-
-    // --- Secular precession: linear rates of the mean elements per Julian century
-    //     (Standish/JPL for the 8 planets + Pluto; 0 for the other dwarf bodies).
-    //     Applied over sim time so the ascending node slowly regresses and the
-    //     perihelion precesses — only perceptible at high time-acceleration.
-
-    /** d(longitude of ascending node)/dt (deg per Julian century). */
-    private static final double[] PLANET_OMEGA_DOT = {
-            -0.12534081, -0.27769418, 0.0, -0.29257343, 0.20469106,
-            -0.28867794, 0.04240589, -0.00508664, -0.01183482,
-            0.0, 0.0, 0.0
-    };
-    /** d(longitude of perihelion)/dt (deg per Julian century). */
-    private static final double[] PLANET_VARPI_DOT = {
-            0.16047689, 0.00268329, 0.32327364, 0.44441088, 0.21252668,
-            -0.41897216, 0.40805281, -0.32241464, -0.04062942,
-            0.0, 0.0, 0.0
-    };
-    /** d(inclination)/dt (deg per Julian century). */
-    private static final double[] PLANET_INCL_DOT = {
-            -0.00594749, -0.00078890, -0.01294668, -0.00813131, -0.00183714,
-            0.00193609, -0.00242939, 0.00035372, 0.00039054,
-            0.0, 0.0, 0.0
     };
 
     /** Sun's radius (m) */
@@ -449,10 +656,10 @@ public class SolarSystemSimulation extends JPanel
             }}
     );
 
-    private static final double[] PLANET_MASS = {
+    static final double[] PLANET_MASS = {
             3.3011e23, 4.8675e24, 5.97237e24, 6.4171e23,
             1.8982e27, 5.6834e26, 8.6810e25, 1.02413e26, 1.303e22,
-            9.39e20, 4.01e21, 1.66e22
+            9.3835e20, 4.006e21, 1.6466e22
     };
 
     /** Sidereal rotation period (hours); negative = retrograde spin. NASA fact sheets. */
@@ -469,6 +676,36 @@ public class SolarSystemSimulation extends JPanel
             4.0, 0.0, 0.0
     };
 
+    // ============================================================================
+    // IAU / WGCCRE (2015) rotation model for the eight planets (indices 0..7).
+    //
+    // The report fixes each body's orientation in inertial space with three angles:
+    //   pole right ascension  a0 = A0 + A0_T * T        (deg, ICRF/J2000 equatorial)
+    //   pole declination      d0 = D0 + D0_T * T        (deg)
+    //   prime meridian        W  = W0 + WDOT * d         (deg, measured east from the
+    //                                                     node of the ICRF equator)
+    // with d = days of TT since J2000 and T = d / 36525 Julian centuries. Ẇ is the
+    // true sidereal spin rate (negative = retrograde: Venus, Uranus). Small periodic
+    // libration terms (Mercury, Neptune's sinN, Jupiter's magnetosphere wobble) are
+    // dropped — well below the sim's other approximations. Values: Archinal et al.,
+    // "Report of the IAU WGCCRE 2015", Celest. Mech. Dyn. Astron. 130:22 (2018).
+    //
+    // These anchor the on-screen spin to a REAL orientation datum: at any date the
+    // sub-solar meridian rendered on a planet is the meridian the Sun truly stands
+    // over, instead of an arbitrary phase. See iauSubSolarEastLon / bodySpinAngle.
+    // ============================================================================
+    /** Pole right ascension a0 at J2000 (deg) and its per-century rate. */
+    private static final double[] IAU_RA0   = {281.0103, 272.76, 0.00,     317.269,  268.056595, 40.589, 257.311, 299.36};
+    private static final double[] IAU_RA0_T = {  0.0,      0.0,  -0.641,    -0.106,   -0.006499,  -0.036,  0.0,     0.0 };
+    /** Pole declination d0 at J2000 (deg) and its per-century rate. */
+    private static final double[] IAU_DEC0   = {61.4155, 67.16, 90.00,   54.432,  64.495303, 83.537, -15.175, 43.46};
+    private static final double[] IAU_DEC0_T = { 0.0,     0.0,  -0.557,  -0.061,   0.002413, -0.004,   0.0,    0.0 };
+    /** Prime-meridian angle W at J2000 (deg) and its rate (deg/day); negative = retrograde. */
+    private static final double[] IAU_W0   = {329.5988, 160.20, 190.147, 176.049863, 284.95,   38.90,   203.81,   253.18};
+    private static final double[] IAU_WDOT = {  6.1385108, -1.4813688, 360.9856235, 350.891982443297, 870.5360000, 810.7939024, -501.1600928, 536.3128492};
+    /** Obliquity of the ecliptic (deg) used to rotate the sim's ecliptic vectors into the ICRF equatorial frame the IAU pole is given in. */
+    private static final double ECLIPTIC_OBLIQUITY_DEG = 23.43929111;
+
     /** Sidereal rotation of the Sun at the equator (hours). */
     private static final double SUN_ROTATION_H = 609.12;
     /** Moon (Luna) sidereal rotation (tidally locked) and obliquity to ecliptic. */
@@ -478,39 +715,47 @@ public class SolarSystemSimulation extends JPanel
     /* ==============================
        MOON DATA
        ============================== */
-    /** Semi-major axis of moons relative to parent planet (m) */
-    private static final double[][] MOON_A_M = {
+    /**
+     * Mean semi-major axis of each moon about its planet (m). Nominal values for UI sizing and
+     * the info panel; positions come from {@link MoonEphemeris} (Earth's Moon) and
+     * {@link SatelliteEphemeris} (all others).
+     */
+    static final double[][] MOON_A_M = {
             {}, {}, {3.844e8},
             {9.377e6, 2.356e7},
             {4.217e8, 6.71e8, 1.07e9, 1.883e9},
-            {1.222e9, 2.38e8, 5.27e8, 1.861e8, 2.946e8, 3.561e8, 3.561e9},
-            {4.363e8, 5.835e8, 4.989e8, 1.913e8, 1.299e8},
-            {3.547e8}, {1.195e7}, {}, {}, {}
+            {1.222e9, 2.38e8, 5.27e8, 1.861e8, 2.946e8, 3.774e8, 3.561e9},
+            {4.363e8, 5.835e8, 2.660e8, 1.913e8, 1.299e8},
+            {3.547e8}, {1.9596e7}, {}, {}, {}
     };
 
-    /** Moon orbital period (Earth days) */
-    private static final double[][] MOON_PERIOD_DAYS = {
+    /** Moon sidereal orbital period (Earth days). */
+    static final double[][] MOON_PERIOD_DAYS = {
             {}, {}, {27.321661},
             {0.318910, 1.26244},
             {1.769278, 3.551181, 7.154552, 16.689018},
             {15.94542, 1.370218, 4.518212, 0.942422, 1.887802, 2.736915, 79.3215},
-            {8.706234, 13.46339, 4.144176, 1.376491, 1.413479},
+            {8.706234, 13.46339, 4.144176, 2.520379, 1.413479},
             {5.876854}, {6.38723}, {}, {}, {}
     };
 
-    /** Moon radius as ratio of parent planet radius */
-    private static final double[][] MOON_SIZE_RATIO = {
-            {}, {}, {0.273},
-            {0.11, 0.08},
-            {0.286, 0.245, 0.413, 0.378},
-            {0.404, 0.036, 0.152, 0.034, 0.024, 0.025, 0.009},
-            {0.196, 0.182, 0.173, 0.096, 0.063},
-            {0.212}, {0.501},
+    /**
+     * Mean radius of each moon (m), JPL / IAU values. (An earlier table mixed ratios to
+     * Earth's radius with made-up ones and scaled them by the parent, drawing e.g. Io at
+     * 20 000 km instead of 1 822 km; these are the real sizes.)
+     */
+    private static final double[][] MOON_RADIUS_M = {
+            {}, {}, {1737.4e3},
+            {11.08e3, 6.2e3},
+            {1821.6e3, 1560.8e3, 2634.1e3, 2410.3e3},
+            {2574.7e3, 252.1e3, 763.8e3, 198.2e3, 531.1e3, 561.4e3, 734.5e3},
+            {788.9e3, 761.4e3, 584.7e3, 578.9e3, 235.8e3},
+            {1353.4e3}, {606.0e3},
             {}, {}, {}
     };
 
     /** Names of moons per planet */
-    private static final String[][] MOON_NAMES = {
+    static final String[][] MOON_NAMES = {
             {}, {}, {"Moon"},
             {"Phobos", "Deimos"},
             {"Io", "Europa", "Ganymede", "Callisto"},
@@ -519,89 +764,45 @@ public class SolarSystemSimulation extends JPanel
             {"Triton"}, {"Charon"}, {}, {}, {}
     };
 
-    /** Moon orbital eccentricity */
-    private static final double[][] MOON_ECC = {
-            {}, {}, {0.05490},
-            {0.01550, 0.00021},
-            {0.00412, 0.00899, 0.00126, 0.00716},
-            {0.02880, 0.00470, 0.00100, 0.00200, 0.00000, 0.00020, 0.02800},
-            {0.00110, 0.00090, 0.00390, 0.00120, 0.00080},
-            {0.000016}, {0.00259}, {}, {}, {}
-    };
-
-    /** Argument of periapsis for moons (radians) */
-    private static final double[][] MOON_ARG_PERI = {
-            {}, {}, {2.034},
-            {Math.PI/2, Math.PI},
-            {1.88, 0.85, 1.02, 5.92},
-            {0.20, 2.29, 5.80, 4.40, 0.0, 2.10, 1.20},
-            {3.76, 0.44, 4.72, 2.50, 1.80},
-            {Math.PI}, {0.0}, {}, {}, {}
-    };
-
-    /**
-     * Moon orbital inclination to the parent's equator/ecliptic (degrees). This tilts the
-     * moon out of the orbital plane, which is what makes eclipse shadows fall at real
-     * latitudes (and makes eclipses rare) rather than always crossing the sub-solar point.
-     * The Moon's 5.145° to the ecliptic is the physically important one.
-     */
-    private static final double[][] MOON_INCL_DEG = {
-            {}, {}, {5.145},
-            {1.08, 1.79},
-            {0.036, 0.467, 0.177, 0.192},
-            {0.33, 0.02, 0.35, 1.57, 1.09, 0.02, 7.57},
-            {0.34, 0.10, 0.36, 0.26, 4.34},
-            {156.885}, {0.08}, {}, {}, {}
-    };
-
-    /**
-     * Longitude of the ascending node for each moon (degrees); sets where its orbit crosses
-     * the reference plane. The Moon's node regresses over 18.6 yr, so any value is valid at
-     * some epoch — {@code stageEclipse} nudges Earth's node to line an eclipse up on demand.
-     */
-    private static double[][] MOON_NODE_DEG = {
-            {}, {}, {125.08},
-            {0.0, 0.0},
-            {0.0, 0.0, 0.0, 0.0},
-            {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
-            {0.0, 0.0, 0.0, 0.0, 0.0},
-            {0.0}, {0.0}, {}, {}, {}
-    };
-
-    /** Computed moon radii (planet radius × ratio) */
-    private static final double[][] MOON_RADIUS_M = new double[NAMES.length][];
-
-    /* Static initializer: compute actual moon radii */
+    /** Moon radius as a ratio of its parent planet's radius (the eclipse-shadow geometry's unit). */
+    private static final double[][] MOON_SIZE_RATIO = new double[NAMES.length][];
     static {
         for (int i = 0; i < NAMES.length; i++) {
-            int n = MOON_SIZE_RATIO[i].length;
-            MOON_RADIUS_M[i] = new double[n];
-            for (int m = 0; m < n; m++) {
-                MOON_RADIUS_M[i][m] = RADIUS_M[i] * MOON_SIZE_RATIO[i][m];
-            }
+            MOON_SIZE_RATIO[i] = new double[MOON_RADIUS_M[i].length];
+            for (int m = 0; m < MOON_RADIUS_M[i].length; m++) MOON_SIZE_RATIO[i][m] = MOON_RADIUS_M[i][m] / RADIUS_M[i];
         }
     }
+
+    // ---- Read-only body data for the planetarium (SkyView) ----
+    static int bodyCount() { return NAMES.length; }
+    static String bodyName(int i) { return NAMES[i]; }
+    static double bodyRadiusM(int i) { return RADIUS_M[i]; }
+    static double moonRadiusM(int i, int m) { return MOON_RADIUS_M[i][m]; }
 
     /* ==============================
        ORBITAL STATE
        ============================== */
-    /** Current mean anomaly for each planet (radians) */
-    private final double[] meanAnomaly = new double[NAMES.length];
-    /** Mean anomaly for each moon (per planet) */
-    private final double[][] moonMean = new double[NAMES.length][];
+    /**
+     * Osculating heliocentric elements of each planet's centre at the current sim time
+     * (from {@link #updateEphemeris}): semi-major axis (m), eccentricity, inclination, node Ω,
+     * longitude of perihelion ϖ, mean and eccentric anomaly (radians), and period (years).
+     * These are the ellipse the planet is on right now — the orbit ring, the perihelion /
+     * aphelion markers, Kepler's-law overlay and the lessons all use them.
+     */
+    private final double[] oscA = new double[NAMES.length], oscE = new double[NAMES.length],
+            oscI = new double[NAMES.length], oscNode = new double[NAMES.length],
+            oscVarpi = new double[NAMES.length], oscM = new double[NAMES.length],
+            oscEanom = new double[NAMES.length], oscPeriodY = new double[NAMES.length];
 
     /** Built-in catalog of real minor bodies (comets, asteroids, distant objects). */
     private final java.util.List<SmallBody> smallBodies = new java.util.ArrayList<>();
     private boolean showComets = false;     // comets off by default (toggle in the Objects menu)
-    private boolean showAsteroids = true;   // named asteroids visible by default
+    private boolean showAsteroids = false;  // asteroids / near-Earth objects off by default
     private boolean showDistantBodies = false;  // far centaurs/TNOs off by default (huge orbits)
     private boolean showSmallBodyLabels = true;
 
     /** Number of points to use when drawing orbits */
     private static final int ORBIT_RESOLUTION = 10000;
-
-    /** Precomputed moon orbit paths (relative to parent planet) */
-    private final ArrayList<ArrayList<ArrayList<Point2D.Double>>> moonOrbitPaths = new ArrayList<>();
 
     /** Current world position of planets (m) */
     private final double[] planetX = new double[NAMES.length];
@@ -657,7 +858,6 @@ public class SolarSystemSimulation extends JPanel
         return glSpheres;
     }
 
-    // No collision effects when strictly Keplerian.
 
     /* ==============================
        CONSTRUCTOR
@@ -676,52 +876,10 @@ public class SolarSystemSimulation extends JPanel
         // All planets and dwarf planets (Pluto, Ceres, Haumea, Eris) visible by default.
         Arrays.fill(planetVisible, true);
 
-        // Initialize planet positions at J2000 epoch
-        for (int i = 0; i < NAMES.length; i++) {
-            double L_deg = PLANET_L0[i];
-            double varpi_deg = PLANET_VARPI0[i];
-            double M_deg = L_deg - varpi_deg;  // Mean anomaly at epoch
-            meanAnomaly[i] = Math.toRadians(M_deg % 360.0);
-
-            double[] pos = planetXYZ(i);   // 3-D from precessed elements (at epoch, precession = 0)
-            planetX[i] = pos[0];
-            planetY[i] = pos[1];
-            planetZ[i] = pos[2];
-            planetDistM[i] = Math.sqrt(pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]);
-        }
-
-        // Initialize moon mean anomaly arrays
-        for (int i = 0; i < NAMES.length; i++) {
-            int num = MOON_NAMES[i].length;
-            moonMean[i] = new double[num];
-        }
-
-        // Load the built-in catalog of real comets, asteroids and distant objects.
+        // Load the built-in catalog of real comets, asteroids and distant objects, then place
+        // everything at its integrated state for the starting sim time (J2000.0).
         smallBodies.addAll(buildBodyCatalog());
-        // Planet orbit rings are built on the fly (getADouble) from current precessed 3-D
-        // elements, so there is no static orbit-path table to precompute here anymore.
-
-        // Pre-compute moon orbit paths (rotated by argument of periapsis)
-        for (int i = 0; i < NAMES.length; i++) {
-            ArrayList<ArrayList<Point2D.Double>> moonOrbits = new ArrayList<>();
-            for (int m = 0; m < MOON_A_M[i].length; m++) {
-                ArrayList<Point2D.Double> orbit = new ArrayList<>();
-                double a = MOON_A_M[i][m], e = MOON_ECC[i][m], b = a * Math.sqrt(1 - e * e);
-                double arg = MOON_ARG_PERI[i][m];
-                for (int j = 0; j <= ORBIT_RESOLUTION; j++) {
-                    double E = 2 * Math.PI * j / ORBIT_RESOLUTION;
-                    double xTemp = a * (Math.cos(E) - e);
-                    double yTemp = b * Math.sin(E);
-                    double rxTemp = xTemp * Math.cos(arg) - yTemp * Math.sin(arg);
-                    // Apply 90° clockwise rotation to fix coordinate system
-                    double rx = xTemp * Math.sin(arg) + yTemp * Math.cos(arg);
-                    double ry = -rxTemp;
-                    orbit.add(new Point2D.Double(rx, ry));
-                }
-                moonOrbits.add(orbit);
-            }
-            moonOrbitPaths.add(moonOrbits);
-        }
+        updateEphemeris();
 
         // Key listener: Z toggles auto-zoom, S toggles shading.
         setFocusable(true);
@@ -760,7 +918,7 @@ public class SolarSystemSimulation extends JPanel
             if (yawProp != null) setViewYaw(Math.toRadians(Double.parseDouble(yawProp)));
         } catch (NumberFormatException ignored) { }
         lastNanos = System.nanoTime();
-        if (System.getProperty("sss.shot") == null) {
+        if (System.getProperty("sss.shot") == null && System.getProperty("sss.lessonshot") == null) {
             Timer timer = new Timer(16, this);
             timer.start();
         }
@@ -773,6 +931,38 @@ public class SolarSystemSimulation extends JPanel
      * behave identically regardless of which component holds focus.
      */
     boolean handleGlobalKey(int code) {
+        if (lessonActive() && lessonStudio.handleKey(code)) return true;
+        if (skyViewActive) {
+            if (code == KeyEvent.VK_ESCAPE || code == KeyEvent.VK_BACK_SPACE || code == KeyEvent.VK_K) { exitSkyView(); return true; }
+            if (skyView().handleKey(code)) return true;
+            if (code != KeyEvent.VK_SPACE && code != KeyEvent.VK_P && code != KeyEvent.VK_H) return false;
+        } else if (code == KeyEvent.VK_K && !lessonActive()) {
+            enterSkyView();
+            return true;
+        }
+        if (earthExplorerActive) {
+            double step = 6.0 / Math.max(0.5, geZoom);   // pan step shrinks as you zoom in
+            switch (code) {
+                case KeyEvent.VK_ESCAPE, KeyEvent.VK_BACK_SPACE -> { exitEarthExplorer(); return true; }
+                case KeyEvent.VK_LEFT  -> { geLon = wrapLonDeg(geLon - step); repaint(); return true; }
+                case KeyEvent.VK_RIGHT -> { geLon = wrapLonDeg(geLon + step); repaint(); return true; }
+                case KeyEvent.VK_UP    -> { geLat = Math.min(89.9, geLat + step); repaint(); return true; }
+                case KeyEvent.VK_DOWN  -> { geLat = Math.max(-89.9, geLat - step); repaint(); return true; }
+                case KeyEvent.VK_EQUALS, KeyEvent.VK_PLUS, KeyEvent.VK_ADD ->
+                        { geTargetZoom = Math.min(GE_MAX_ZOOM, geTargetZoom * 1.3); return true; }
+                case KeyEvent.VK_MINUS, KeyEvent.VK_SUBTRACT -> {
+                    geTargetZoom /= 1.3;
+                    if (geTargetZoom < GE_MIN_ZOOM) exitEarthExplorer();
+                    return true;
+                }
+                case KeyEvent.VK_L -> { geLabels = !geLabels; repaint(); return true; }   // map labels
+                case KeyEvent.VK_V -> {                                                     // look up from here
+                    enterSkyViewAt(String.format("Map centre (%.2f°, %.2f°)", geLat, geLon), geLat, geLon);
+                    return true;
+                }
+                default -> { /* fall through to the shared S/C/I/pause toggles below */ }
+            }
+        }
         switch (code) {
             case KeyEvent.VK_Z -> {
                 autoZoomEnabled = !autoZoomEnabled;
@@ -820,9 +1010,6 @@ public class SolarSystemSimulation extends JPanel
             }
             case KeyEvent.VK_U -> showSunInfo = !showSunInfo;
             case KeyEvent.VK_H -> toggleMenuBarVisibility();
-            case KeyEvent.VK_N -> {
-                if (guidedTourActive && tourStepReady) advanceTourStep();
-            }
             default -> { return false; }
         }
         repaint();
@@ -846,11 +1033,28 @@ public class SolarSystemSimulation extends JPanel
        ============================== */
     @Override
     public void mouseWheelMoved(MouseWheelEvent e) {
+        lessonSteer = false;                     // the user is framing the view now
         if (e.isControlDown()) {
             // Ctrl+Scroll: adjust time scale
             double proposed = e.getPreciseWheelRotation() < 0 ? timeScale * 2 : timeScale / 2;
             proposed = Math.max(1.0, proposed); // clamp to 1.0 s/s minimum
             setTimeScaleAndSync(proposed);
+        } else if (skyViewActive) {
+            skyView().zoom(e.getPreciseWheelRotation());
+        } else if (earthExplorerActive) {
+            // Earth Explorer: scroll dives toward / pulls back from the surface.
+            if (e.getPreciseWheelRotation() < 0) {
+                geTargetZoom = Math.min(geTargetZoom * 1.30, GE_MAX_ZOOM);
+            } else {
+                geTargetZoom /= 1.30;
+                if (geTargetZoom < GE_MIN_ZOOM) { exitEarthExplorer(); return; }
+            }
+            repaint();
+        } else if (e.getPreciseWheelRotation() < 0 && followingPlanet && !followingMoon
+                && cameraFocusIndex == EARTH_INDEX && hasTexture("earth")
+                && earthScreenRadiusPx() >= 0.26 * Math.min(getWidth(), getHeight())) {
+            // Zooming in on a well-framed Earth hands off to the Google-Earth-style explorer.
+            enterEarthExplorer();
         } else {
             // Normal scroll: zoom
             double factor = e.getPreciseWheelRotation() < 0 ? 1.1 : 1/1.1;
@@ -865,6 +1069,8 @@ public class SolarSystemSimulation extends JPanel
      */
     private void handleClick(int mx, int my) {
         exitSearchModeIfActive();
+        if (skyViewActive) { skyView().click(mx, my); return; }
+        if (earthExplorerActive) return;   // clicks don't select bodies while exploring Earth
         int cx = getWidth() / 2, cy = getHeight() / 2;
 
         // MOON CLICK (only when zoomed in and following planet)
@@ -876,10 +1082,11 @@ public class SolarSystemSimulation extends JPanel
                 double moonWorldX = planetX[p] + sunBarycenterX + rel[0];
                 double moonWorldY = planetY[p] + sunBarycenterY + rel[1];
                 double moonWorldZ = planetZ[p] + rel[2];
+                if (!inFront(moonWorldX, moonWorldY, moonWorldZ)) continue;
 
-                double mpx = projX(moonWorldX, moonWorldY);
+                double mpx = projX(moonWorldX, moonWorldY, moonWorldZ);
                 double mpy = projY(moonWorldX, moonWorldY, moonWorldZ);
-                double mr  = Math.max(RADIUS_M[p] * MOON_SIZE_RATIO[p][m] * METERS_TO_PIXELS * currentZoom, 2.0);
+                double mr  = Math.max(MOON_RADIUS_M[p][m] * perspScaleAt(moonWorldX, moonWorldY, moonWorldZ), 2.0);
 
                 double dx = mx - mpx, dy = my - mpy;
                 if (dx * dx + dy * dy < mr * mr * 4) {
@@ -912,9 +1119,10 @@ public class SolarSystemSimulation extends JPanel
         // PLANET CLICK
         for (int i = 0; i < NAMES.length; i++) {
             // Use barycentric coordinates for click detection
-            double px = projX(planetX[i] + sunBarycenterX, planetY[i] + sunBarycenterY);
+            if (!inFront(planetX[i] + sunBarycenterX, planetY[i] + sunBarycenterY, planetZ[i])) continue;
+            double px = projX(planetX[i] + sunBarycenterX, planetY[i] + sunBarycenterY, planetZ[i]);
             double py = projY(planetX[i] + sunBarycenterX, planetY[i] + sunBarycenterY, planetZ[i]);
-            double pr = Math.max(RADIUS_M[i] * METERS_TO_PIXELS * currentZoom, 4);
+            double pr = Math.max(RADIUS_M[i] * perspScaleAt(planetX[i] + sunBarycenterX, planetY[i] + sunBarycenterY, planetZ[i]), 4);
 
             double dx = mx - px, dy = my - py;
             if (dx * dx + dy * dy < pr * pr * 4) {
@@ -954,6 +1162,7 @@ public class SolarSystemSimulation extends JPanel
     }
 
     @Override public void mouseClicked(MouseEvent e) {
+        if (lessonActive() && e.getClickCount() == 2) { lessonStudio.reaim(); return; }   // back to the step's view
         if (!handleScaleRulerClick(e.getX(), e.getY(), getHeight())) {
             handleClick(e.getX(), e.getY());
         }
@@ -972,7 +1181,30 @@ public class SolarSystemSimulation extends JPanel
     @Override public void mouseExited(MouseEvent e) {}
 
     @Override public void mouseDragged(MouseEvent e) {
+        if (skyViewActive) {
+            skyView().drag(e.getX() - lastDragX, e.getY() - lastDragY);
+            lastDragX = e.getX();
+            lastDragY = e.getY();
+            return;
+        }
+        if (earthExplorerActive) {
+            // Grab-and-drag the surface: convert panel-pixel motion to a rotation of the
+            // globe about the point under the cursor (scaled by the current zoom).
+            double sx = (double) geBufW / Math.max(1, getWidth());
+            double dxn = (e.getX() - lastDragX) * sx / Math.max(1.0, geLastRadiusPx);
+            double dyn = (e.getY() - lastDragY) * sx / Math.max(1.0, geLastRadiusPx);
+            double cphi = Math.max(0.15, Math.cos(Math.toRadians(geLat)));
+            geLon -= Math.toDegrees(dxn / cphi);
+            geLat += Math.toDegrees(dyn);
+            geLat = Math.max(-89.9, Math.min(89.9, geLat));
+            geLon = ((geLon + 180) % 360 + 360) % 360 - 180;
+            lastDragX = e.getX();
+            lastDragY = e.getY();
+            repaint();
+            return;
+        }
         if (draggingView) {
+            lessonSteer = false;                 // the user is framing the view now
             // Free-orbit the camera: horizontal drag swings the azimuth (yaw) around the system;
             // vertical drag pitches from top-down toward edge-on (reveals orbital inclination and
             // the out-of-plane oscillation).
@@ -998,49 +1230,159 @@ public class SolarSystemSimulation extends JPanel
     /* ==============================
        RENDERING
        ============================== */
-    // ----- Starfield background (regenerated on resize, stable via fixed seed) -----
-    private int[] starX, starY;
-    private float[] starMag;   // 0..1 brightness
-    private int starFieldW = -1, starFieldH = -1;
+    // ----- The real sky: Yale Bright Star Catalogue + Milky Way, fixed at infinity -----
+    /** Draw the real star field (and Milky Way) behind the system; off = plain deep-space gradient. */
+    private boolean showRealStars = true;
+    /** Constellation stick figures on the background sky (View menu). */
+    private boolean showConstellations = false;
+    /** Star directions in world axes for {@link #starEpochYears} (proper motion applied). */
+    private double[] starWX, starWY, starWZ;
+    private double starEpochYears = Double.NaN;
+    /** Low-resolution Milky Way backdrop, re-rendered only when the view orientation/size changes. */
+    private BufferedImage mwBackdrop;
+    private String mwBackdropKey = "";
 
-    private void ensureStarfield(int w, int h) {
-        if (w == starFieldW && h == starFieldH && starX != null) return;
-        starFieldW = w; starFieldH = h;
-        int count = Math.max(120, (w * h) / 6000);
-        starX = new int[count];
-        starY = new int[count];
-        starMag = new float[count];
-        Random rng = new Random(0xC0FFEE);
-        for (int i = 0; i < count; i++) {
-            starX[i] = rng.nextInt(Math.max(1, w));
-            starY[i] = rng.nextInt(Math.max(1, h));
-            // bias toward faint stars, a few bright ones
-            float m = rng.nextFloat();
-            starMag[i] = m * m;
+    /** Faintest magnitude drawn in the 3-D view's background sky. */
+    private static final double SKY_LIMIT_MAG = 6.2;
+
+    /** Refresh the cached star directions when the date has moved by more than a year. */
+    private void ensureStarDirections(StarCatalog cat) {
+        double years = simTimeSec / (365.25 * DAY);
+        if (starWX != null && Math.abs(years - starEpochYears) < 1.0) return;
+        starEpochYears = years;
+        starWX = new double[cat.n]; starWY = new double[cat.n]; starWZ = new double[cat.n];
+        for (int i = 0; i < cat.n; i++) {
+            double[] d = cat.directionAt(i, years);
+            double[] w = eclToWorld(d[0], d[1], d[2]);
+            starWX[i] = w[0]; starWY[i] = w[1]; starWZ[i] = w[2];
         }
     }
 
-    /** Deep-space gradient plus a subtle, parallaxed starfield. */
-    private void drawStarfield(Graphics2D g2, int w, int h) {
-        // Vertical space gradient for depth
-        g2.setPaint(new GradientPaint(0, 0, new Color(10, 12, 22),
-                0, h, new Color(4, 5, 12)));
-        g2.fillRect(0, 0, w, h);
+    /**
+     * Focal length (px) for points at infinity: the same perspective the bodies get, so stars
+     * stay fixed relative to the scene's directions as the camera turns.
+     */
+    private double skyFocalPx() { return METERS_TO_PIXELS * currentZoom * cameraDistanceMeters(); }
 
-        ensureStarfield(w, h);
-        // Gentle parallax tied to camera so panning feels spatial
-        int ox = (int) Math.floor(-camX * METERS_TO_PIXELS * 0.00004) ;
-        int oy = (int) Math.floor(-camY * METERS_TO_PIXELS * 0.00004);
-        for (int i = 0; i < starX.length; i++) {
-            int sx = Math.floorMod(starX[i] + ox, w);
-            int sy = Math.floorMod(starY[i] + oy, h);
-            float m = starMag[i];
-            int bright = (int) (110 + 145 * m);
-            int size = m > 0.85f ? 2 : 1;
-            // faint bluish-white
-            g2.setColor(new Color(bright, bright, Math.min(255, bright + 20), (int) (120 + 135 * m)));
-            g2.fillRect(sx, sy, size, size);
+    /**
+     * Deep-space background with the real sky: the Milky Way and the Yale Bright Star Catalogue
+     * (every naked-eye star, at its true direction, brightness and colour), seen through the
+     * current camera. Stars are infinitely far away, so they turn with the view but never
+     * parallax as the camera moves through the system.
+     */
+    private void drawStarfield(Graphics2D g2, int w, int h) {
+        g2.setPaint(new GradientPaint(0, 0, new Color(6, 8, 16), 0, h, new Color(3, 4, 10)));
+        g2.fillRect(0, 0, w, h);
+        StarCatalog cat = showRealStars ? StarCatalog.get() : null;
+        if (cat == null) return;
+        ensureStarDirections(cat);
+        double f = skyFocalPx(), cx = w / 2.0, cy = h / 2.0;
+        drawMilkyWayBackdrop(g2, w, h, f, cat);
+
+        Object oldAA = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        if (showConstellations) {
+            g2.setStroke(new BasicStroke(1f));
+            g2.setColor(new Color(90, 130, 200, 70));
+            for (StarCatalog.Figure fig : cat.figures) {
+                Path2D.Double path = new Path2D.Double();
+                boolean pen = false;
+                for (double[] d : fig.points()) {
+                    double[] wv = eclToWorld(d[0], d[1], d[2]);
+                    double[] s = skyToScreen(wv[0], wv[1], wv[2], f, cx, cy);
+                    if (s == null) { pen = false; continue; }
+                    if (!pen) { path.moveTo(s[0], s[1]); pen = true; } else path.lineTo(s[0], s[1]);
+                }
+                g2.draw(path);
+            }
         }
+        for (int i = 0; i < cat.n; i++) {
+            if (cat.vmag[i] > SKY_LIMIT_MAG + 0.5) continue;
+            double[] s = skyToScreen(starWX[i], starWY[i], starWZ[i], f, cx, cy);
+            if (s == null || s[0] < -4 || s[1] < -4 || s[0] > w + 4 || s[1] > h + 4) continue;
+            double[] sp = StarCatalog.pointSprite(cat.vmag[i], SKY_LIMIT_MAG);
+            if (sp[1] < 0.03) continue;
+            int rgb = cat.rgb[i];
+            g2.setColor(new Color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, (int) (255 * sp[1])));
+            double r = sp[0];
+            if (r < 0.9) g2.fill(new Rectangle2D.Double(s[0] - 0.6, s[1] - 0.6, 1.2, 1.2));
+            else g2.fill(new Ellipse2D.Double(s[0] - r, s[1] - r, 2 * r, 2 * r));
+        }
+        if (oldAA != null) g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
+    }
+
+    /** Screen position of a direction at infinity (world axes), or null if it's behind the camera. */
+    private double[] skyToScreen(double wx, double wy, double wz, double f, double cx, double cy) {
+        double xv = wx * viewCosY - wy * viewSinY;
+        double yr = wx * viewSinY + wy * viewCosY;
+        double zv = yr * viewSinP + wz * viewCosP;          // toward the viewer
+        if (zv > -1e-3) return null;
+        double sd = yr * viewCosP - wz * viewSinP;
+        return new double[]{ cx + f * xv / -zv, cy + f * sd / -zv };
+    }
+
+    /**
+     * The Milky Way, rendered per pixel from the brightness map at quarter resolution and
+     * smoothed up — cached, so it costs nothing until the view turns or the window resizes.
+     */
+    private void drawMilkyWayBackdrop(Graphics2D g2, int w, int h, double f, StarCatalog cat) {
+        int bw = Math.max(1, w / 4), bh = Math.max(1, h / 4);
+        String key = bw + "x" + bh + ":" + (float) viewYawRad + ":" + (float) viewPitchRad + ":" + (float) f;
+        if (!key.equals(mwBackdropKey) || mwBackdrop == null) {
+            mwBackdropKey = key;
+            mwBackdrop = new BufferedImage(bw, bh, BufferedImage.TYPE_INT_ARGB);
+            double fs = f / 4.0, cx = bw / 2.0, cy = bh / 2.0;
+            int[] px = new int[bw * bh];
+            for (int y = 0; y < bh; y++) {
+                for (int x = 0; x < bw; x++) {
+                    // View ray (xv, sd, zv = −focal) → world direction (inverse of skyToScreen's rotation).
+                    double xv = x + 0.5 - cx, sd = y + 0.5 - cy, zv = -fs;
+                    double yr = sd * viewCosP + zv * viewSinP;
+                    double wz = -sd * viewSinP + zv * viewCosP;
+                    double wx = xv * viewCosY + yr * viewSinY;
+                    double wy = -xv * viewSinY + yr * viewCosY;
+                    double n = Math.sqrt(wx * wx + wy * wy + wz * wz);
+                    double[] q = Astro.eclToEq(-wy / n, wx / n, wz / n);     // world {ye,−xe,ze} → ecliptic → ICRF
+                    float b = cat.milkyWay(q[0], q[1], q[2]);
+                    int a = (int) (95 * Math.pow(b, 0.85));
+                    px[y * bw + x] = (a << 24) | (178 << 16) | (192 << 8) | 228;
+                }
+            }
+            mwBackdrop.setRGB(0, 0, bw, bh, px, 0, bw);
+        }
+        Object oldI = g2.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
+        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g2.drawImage(mwBackdrop, 0, 0, w, h, null);
+        if (oldI != null) g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldI);
+    }
+
+    private static int clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+    /**
+     * Makes the Sun read as a glowing body rather than a disc pasted on a glow. Two layers go on
+     * top of the drawn disc: (1) limb darkening — the real photosphere's edge is seen through
+     * cooler, higher gas, so it is dimmer and redder (about 40% of the centre brightness in visible
+     * light); (2) a bloom that starts inside the limb and fades out past it, the way a camera or
+     * eye spreads a very bright source, so the disc edge dissolves into the surrounding corona.
+     */
+    private void drawSunLimbAndBloom(Graphics2D g2, double cx, double cy, double r) {
+        Paint old = g2.getPaint();
+        // Limb darkening: transparent over the middle of the disc, warm shadow toward the edge.
+        g2.setPaint(new RadialGradientPaint(new Point2D.Double(cx, cy), (float) r,
+                new float[]{0f, 0.55f, 0.8f, 0.93f, 1f},
+                new Color[]{new Color(120, 40, 0, 0), new Color(120, 40, 0, 0), new Color(130, 45, 0, 45),
+                            new Color(140, 50, 5, 95), new Color(150, 60, 10, 130)}));
+        g2.fill(new Ellipse2D.Double(cx - r, cy - r, 2 * r, 2 * r));
+        // Bloom across the limb.
+        double br = Math.max(r * 1.9, r + 22);
+        float in = (float) (0.86 * r / br), edge = (float) (r / br);
+        float out1 = edge + (1 - edge) * 0.18f, out2 = edge + (1 - edge) * 0.5f;
+        g2.setPaint(new RadialGradientPaint(new Point2D.Double(cx, cy), (float) br,
+                new float[]{0f, in, edge, out1, out2, 1f},
+                new Color[]{new Color(255, 236, 190, 0), new Color(255, 236, 190, 0), new Color(255, 226, 170, 150),
+                            new Color(255, 205, 130, 85), new Color(255, 170, 80, 25), new Color(255, 150, 60, 0)}));
+        g2.fill(new Ellipse2D.Double(cx - br, cy - br, 2 * br, 2 * br));
+        g2.setPaint(old);
     }
 
     @Override
@@ -1055,36 +1397,47 @@ public class SolarSystemSimulation extends JPanel
         int cx = getWidth() / 2, cy = getHeight() / 2;
         pendingLabels.clear();   // collected during this paint, placed non-overlapping at the end
 
+        // Google-Earth-style surface explorer takes over the whole canvas when active.
+        if (earthExplorerActive) { drawEarthExplorer(g2); return; }
+        // The planetarium likewise takes over the canvas.
+        if (skyViewActive) { skyView().paint(g2, getWidth(), getHeight()); return; }
+
         // Deep-space background + starfield
         drawStarfield(g2, getWidth(), getHeight());
 
         // Draw Sun at origin in world coordinates, offset by barycenter
-        double sunR = SUN_RADIUS_M * METERS_TO_PIXELS * currentZoom;
         double sunWorldX = sunBarycenterX;  // Apply barycenter offset for Sun motion
         double sunWorldY = sunBarycenterY;  // Apply barycenter offset for Sun motion
-        double sunCX = projX(sunWorldX, sunWorldY);
+        double sunR = SUN_RADIUS_M * perspScaleAt(sunWorldX, sunWorldY, 0);
+        boolean sunVisible = inFront(sunWorldX, sunWorldY, 0);   // behind the camera when zoomed onto a day-side
+        double sunCX = projX(sunWorldX, sunWorldY, 0);
         double sunCY = projY(sunWorldX, sunWorldY, 0);
         double sunXpix = sunCX - sunR;
         double sunYpix = sunCY - sunR;
 
-        // Soft radial corona/glow around the Sun
-        double glowR = Math.max(sunR * 3.0, sunR + 26);
-        RadialGradientPaint sunGlow = new RadialGradientPaint(
-                new Point2D.Double(sunCX, sunCY), (float) glowR,
-                new float[]{0f, 0.28f, 1f},
-                new Color[]{new Color(255, 200, 110, 180),
-                            new Color(255, 150, 60, 70),
-                            new Color(255, 140, 40, 0)});
-        Paint oldPaint = g2.getPaint();
-        g2.setPaint(sunGlow);
-        g2.fill(new Ellipse2D.Double(sunCX - glowR, sunCY - glowR, 2 * glowR, 2 * glowR));
-        g2.setPaint(oldPaint);
+        // Broad outer halo behind the Sun: a smooth, roughly 1/r-like falloff (many stops, so no
+        // visible ring) that reaches well past the disc.
+        double glowR = Math.max(sunR * 5.0, sunR + 60);
+        if (sunVisible) {
+            float f1 = (float) (sunR / glowR);
+            RadialGradientPaint sunGlow = new RadialGradientPaint(
+                    new Point2D.Double(sunCX, sunCY), (float) glowR,
+                    new float[]{0f, f1, f1 + (1 - f1) * 0.12f, f1 + (1 - f1) * 0.35f, f1 + (1 - f1) * 0.65f, 1f},
+                    new Color[]{new Color(255, 214, 140, 200), new Color(255, 200, 120, 170),
+                                new Color(255, 170, 80, 95), new Color(255, 150, 60, 38),
+                                new Color(255, 140, 50, 12), new Color(255, 140, 40, 0)});
+            Paint oldGlow = g2.getPaint();
+            g2.setPaint(sunGlow);
+            g2.fill(new Ellipse2D.Double(sunCX - glowR, sunCY - glowR, 2 * glowR, 2 * glowR));
+            g2.setPaint(oldGlow);
+        }
 
         // Sun body: textured (emissive, slow equatorial spin) when a map exists,
         // otherwise a hot-core radial gradient.
-        boolean sunTextured = sunR > 2 && drawTexturedSphere(g2, "sun", sunCX, sunCY, sunR,
-                0.0, spinAngle(SUN_ROTATION_H), true, 1, 0);
-        if (!sunTextured) {
+        Paint oldPaint = g2.getPaint();
+        boolean sunTextured = sunVisible && sunR > 2 && drawTexturedSphere(g2, "sun", sunCX, sunCY, sunR,
+                0.0, spinAngle(SUN_ROTATION_H), true, 0, 0, 1);   // emissive: light direction unused
+        if (sunVisible && !sunTextured) {
             g2.setPaint(new RadialGradientPaint(
                     new Point2D.Double(sunCX - sunR * 0.25, sunCY - sunR * 0.25), (float) Math.max(1.0, sunR),
                     new float[]{0f, 0.6f, 1f},
@@ -1092,41 +1445,7 @@ public class SolarSystemSimulation extends JPanel
             g2.fill(new Ellipse2D.Double(sunXpix, sunYpix, 2*sunR, 2*sunR));
             g2.setPaint(oldPaint);
         }
-
-        // Draw Sun label during guided tour
-        if (guidedTourActive && showLabels) {
-            double sunCenterX = sunXpix + sunR;
-            double sunCenterY = sunYpix + sunR;
-
-            // Dynamic font size based on uiSize
-            float labelFontSize = switch (uiSize) {
-                case SMALL -> 9f;
-                case NORMAL -> 11f;
-                default -> 13f;
-            };
-
-            Font oldFont = g2.getFont();
-            g2.setFont(oldFont.deriveFont(Font.BOLD, labelFontSize));
-            String sunLabel = "Sun";
-            FontMetrics fm = g2.getFontMetrics();
-            int labelWidth = fm.stringWidth(sunLabel);
-            int labelHeight = fm.getHeight();
-
-            // Position label below the Sun
-            int labelX = (int)(sunCenterX - labelWidth / 2.0);
-            int labelY = (int)(sunCenterY + sunR + labelHeight + 5);
-
-            // Draw label background box
-            int padding = 4;
-            g2.setColor(new Color(0, 0, 0, 180));
-            g2.fillRoundRect(labelX - padding, labelY - labelHeight + 3,
-                           labelWidth + padding * 2, labelHeight + 2, 4, 4);
-
-            // Draw label text
-            g2.setColor(new Color(255, 200, 100));
-            g2.drawString(sunLabel, labelX, labelY);
-            g2.setFont(oldFont);
-        }
+        if (sunVisible && sunR > 1.5) drawSunLimbAndBloom(g2, sunCX, sunCY, sunR);
 
         // Draw asteroid belt and Kuiper belt as rings
         drawAsteroidBeltRing(g2, cx, cy);
@@ -1150,10 +1469,24 @@ public class SolarSystemSimulation extends JPanel
             double worldX = planetX[i] + sunBarycenterX;
             double worldY = planetY[i] + sunBarycenterY;
             double worldZ = planetZ[i];
-            double px = projX(worldX, worldY);
+            if (!inFront(worldX, worldY, worldZ)) continue;   // behind the camera (zoomed in elsewhere)
+            double px = projX(worldX, worldY, worldZ);
             double py = projY(worldX, worldY, worldZ);
-            double pr = RADIUS_M[i] * METERS_TO_PIXELS * currentZoom;
-            if (pr < 0.5) pr = 0.5;
+            double pr = RADIUS_M[i] * perspScaleAt(worldX, worldY, worldZ);   // true physical scale under perspective
+            // In a lesson the planets are the demonstration, so never let one shrink below a few
+            // pixels (at orbit scale a true-size planet is far smaller than a pixel).
+            if (lessonActive()) pr = Math.max(pr, i == EARTH_INDEX ? 6.0 : 5.0);
+            // Sun→planet light: exact view-frame direction for the sphere/eclipse geometry,
+            // and a screen-space direction for the flat atmosphere-limb glow.
+            double[] pL = viewLight(worldX, worldY, worldZ);
+            double[] pLightDir = worldDirToScreen(sunBarycenterX - worldX, sunBarycenterY - worldY, -worldZ);
+            double pLightDx = pLightDir[0], pLightDy = pLightDir[1];
+            // Sun's angular radius (radians) as seen from this planet, from its true heliocentric
+            // distance. This is what sizes an eclipse: the Moon's umbra shrinks to a thin track
+            // because the Moon and Sun subtend almost the same angle from Earth.
+            double distToSun = Math.sqrt(planetX[i] * planetX[i]
+                    + planetY[i] * planetY[i] + planetZ[i] * planetZ[i]);
+            double sunAngR = distToSun > 1e-3 ? SUN_RADIUS_M / distToSun : 0;
 
             // Draw orbit (respect visibility toggle). drawOrbitRing culls by the ring's true
             // projected bounding box and returns whether it is on screen, so a tilted/zoomed-in
@@ -1163,13 +1496,11 @@ public class SolarSystemSimulation extends JPanel
                 // projected through the same 3-D transform as the orbit ring.
                 if (showPerihelionAphelion) {
                     {
-                        double[] periW = keplerXYZ(A_METERS[i], ECC[i], 0.0,
-                                planetIncl(i), planetOmega(i), planetVarpi(i));
-                        double[] apoW = keplerXYZ(A_METERS[i], ECC[i], Math.PI,
-                                planetIncl(i), planetOmega(i), planetVarpi(i));
-                        double periX = projX(periW[0] + sunBarycenterX, periW[1] + sunBarycenterY);
+                        double[] periW = planetOrbitPoint(i, 0.0);
+                        double[] apoW = planetOrbitPoint(i, Math.PI);
+                        double periX = projX(periW[0] + sunBarycenterX, periW[1] + sunBarycenterY, periW[2]);
                         double periY = projY(periW[0] + sunBarycenterX, periW[1] + sunBarycenterY, periW[2]);
-                        double apoX = projX(apoW[0] + sunBarycenterX, apoW[1] + sunBarycenterY);
+                        double apoX = projX(apoW[0] + sunBarycenterX, apoW[1] + sunBarycenterY, apoW[2]);
                         double apoY = projY(apoW[0] + sunBarycenterX, apoW[1] + sunBarycenterY, apoW[2]);
 
                         // Smart marker sizing: scale with zoom but maintain minimum visibility
@@ -1227,9 +1558,6 @@ public class SolarSystemSimulation extends JPanel
 
             // Prefer a textured 3-D sphere (correct tilt + sidereal spin, Sun-lit);
             // fall back to flat shading / color when no map exists for the body.
-            // Sun position on screen: drives lighting, eclipse-shadow direction and glow.
-            double sunSX = projX(sunBarycenterX, sunBarycenterY);
-            double sunSY = projY(sunBarycenterX, sunBarycenterY, 0);
 
             // Eclipse occluders: this planet's moons cast shadow transits onto its disc
             // (e.g. Io's shadow on Jupiter, the Moon's shadow on Earth during a solar eclipse).
@@ -1241,11 +1569,20 @@ public class SolarSystemSimulation extends JPanel
             if (showEclipses && shadingEnabled && MOON_A_M[i].length > 0 && currentZoom > 10) {
                 int nm = MOON_A_M[i].length;
                 double invR = 1.0 / RADIUS_M[i];
-                double[] Lp = lightDirView(sunSX - px, sunSY - py);
-                double lpx = Lp[0], lpy = Lp[1], lpz = Lp[2];
+                double lpx = pL[0], lpy = pL[1], lpz = pL[2];   // view-frame Sun direction
+                // The view transform worldToView is improper (a reflection: its determinant is -1,
+                // from the screen-y flip), so a raw occluder is chirally mirrored relative to the
+                // surface texture, and the ray-traced umbra tracks its true ground path mirrored
+                // east-west. Reflecting the occluder back across the sub-solar meridian restores the
+                // handedness (see reflectAcrossSubSolarMeridian); the shadow itself stays a pure
+                // ray-trace of the real lunar ephemeris.
+                double[] frOcc = bodyFrame(OBLIQUITY_DEG[i]);
                 for (int m = 0; m < nm; m++) {
                     double[] rel = moonRelPos(i, m);
-                    double mx = rel[0] * invR, my = -rel[1] * invR, mz = rel[2] * invR;
+                    double[] v = worldToView(rel[0], rel[1], rel[2]);   // moon offset in the view frame
+                    double[] occM = { v[0] * invR, v[1] * invR, v[2] * invR, 0 };
+                    reflectAcrossSubSolarMeridian(occM, frOcc[0], frOcc[1], frOcc[2], lpx, lpy, lpz);
+                    double mx = occM[0], my = occM[1], mz = occM[2];
                     double along = mx * lpx + my * lpy + mz * lpz;
                     if (along <= 0) continue;                 // moon not between disc and Sun
                     double rm = MOON_SIZE_RATIO[i][m];
@@ -1265,19 +1602,34 @@ public class SolarSystemSimulation extends JPanel
             boolean textured = false;
             if (pr > 2 && hasTexture(texKey)) {
                 if (i == 5) {   // Saturn: raytraced sphere + textured ring + mutual shadows
-                    textured = drawSaturn(g2, px, py, pr, spinAngle(ROTATION_PERIOD_H[i]),
-                            !shadingEnabled, showRings, sunSX - px, sunSY - py);
+                    textured = drawSaturn(g2, px, py, pr, planetSpin(i),
+                            !shadingEnabled, showRings, pL[0], pL[1], pL[2]);
                 } else {
+                    // Spin anchored to the body's real orientation: Earth is phase-locked to the
+                    // wall clock, the other planets to their IAU prime-meridian model, so the
+                    // meridian facing the Sun is the one truly at local noon for the current date.
+                    double spin = planetSpin(i);
                     textured = drawTexturedSphere(g2, texKey, px, py, pr,
-                            OBLIQUITY_DEG[i], spinAngle(ROTATION_PERIOD_H[i]),
-                            !shadingEnabled, sunSX - px, sunSY - py, pOcc, pOccN);
+                            OBLIQUITY_DEG[i], spin,
+                            !shadingEnabled, pL[0], pL[1], pL[2], pOcc, pOccN, sunAngR);
                 }
             }
             if (!textured) {
-                g2.setColor(COLORS[i]);
-                if (shadingEnabled && pr > 3) {
-                    drawRealisticShading(g2, planetX[i], planetY[i], pr, px, py, i);
-                } else {
+                // Untextured bodies (dwarf/minor planets) still get a true 3-D ray-traced
+                // terminator + eclipse shadows by pushing a flat-colour sphere through the SAME
+                // shader the mapped planets and moons use (see the moon path above). The shadow
+                // is derived from the view-frame Sun direction and per-pixel surface normals, so
+                // it stays correct under any camera yaw/pitch, spin rate or orbital motion —
+                // unlike the old screen-space gradient, which skewed when the camera rotated.
+                boolean flatShaded = false;
+                if (shadingEnabled && pr > 2) {
+                    String flatKey = ensureFlatTexture(COLORS[i].getRGB());
+                    flatShaded = drawTexturedSphere(g2, flatKey, px, py, pr,
+                            OBLIQUITY_DEG[i], planetSpin(i),
+                            false, pL[0], pL[1], pL[2], pOcc, pOccN, sunAngR);
+                }
+                if (!flatShaded) {
+                    g2.setColor(COLORS[i]);
                     g2.fill(planetEllipse);
                 }
             }
@@ -1285,7 +1637,7 @@ public class SolarSystemSimulation extends JPanel
             // Atmospheric limb glow, layered on top of the body so it haloes the rim.
             if (showAtmosphere && shadingEnabled && pr > 2
                     && i < ATMO_RGB.length && ATMO_RGB[i] != null) {
-                drawAtmosphere(g2, px, py, pr, sunSX - px, sunSY - py,
+                drawAtmosphere(g2, px, py, pr, pLightDx, pLightDy,
                         ATMO_RGB[i], ATMO_STRENGTH[i], ATMO_HEIGHT[i]);
             }
 
@@ -1303,25 +1655,25 @@ public class SolarSystemSimulation extends JPanel
 
             // Draw moons (same as before)
             if (MOON_NAMES[i].length > 0) {
-                ArrayList<ArrayList<Point2D.Double>> moonOrbits = moonOrbitPaths.get(i);
-                for (ArrayList<Point2D.Double> morb : moonOrbits) {
+                // Moon orbit rings: trace the SAME 3-D inclined orbit the moon body follows, so the
+                // moon sits exactly on its ring and the ring shows its real orbital tilt.
+                if (currentZoom > ORBIT_VISIBLE_ZOOM) for (int m = 0; m < MOON_A_M[i].length; m++) {
+                    int seg = orbitSegments(MOON_A_M[i][m]);
                     Path2D.Double mpath = new Path2D.Double();
-                    Point2D.Double first = morb.getFirst();
-                    double msx = projX(worldX + first.x, worldY + first.y);
-                    double msy = projY(worldX + first.x, worldY + first.y, worldZ);
-                    mpath.moveTo(msx, msy);
-                    for (int j = 1; j < morb.size(); j++) {
-                        Point2D.Double p = morb.get(j);
-                        double x = projX(worldX + p.x, worldY + p.y);
-                        double y = projY(worldX + p.x, worldY + p.y, worldZ);
-                        mpath.lineTo(x, y);
+                    boolean pen = false;
+                    double periodSec = MOON_PERIOD_DAYS[i][m] * DAY;
+                    for (int j = 0; j <= seg; j++) {
+                        // Trace the moon's real path over one orbit centred on now, so the ring
+                        // and the ephemeris-driven body coincide (and show any precession).
+                        double[] off = moonOffsetWorld(i, m, simTimeSec + (j / (double) seg - 0.5) * periodSec);
+                        double wx = worldX + off[0], wy = worldY + off[1], wz = worldZ + off[2];
+                        if (!inFront(wx, wy, wz)) { pen = false; continue; }   // clip behind-camera arc
+                        double x = projX(wx, wy, wz), y = projY(wx, wy, wz);
+                        if (!pen) { mpath.moveTo(x, y); pen = true; } else mpath.lineTo(x, y);
                     }
-                    mpath.closePath();
-                    if (currentZoom > ORBIT_VISIBLE_ZOOM) {
-                        g2.setColor(new Color(100, 150, 100, 80));  // Green-tinted for moon orbits
-                        g2.setStroke(new BasicStroke(0.8f));
-                        g2.draw(mpath);
-                    }
+                    g2.setColor(new Color(100, 150, 100, 80));  // Green-tinted for moon orbits
+                    g2.setStroke(new BasicStroke(0.8f));
+                    g2.draw(mpath);
                 }
 
                 // Draw moon bodies (only when zoomed in)
@@ -1334,10 +1686,12 @@ public class SolarSystemSimulation extends JPanel
                         double moonWorldX = planetX[i] + sunBarycenterX + rx;
                         double moonWorldY = planetY[i] + sunBarycenterY + ry;
                         double moonWorldZ = planetZ[i] + rz;   // planet height + moon out-of-plane
+                        if (!inFront(moonWorldX, moonWorldY, moonWorldZ)) continue;   // moon behind the camera
 
-                        double mpx = projX(moonWorldX, moonWorldY);
+                        double mpx = projX(moonWorldX, moonWorldY, moonWorldZ);
                         double mpy = projY(moonWorldX, moonWorldY, moonWorldZ);
-                        double mr = Math.max(RADIUS_M[i] * MOON_SIZE_RATIO[i][m] * METERS_TO_PIXELS * currentZoom, 0.6);
+                        double mr = MOON_RADIUS_M[i][m] * perspScaleAt(moonWorldX, moonWorldY, moonWorldZ);   // true physical scale under perspective
+                        double[] mL = viewLight(moonWorldX, moonWorldY, moonWorldZ);   // exact view-frame Sun direction
 
                         // Depth cue: a moon on the far side of the planet, projected inside its
                         // disc, is hidden behind it — skip it rather than drawing it on top.
@@ -1347,37 +1701,44 @@ public class SolarSystemSimulation extends JPanel
                             continue;
                         }
 
-                        // Textured sphere when a map exists (Luna), else shading/flat
+                        // Ray-traced lit sphere for every moon: a real surface map when one exists
+                        // (Luna), otherwise a flat-colour sphere pushed through the SAME shader, so
+                        // untextured moons still get a correct 3-D terminator and true ray-traced
+                        // eclipse shadows (fully black in the parent planet's umbra) rather than the
+                        // old flat half-black gradient.
                         String moonKey = MOON_NAMES[i][m].toLowerCase();
-                        boolean moonTextured = false;
-                        if (mr > 2 && hasTexture(moonKey)) {
+                        boolean moonDrawn = false;
+                        if (mr > 2) {
+                            String key = hasTexture(moonKey) ? moonKey : ensureFlatTexture(MOON_FLAT_RGB);
                             // Parent planet occludes the Sun -> shadow falls on the moon
                             // (a lunar eclipse when the moon crosses the planet's shadow).
-                            // Occluder in moon-radius units, view frame (z = 0, in-plane).
+                            // Occluder = the planet, at offset -rel from the moon, in the view frame,
+                            // scaled to moon-radius units.
                             double ratio = MOON_SIZE_RATIO[i][m];
                             double invMr = 1.0 / (RADIUS_M[i] * ratio);
                             double[] mOcc = null;
                             if (showEclipses && shadingEnabled) {
-                                double ocx = -rx * invMr, ocy = ry * invMr, ocz = -rz * invMr, orad = 1.0 / ratio;
-                                double[] Lmn = lightDirView(sunSX - mpx, sunSY - mpy);
-                                double al = ocx * Lmn[0] + ocy * Lmn[1] + ocz * Lmn[2];
+                                double[] pv = worldToView(-rx, -ry, -rz);   // planet relative to the moon, view frame
+                                double orad = 1.0 / ratio;
+                                // Same east-west handedness correction as the planet case above.
+                                double[] frM = bodyFrame(MOON_OBLIQUITY_DEG);
+                                double[] occP = { pv[0] * invMr, pv[1] * invMr, pv[2] * invMr, orad };
+                                reflectAcrossSubSolarMeridian(occP, frM[0], frM[1], frM[2], mL[0], mL[1], mL[2]);
+                                double ocx = occP[0], ocy = occP[1], ocz = occP[2];
+                                double al = ocx * mL[0] + ocy * mL[1] + ocz * mL[2];
                                 double pp = ocx * ocx + ocy * ocy + ocz * ocz - al * al;
                                 if (al > 0 && pp <= (orad + 1) * (orad + 1)) {   // Moon actually in the umbra
                                     mOcc = new double[]{ocx, ocy, ocz, orad};
                                 }
                             }
-                            moonTextured = drawTexturedSphere(g2, moonKey, mpx, mpy, mr,
+                            moonDrawn = drawTexturedSphere(g2, key, mpx, mpy, mr,
                                     MOON_OBLIQUITY_DEG, spinAngle(MOON_ROTATION_H),
-                                    !shadingEnabled, sunSX - mpx, sunSY - mpy,
-                                    mOcc, mOcc != null ? 1 : 0);
+                                    !shadingEnabled, mL[0], mL[1], mL[2],
+                                    mOcc, mOcc != null ? 1 : 0, sunAngR);
                         }
-                        if (!moonTextured) {
-                            if (shadingEnabled && mr > 2) {
-                                drawRealisticShading(g2, moonWorldX, moonWorldY, mr, mpx, mpy, -1);
-                            } else {
-                                g2.setColor(Color.LIGHT_GRAY);
-                                g2.fill(new Ellipse2D.Double(mpx - mr, mpy - mr, 2*mr, 2*mr));
-                            }
+                        if (!moonDrawn) {   // sub-pixel moon: a simple dot
+                            g2.setColor(Color.LIGHT_GRAY);
+                            g2.fill(new Ellipse2D.Double(mpx - mr, mpy - mr, 2*mr, 2*mr));
                         }
 
                         g2.setColor(Color.WHITE);
@@ -1404,6 +1765,13 @@ public class SolarSystemSimulation extends JPanel
 
         // Place all collected body labels in one non-overlapping pass (over every body).
         drawPendingLabels(g2);
+
+        // During a lesson its annotations and readouts take the place of the sim's own HUD panels.
+        if (lessonActive()) {
+            lessonStudio.paintOverlay(g2, getWidth(), getHeight());
+            drawDynamicScale(g2, getHeight());
+            return;
+        }
 
         // Draw dynamic scale ruler at bottom-left
         drawDynamicScale(g2, getHeight());
@@ -1514,14 +1882,16 @@ public class SolarSystemSimulation extends JPanel
             }
             g2.drawString(String.format("Speed: %.2f km/s", planetSpeedKmS[i]), colX, lineY); lineY += lineStep;
 
-            double a_m = A_METERS[i];
-            double e = ECC[i];
-            double periodYears = PERIOD_Y[i];
+            // Osculating orbit: the ellipse the planet is on right now (it slowly changes as
+            // the other planets pull on it).
+            double a_m = oscA[i];
+            double e = oscE[i];
+            double periodYears = oscPeriodY[i];
             double periodDays = periodYears * 365.25;
             double peri_m = a_m * (1.0 - e);
             double apo_m  = a_m * (1.0 + e);
 
-            double M = meanAnomaly[i];
+            double M = oscM[i];
             double frac = (M % (2 * Math.PI)) / (2 * Math.PI);
             if (frac < 0) frac += 1.0;
             double pct = frac * 100.0;
@@ -1530,7 +1900,7 @@ public class SolarSystemSimulation extends JPanel
             g2.drawString(String.format("Peri: %.3f AU  Apo: %.3f AU", peri_m / AU, apo_m / AU), colX, lineY); lineY += lineStep;
             g2.drawString(String.format("Period: %.1f d (%.2f y)", periodDays, periodYears), colX, lineY); lineY += lineStep;
 
-            // Kepler's 3rd Law display for Lesson 1 - enhanced with detailed calculations
+            // Kepler's 3rd Law overlay (Education > Overlays) with the worked calculation
             if (showKeplersLaw) {
                 double aAU = a_m / AU;
                 double pSquared = periodYears * periodYears;
@@ -1563,9 +1933,9 @@ public class SolarSystemSimulation extends JPanel
                 g2.drawString(String.format("a³ = (%.3f AU)³ = %.4f AU³", aAU, aCubed), colX, lineY);
                 lineY += lineStep;
 
-                // Step 3: Show the ratio calculation with highlight (hidden during guided tour)
+                // Step 3: Show the ratio calculation with highlight
                 int boxHeight = (int)(lineStep * 1.3);
-                if (!guidedTourActive) {
+                {
                     g2.setColor(new Color(255, 200, 50, 60));
                     g2.fillRoundRect(colX - 6, lineY - (int)(lineStep * 0.85), w - (sidePadding * 2), boxHeight, 8, 8);
 
@@ -1614,7 +1984,7 @@ public class SolarSystemSimulation extends JPanel
                 g2.drawString("Name: " + MOON_NAMES[i][m], colX, lineY); lineY += lineStep;
 
                 double aMoon = MOON_A_M[i][m];
-                double eMoon = MOON_ECC[i][m];
+                double eMoon = moonEcc(i, m);
                 double periodSidDays = MOON_PERIOD_DAYS[i][m];
                 double periMoon = aMoon * (1.0 - eMoon);
                 double apoMoon  = aMoon * (1.0 + eMoon);
@@ -1640,84 +2010,6 @@ public class SolarSystemSimulation extends JPanel
             g2.setFont(oldFont);
         }
 
-        // Modern lesson mode indicator banner
-        if (lessonMode) {
-            // Dynamic sizing based on uiSize setting
-            int bannerWidth, bannerHeight;
-            float titleFontSize, subtitleFontSize;
-
-            switch (uiSize) {
-                case SMALL:
-                    bannerWidth = 240;
-                    bannerHeight = 42;
-                    titleFontSize = 10f;
-                    subtitleFontSize = 8f;
-                    break;
-                case NORMAL:
-                    bannerWidth = 280;
-                    bannerHeight = 50;
-                    titleFontSize = 12f;
-                    subtitleFontSize = 10f;
-                    break;
-                case LARGE:
-                default:
-                    bannerWidth = 330;
-                    bannerHeight = 60;
-                    titleFontSize = 14f;
-                    subtitleFontSize = 11f;
-                    break;
-            }
-
-            int bannerX = (getWidth() - bannerWidth) / 2;
-            int bannerY = 15;
-
-            // Shadow effect
-            g2.setColor(new Color(0, 0, 0, 80));
-            g2.fillRoundRect(bannerX + 3, bannerY + 3, bannerWidth, bannerHeight, 15, 15);
-
-            // Gradient background
-            GradientPaint bannerGradient = new GradientPaint(
-                bannerX, bannerY, new Color(40, 80, 160, 240),
-                bannerX, bannerY + bannerHeight, new Color(60, 120, 200, 240)
-            );
-            g2.setPaint(bannerGradient);
-            g2.fillRoundRect(bannerX, bannerY, bannerWidth, bannerHeight, 15, 15);
-
-            // Accent border with glow
-            g2.setColor(new Color(120, 180, 255, 200));
-            g2.setStroke(new BasicStroke(2.5f));
-            g2.drawRoundRect(bannerX, bannerY, bannerWidth, bannerHeight, 15, 15);
-            g2.setColor(new Color(150, 200, 255, 80));
-            g2.setStroke(new BasicStroke(5f));
-            g2.drawRoundRect(bannerX - 1, bannerY - 1, bannerWidth + 2, bannerHeight + 2, 16, 16);
-
-            // Title text with icon
-            g2.setColor(new Color(255, 255, 255, 250));
-            g2.setFont(g2.getFont().deriveFont(Font.BOLD, titleFontSize));
-            Lesson curL = currentLessonObj();
-            String title = "🎓 Lesson " + currentLesson + " / " + curriculum().size();
-            int titleWidth = g2.getFontMetrics().stringWidth(title);
-            int titleY = bannerY + (int)(bannerHeight * 0.4);
-            g2.drawString(title, bannerX + (bannerWidth - titleWidth) / 2, titleY);
-
-            // Lesson name (from the curriculum)
-            String subtitle = curL.title;
-            g2.setFont(g2.getFont().deriveFont(Font.PLAIN, subtitleFontSize));
-            g2.setColor(new Color(220, 235, 255, 250));
-            int subtitleWidth = g2.getFontMetrics().stringWidth(subtitle);
-            int subtitleY = bannerY + (int)(bannerHeight * 0.72);
-            g2.drawString(subtitle, bannerX + (bannerWidth - subtitleWidth) / 2, subtitleY);
-
-            // Draw guided content if active: full illustrated panel for stellar
-            // (PANEL) lessons, small caption box for 3-D (TOUR) lessons.
-            if (guidedTourActive) {
-                if (curL.kind == LessonKind.PANEL) {
-                    drawLessonPanel(g2, curL, tourStep);
-                } else if (!tourMessage.isEmpty()) {
-                    drawGuidedTourMessage(g2);
-                }
-            }
-        }
     }
 
     /**
@@ -1739,7 +2031,9 @@ public class SolarSystemSimulation extends JPanel
         rows.add(new String[]{"Zoom", String.format("%.2f×  %s", currentZoom,
                 followingPlanet && autoZoomEnabled ? "Auto" : "Manual")});
         rows.add(new String[]{"Time", formatTimeScale(timeScale)});
-        rows.add(new String[]{"Date", simDateString()});
+        String local = simLocalDateString();
+        rows.add(new String[]{"Date", local != null ? local : simDateString()});
+        if (local != null) rows.add(new String[]{"UTC", simDateString()});
         rows.add(new String[]{"Elapsed", String.format("%.2f yr", simTimeSec / (365.25 * DAY))});
         if (viewPitchRad > 1e-4) {
             rows.add(new String[]{"View tilt", String.format("%.0f°  ( [ ]  \\ )", Math.toDegrees(viewPitchRad))});
@@ -1877,421 +2171,6 @@ public class SolarSystemSimulation extends JPanel
     }
 
     /**
-     * Draw the guided tour message box with multi-line text
-     * Box size dynamically adjusts to fit text content
-     */
-    private void drawGuidedTourMessage(Graphics2D g2) {
-        int alpha = (int)(tourMessageAlpha * 255);
-        if (alpha <= 0) return;
-
-        // Dynamic sizing based on uiSize setting
-        float fontSize;
-        int minWidth, paddingH, paddingV, bottomMargin;
-
-        switch (uiSize) {
-            case SMALL:
-                fontSize = 10f;
-                minWidth = 180;
-                paddingH = 32;
-                paddingV = 28;
-                bottomMargin = 50;
-                break;
-            case NORMAL:
-                fontSize = 12f;
-                minWidth = 220;
-                paddingH = 40;
-                paddingV = 35;
-                bottomMargin = 60;
-                break;
-            case LARGE:
-            default:
-                fontSize = 14f;
-                minWidth = 260;
-                paddingH = 50;
-                paddingV = 42;
-                bottomMargin = 70;
-                break;
-        }
-
-        // Split message into lines
-        String[] lines = tourMessage.split("\n");
-
-        // Calculate box dimensions based on text
-        g2.setFont(g2.getFont().deriveFont(Font.PLAIN, fontSize));
-        FontMetrics fm = g2.getFontMetrics();
-        int maxWidth = 0;
-        for (String line : lines) {
-            int lineWidth = fm.stringWidth(line);
-            maxWidth = Math.max(maxWidth, lineWidth);
-        }
-
-        // Add padding and ensure minimum size
-        int boxWidth = Math.max(maxWidth + paddingH, minWidth);
-        int lineHeight = fm.getHeight();
-        int textHeight = lineHeight * lines.length;
-        int boxHeight = textHeight + paddingV;
-
-        // Center horizontally, place near bottom
-        int boxX = (getWidth() - boxWidth) / 2;
-        int boxY = getHeight() - boxHeight - bottomMargin;
-
-        // Shadow effect
-        g2.setColor(new Color(0, 0, 0, Math.min(alpha, 100)));
-        g2.fillRoundRect(boxX + 4, boxY + 4, boxWidth, boxHeight, 12, 12);
-
-        // Box background with gradient
-        GradientPaint boxGradient = new GradientPaint(
-            boxX, boxY, new Color(30, 30, 60, Math.min(alpha, 230)),
-            boxX, boxY + boxHeight, new Color(50, 50, 90, Math.min(alpha, 230))
-        );
-        g2.setPaint(boxGradient);
-        g2.fillRoundRect(boxX, boxY, boxWidth, boxHeight, 12, 12);
-
-        // Border with glow effect
-        g2.setColor(new Color(100, 150, 255, Math.min(alpha, 200)));
-        g2.setStroke(new BasicStroke(2.5f));
-        g2.drawRoundRect(boxX, boxY, boxWidth, boxHeight, 12, 12);
-
-        // Optional: pulsing glow when ready to advance
-        if (tourStepReady) {
-            double pulse = Math.sin(System.currentTimeMillis() / 300.0) * 0.3 + 0.7;
-            int glowAlpha = (int)(pulse * Math.min(alpha, 150));
-            g2.setColor(new Color(150, 200, 255, glowAlpha));
-            g2.setStroke(new BasicStroke(4.5f));
-            g2.drawRoundRect(boxX - 2, boxY - 2, boxWidth + 4, boxHeight + 4, 14, 14);
-        }
-
-        // Draw text lines
-        g2.setColor(new Color(255, 255, 255, alpha));
-        g2.setFont(g2.getFont().deriveFont(Font.PLAIN, fontSize));
-        int textY = boxY + (int)(paddingV * 0.6);
-        for (String line : lines) {
-            int textWidth = fm.stringWidth(line);
-            int textX = boxX + (boxWidth - textWidth) / 2;
-            g2.drawString(line, textX, textY);
-            textY += lineHeight;
-        }
-    }
-
-    /* =========================================================================
-       ILLUSTRATED PANEL LESSONS (stellar-physics topics the 3-D scene can't show)
-       ========================================================================= */
-
-    private static final Color PANEL_ACCENT = new Color(120, 180, 255);
-
-    /** Draws one page of a stellar-physics PANEL lesson: heading, schematic, text. */
-    private void drawLessonPanel(Graphics2D g2, Lesson L, int pageIdx) {
-        if (L.pages == null || L.pages.isEmpty()) return;
-        pageIdx = Math.max(0, Math.min(pageIdx, L.pages.size() - 1));
-        PanelPage pg = L.pages.get(pageIdx);
-        int alpha = (int) (tourMessageAlpha * 255);
-        if (alpha <= 0) return;
-
-        Object oldAA = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        Font baseFont = g2.getFont();
-        int W = getWidth(), H = getHeight();
-
-        // Dim the live scene so text is readable.
-        g2.setColor(new Color(6, 8, 16, (int) (Math.min(alpha, 255) * 0.66)));
-        g2.fillRect(0, 0, W, H);
-
-        int cardW = Math.min(780, W - 60);
-        int cardH = Math.min(560, H - 96);
-        int cardX = (W - cardW) / 2;
-        int cardY = (H - cardH) / 2 + 4;
-        int pad = 22;
-
-        // Card body.
-        g2.setColor(new Color(0, 0, 0, Math.min(alpha, 120)));
-        g2.fillRoundRect(cardX + 5, cardY + 6, cardW, cardH, 20, 20);
-        g2.setPaint(new GradientPaint(cardX, cardY, new Color(20, 24, 44, Math.min(alpha, 245)),
-                cardX, cardY + cardH, new Color(30, 34, 62, Math.min(alpha, 245))));
-        g2.fillRoundRect(cardX, cardY, cardW, cardH, 20, 20);
-        g2.setColor(new Color(PANEL_ACCENT.getRed(), PANEL_ACCENT.getGreen(), PANEL_ACCENT.getBlue(), Math.min(alpha, 210)));
-        g2.setStroke(new BasicStroke(2.2f));
-        g2.drawRoundRect(cardX, cardY, cardW, cardH, 20, 20);
-
-        // Header: tier (left) + progress (right).
-        g2.setFont(baseFont.deriveFont(Font.BOLD, 11f));
-        g2.setColor(new Color(150, 190, 240, alpha));
-        g2.drawString(L.tier.toUpperCase(), cardX + pad, cardY + pad + 4);
-        String prog = "Lesson " + L.number + " / " + curriculum().size()
-                + "   ·   Page " + (pageIdx + 1) + " / " + L.pages.size();
-        FontMetrics hfm = g2.getFontMetrics();
-        g2.drawString(prog, cardX + cardW - pad - hfm.stringWidth(prog), cardY + pad + 4);
-
-        // Page heading.
-        g2.setFont(baseFont.deriveFont(Font.BOLD, 20f));
-        g2.setColor(new Color(255, 255, 255, alpha));
-        g2.drawString(pg.heading, cardX + pad, cardY + pad + 32);
-        g2.setColor(new Color(PANEL_ACCENT.getRed(), PANEL_ACCENT.getGreen(), PANEL_ACCENT.getBlue(), Math.min(alpha, 160)));
-        g2.setStroke(new BasicStroke(1.4f));
-        g2.drawLine(cardX + pad, cardY + pad + 42, cardX + cardW - pad, cardY + pad + 42);
-
-        int contentTop = cardY + pad + 56;
-        int contentBot = cardY + cardH - 42;
-        // Diagram occupies the left ~46%, explanatory text the right.
-        int gap = 20;
-        int diagW = (int) ((cardW - 2 * pad - gap) * 0.46);
-        Rectangle diagRect = new Rectangle(cardX + pad, contentTop, diagW, contentBot - contentTop);
-        drawLessonDiagram(g2, pg.diagram, diagRect, alpha, baseFont);
-
-        // Body text (wrapped, honouring explicit newlines).
-        int textX = diagRect.x + diagRect.width + gap;
-        int textW = cardX + cardW - pad - textX;
-        g2.setFont(baseFont.deriveFont(Font.PLAIN, 13f));
-        FontMetrics bfm = g2.getFontMetrics();
-        int ty = contentTop + bfm.getAscent();
-        g2.setColor(new Color(224, 232, 245, alpha));
-        for (String para : pg.body.split("\n")) {
-            for (String line : wrapPlain(bfm, para.strip(), textW)) {
-                g2.drawString(line, textX, ty);
-                ty += bfm.getHeight() + 2;
-            }
-        }
-
-        // Footer hint.
-        g2.setFont(baseFont.deriveFont(Font.PLAIN, 12f));
-        String hint = (pageIdx + 1 < L.pages.size()) ? "Press 'N' for the next page"
-                                                      : "Press 'N' to finish the lesson";
-        g2.setColor(new Color(170, 205, 245, alpha));
-        int fx = cardX + (cardW - g2.getFontMetrics().stringWidth(hint)) / 2;
-        g2.drawString(hint, fx, cardY + cardH - 16);
-        if (tourStepReady) {
-            double pulse = Math.sin(System.currentTimeMillis() / 300.0) * 0.3 + 0.7;
-            g2.setColor(new Color(150, 200, 255, (int) (pulse * Math.min(alpha, 150))));
-            g2.setStroke(new BasicStroke(4f));
-            g2.drawRoundRect(cardX - 2, cardY - 2, cardW + 4, cardH + 4, 22, 22);
-        }
-
-        g2.setFont(baseFont);
-        if (oldAA != null) g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
-    }
-
-    /** Greedy word-wrap that keeps whole words within {@code maxWidth} pixels. */
-    private static java.util.List<String> wrapPlain(FontMetrics fm, String text, int maxWidth) {
-        java.util.List<String> out = new java.util.ArrayList<>();
-        if (text.isEmpty()) { out.add(""); return out; }
-        StringBuilder cur = new StringBuilder();
-        for (String word : text.split(" ")) {
-            String trial = cur.isEmpty() ? word : cur + " " + word;
-            if (fm.stringWidth(trial) > maxWidth && !cur.isEmpty()) {
-                out.add(cur.toString());
-                cur = new StringBuilder(word);
-            } else {
-                cur = new StringBuilder(trial);
-            }
-        }
-        if (!cur.isEmpty()) out.add(cur.toString());
-        return out;
-    }
-
-    private void diagLabel(Graphics2D g2, Font base, int alpha, String s, int x, int y) {
-        g2.setFont(base.deriveFont(Font.PLAIN, 10.5f));
-        g2.setColor(new Color(210, 222, 240, alpha));
-        g2.drawString(s, x, y);
-    }
-
-    /** Draws a schematic for a PANEL page inside {@code r}. Pure Java2D, theme-dark. */
-    private void drawLessonDiagram(Graphics2D g2, String key, Rectangle r, int alpha, Font base) {
-        // Framed backing so the schematic reads as a figure.
-        g2.setColor(new Color(10, 14, 26, Math.min(alpha, 235)));
-        g2.fillRoundRect(r.x, r.y, r.width, r.height, 12, 12);
-        g2.setColor(new Color(70, 96, 140, Math.min(alpha, 180)));
-        g2.setStroke(new BasicStroke(1.2f));
-        g2.drawRoundRect(r.x, r.y, r.width, r.height, 12, 12);
-        Shape oldClip = g2.getClip();
-        g2.setClip(r);
-        int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
-
-        switch (key) {
-            case "DISK" -> {
-                int sx = r.x + 26, sy = cy;
-                // Disk rings (ellipses) around the young star.
-                for (int i = 1; i <= 6; i++) {
-                    int rw = i * (r.width - 40) / 7, rh = rw / 3;
-                    int red = 60 + 30 * (6 - i), blue = 90 + 24 * i;
-                    g2.setColor(new Color(Math.min(255, red), 70, Math.min(255, blue), Math.min(alpha, 150)));
-                    g2.setStroke(new BasicStroke(1.4f));
-                    g2.drawOval(sx - rw, sy - rh, rw * 2, rh * 2);
-                }
-                // Frost line.
-                int fx = sx + (int) ((r.width - 40) * 0.52);
-                g2.setColor(new Color(120, 200, 255, Math.min(alpha, 220)));
-                g2.setStroke(new BasicStroke(1.6f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 1f, new float[]{5, 5}, 0));
-                g2.drawLine(fx, r.y + 14, fx, r.y + r.height - 14);
-                diagLabel(g2, base, alpha, "frost line", fx - 24, r.y + 12);
-                diagLabel(g2, base, alpha, "hot · rock", r.x + 18, r.y + r.height - 12);
-                diagLabel(g2, base, alpha, "cold · ice", r.x + r.width - 70, r.y + r.height - 12);
-                // Star.
-                g2.setColor(new Color(255, 235, 140, alpha));
-                g2.fillOval(sx - 9, sy - 9, 18, 18);
-            }
-            case "ACCRETION" -> {
-                int y = cy;
-                int[] xs = {r.x + 34, cx, r.x + r.width - 40};
-                int[] rad = {3, 8, 16};
-                Color[] col = {new Color(150, 160, 180), new Color(190, 170, 150), new Color(120, 180, 240)};
-                String[] lab = {"dust", "planetesimal", "planet"};
-                for (int i = 0; i < 3; i++) {
-                    if (i == 0) {
-                        for (int d = 0; d < 8; d++)
-                            g2.fillOval(xs[i] - 10 + (d % 4) * 6, y - 8 + (d / 4) * 8, 2, 2);
-                        g2.setColor(new Color(150, 160, 180, alpha));
-                    } else {
-                        g2.setColor(new Color(col[i].getRed(), col[i].getGreen(), col[i].getBlue(), alpha));
-                        g2.fillOval(xs[i] - rad[i], y - rad[i], rad[i] * 2, rad[i] * 2);
-                    }
-                    diagLabel(g2, base, alpha, lab[i], xs[i] - 20, y + 34);
-                    if (i < 2) {
-                        g2.setColor(new Color(160, 190, 230, alpha));
-                        g2.setStroke(new BasicStroke(1.4f));
-                        int ax = xs[i] + 18, bx = xs[i + 1] - 20;
-                        g2.drawLine(ax, y, bx, y);
-                        g2.fillPolygon(new int[]{bx, bx - 6, bx - 6}, new int[]{y, y - 4, y + 4}, 3);
-                    }
-                }
-            }
-            case "SUN" -> {
-                int R = Math.min(r.width, r.height) / 2 - 16;
-                String[] zn = {"photosphere", "convective", "radiative", "core"};
-                Color[] zc = {new Color(255, 210, 120), new Color(255, 170, 70),
-                              new Color(255, 120, 60), new Color(255, 70, 50)};
-                double[] frac = {1.0, 0.72, 0.50, 0.24};
-                for (int i = 0; i < 4; i++) {
-                    int rr = (int) (R * frac[i]);
-                    g2.setColor(new Color(zc[i].getRed(), zc[i].getGreen(), zc[i].getBlue(), Math.min(alpha, 235)));
-                    g2.fillOval(cx - rr, cy - rr, rr * 2, rr * 2);
-                }
-                // Leader labels down the right side.
-                for (int i = 0; i < 4; i++) {
-                    int ly = r.y + 20 + i * 18;
-                    g2.setColor(new Color(zc[i].getRed(), zc[i].getGreen(), zc[i].getBlue(), alpha));
-                    g2.fillRect(r.x + r.width - 92, ly - 8, 8, 8);
-                    diagLabel(g2, base, alpha, zn[i], r.x + r.width - 80, ly);
-                }
-            }
-            case "HYDRO" -> {
-                int colX = cx, top = r.y + 26, bot = r.y + r.height - 26;
-                g2.setColor(new Color(70, 90, 130, Math.min(alpha, 160)));
-                g2.setStroke(new BasicStroke(1.4f));
-                g2.drawRect(colX - 30, top, 60, bot - top);
-                // Gravity down.
-                g2.setColor(new Color(120, 170, 255, alpha));
-                g2.setStroke(new BasicStroke(2.4f));
-                g2.drawLine(colX, top + 6, colX, cy - 6);
-                g2.fillPolygon(new int[]{colX, colX - 6, colX + 6}, new int[]{cy, cy - 10, cy - 10}, 3);
-                diagLabel(g2, base, alpha, "gravity", colX + 12, top + 22);
-                // Pressure up.
-                g2.setColor(new Color(255, 170, 110, alpha));
-                g2.drawLine(colX, bot - 6, colX, cy + 6);
-                g2.fillPolygon(new int[]{colX, colX - 6, colX + 6}, new int[]{cy, cy + 10, cy + 10}, 3);
-                diagLabel(g2, base, alpha, "pressure", colX + 12, bot - 8);
-                g2.setColor(new Color(230, 238, 250, alpha));
-                g2.setFont(base.deriveFont(Font.BOLD, 12f));
-                String eq = "dP/dr = −ρg";
-                g2.drawString(eq, cx - g2.getFontMetrics().stringWidth(eq) / 2, bot + 2);
-            }
-            case "HR" -> {
-                int ax = r.x + 30, ay = r.y + r.height - 26;   // axis origin
-                int aw = r.width - 48, ah = r.height - 52;
-                g2.setColor(new Color(150, 170, 200, alpha));
-                g2.setStroke(new BasicStroke(1.4f));
-                g2.drawLine(ax, ay, ax, ay - ah);              // luminosity axis
-                g2.drawLine(ax, ay, ax + aw, ay);              // temperature axis
-                diagLabel(g2, base, alpha, "L →", ax - 24, ay - ah + 6);
-                diagLabel(g2, base, alpha, "hot ← T → cool", ax + aw / 2 - 34, ay + 16);
-                // Main sequence diagonal (hot/bright upper-left to cool/faint lower-right).
-                g2.setColor(new Color(150, 200, 255, alpha));
-                g2.setStroke(new BasicStroke(6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                g2.drawLine(ax + 12, ay - ah + 14, ax + aw - 18, ay - 12);
-                diagLabel(g2, base, alpha, "main sequence", ax + aw / 2 - 30, ay - ah / 2 + 26);
-                // Giants (upper right).
-                g2.setColor(new Color(255, 150, 120, alpha));
-                g2.fillOval(ax + aw - 60, ay - ah + 18, 34, 20);
-                diagLabel(g2, base, alpha, "giants", ax + aw - 62, ay - ah + 12);
-                // White dwarfs (lower left).
-                g2.setColor(new Color(210, 230, 255, alpha));
-                g2.fillOval(ax + 22, ay - 30, 14, 10);
-                diagLabel(g2, base, alpha, "white dwarfs", ax + 8, ay - 34);
-                // The Sun.
-                g2.setColor(new Color(255, 230, 120, alpha));
-                int sunx = ax + (int) (aw * 0.52), suny = ay - (int) (ah * 0.46);
-                g2.fillOval(sunx - 4, suny - 4, 8, 8);
-                diagLabel(g2, base, alpha, "Sun", sunx + 6, suny + 3);
-            }
-            case "PPCHAIN" -> {
-                g2.setFont(base.deriveFont(Font.BOLD, 11f));
-                String[] rows = {"p + p → ²H + e⁺ + ν", "²H + p → ³He + γ", "³He + ³He → ⁴He + 2p"};
-                int y = r.y + 34;
-                for (int i = 0; i < rows.length; i++) {
-                    g2.setColor(new Color(40, 60, 100, Math.min(alpha, 210)));
-                    g2.fillRoundRect(r.x + 14, y - 16, r.width - 28, 24, 8, 8);
-                    g2.setColor(new Color(120, 160, 220, alpha));
-                    g2.drawRoundRect(r.x + 14, y - 16, r.width - 28, 24, 8, 8);
-                    g2.setColor(new Color(235, 242, 252, alpha));
-                    g2.drawString(rows[i], r.x + 22, y);
-                    if (i < rows.length - 1) {
-                        g2.setColor(new Color(150, 190, 230, alpha));
-                        int mx = cx;
-                        g2.drawLine(mx, y + 8, mx, y + 20);
-                        g2.fillPolygon(new int[]{mx, mx - 4, mx + 4}, new int[]{y + 24, y + 18, y + 18}, 3);
-                    }
-                    y += 40;
-                }
-                g2.setColor(new Color(255, 220, 140, alpha));
-                g2.setFont(base.deriveFont(Font.BOLD, 11.5f));
-                String net = "4 p → ⁴He + energy";
-                g2.drawString(net, cx - g2.getFontMetrics().stringWidth(net) / 2, r.y + r.height - 12);
-            }
-            case "EVOLUTION" -> {
-                int ax = r.x + 26, ay = r.y + r.height - 24;
-                int aw = r.width - 44, ah = r.height - 48;
-                g2.setColor(new Color(150, 170, 200, alpha));
-                g2.setStroke(new BasicStroke(1.3f));
-                g2.drawLine(ax, ay, ax, ay - ah);
-                g2.drawLine(ax, ay, ax + aw, ay);
-                diagLabel(g2, base, alpha, "L", ax - 16, ay - ah + 8);
-                diagLabel(g2, base, alpha, "hot ← T → cool", ax + aw / 2 - 34, ay + 14);
-                // MS point.
-                int msx = ax + (int) (aw * 0.5), msy = ay - (int) (ah * 0.42);
-                g2.setColor(new Color(150, 200, 255, alpha));
-                g2.fillOval(msx - 5, msy - 5, 10, 10);
-                diagLabel(g2, base, alpha, "main seq.", msx - 26, msy + 20);
-                // Track to red giant (up-right = cooler, brighter).
-                int rgx = ax + (int) (aw * 0.82), rgy = ay - (int) (ah * 0.82);
-                g2.setColor(new Color(255, 150, 110, alpha));
-                g2.setStroke(new BasicStroke(2.4f));
-                g2.drawLine(msx, msy, rgx, rgy);
-                g2.fillPolygon(new int[]{rgx, rgx - 8, rgx - 2}, new int[]{rgy, rgy + 2, rgy + 9}, 3);
-                g2.fillOval(rgx - 9, rgy - 9, 18, 18);
-                diagLabel(g2, base, alpha, "red giant", rgx - 30, rgy - 12);
-            }
-            case "ENDPOINTS" -> {
-                int startx = r.x + 20, y0 = r.y + 30;
-                g2.setColor(new Color(255, 220, 140, alpha));
-                g2.fillOval(startx - 6, y0 - 6, 12, 12);
-                diagLabel(g2, base, alpha, "dying star", startx + 10, y0 + 4);
-                String[] lab = {"white dwarf  ≤1.4 M☉", "neutron star  ~1.4–3 M☉", "black hole  >3 M☉"};
-                Color[] cc = {new Color(210, 230, 255), new Color(180, 200, 240), new Color(150, 140, 200)};
-                int bx = r.x + r.width - 150;
-                for (int i = 0; i < 3; i++) {
-                    int by = r.y + 24 + i * ((r.height - 44) / 3) + 14;
-                    g2.setColor(new Color(150, 175, 220, alpha));
-                    g2.setStroke(new BasicStroke(1.3f));
-                    g2.drawLine(startx + 6, y0 + 6, bx - 6, by);
-                    g2.setColor(new Color(cc[i].getRed(), cc[i].getGreen(), cc[i].getBlue(), Math.min(alpha, 220)));
-                    g2.fillOval(bx - 6, by - 6, 12, 12);
-                    diagLabel(g2, base, alpha, lab[i], bx + 10, by + 4);
-                }
-            }
-            default -> diagLabel(g2, base, alpha, "(figure)", cx - 20, cy);
-        }
-        g2.setClip(oldClip);
-    }
-
-    /**
      * Draw Kuiper belt (beyond Neptune)
      * Draw as a ring using concentric circles
      */
@@ -2336,7 +2215,7 @@ public class SolarSystemSimulation extends JPanel
         double outerPx = outerAU * pxPerAU;
         if (outerPx < 1.0) return;
 
-        double sunScreenX = projX(sunBarycenterX, sunBarycenterY);
+        double sunScreenX = projX(sunBarycenterX, sunBarycenterY, 0);
         double sunScreenY = projY(sunBarycenterX, sunBarycenterY, 0);
 
         // Soft annulus glow (transparent core -> band color -> transparent edge)
@@ -2398,7 +2277,7 @@ public class SolarSystemSimulation extends JPanel
         if (!showIceLines) return;
 
         // Center on Sun's barycentric position
-        double sunScreenX = projX(sunBarycenterX, sunBarycenterY);
+        double sunScreenX = projX(sunBarycenterX, sunBarycenterY, 0);
         double sunScreenY = projY(sunBarycenterX, sunBarycenterY, 0);
 
         // H2O frost line (water ice): ~4.85 AU
@@ -2455,32 +2334,35 @@ public class SolarSystemSimulation extends JPanel
         }
     }
 
-    /** Helper: builds orbit path from precomputed points */
-    /** Build planet {@code i}'s orbit as a projected screen path from its current (precessed)
-     *  3-D Keplerian ellipse, so the ring shows the real inclination and tilts with the view. */
+    /** Build planet {@code i}'s orbit as a projected screen path from its current osculating
+     *  3-D ellipse (the orbit it is on right now), so the ring passes exactly through the
+     *  planet, shows the real inclination, and tilts with the view. */
     private boolean drawOrbitRing(Graphics2D g2, int i) {
-        double a = A_METERS[i], e = ECC[i];
-        double incl = planetIncl(i), Om = planetOmega(i), vp = planetVarpi(i);
+        double a = oscA[i];
         int seg = orbitSegments(a);
         double minX = 1e18, minY = 1e18, maxX = -1e18, maxY = -1e18;
+        // Build the ring as a projected polyline, lifting the pen across any arc that falls
+        // behind the camera (which happens once you dolly inside the orbit) so it never wraps
+        // to a garbage line. Bounding box is taken over the visible arc only.
+        Path2D.Double path = new Path2D.Double();
+        boolean pen = false, any = false;
         for (int j = 0; j <= seg; j++) {
             double E = 2 * Math.PI * j / seg;
-            double[] w = keplerXYZ(a, e, E, incl, Om, vp);       // {wx, wy, wz} heliocentric
+            double[] w = planetOrbitPoint(i, E);                 // {wx, wy, wz} heliocentric
             double wx = w[0] + sunBarycenterX, wy = w[1] + sunBarycenterY, wz = w[2];
-            double sx = projX(wx, wy), sy = projY(wx, wy, wz);
-            ringSX[j] = sx; ringSY[j] = sy;
+            if (!inFront(wx, wy, wz)) { pen = false; continue; }
+            double sx = projX(wx, wy, wz), sy = projY(wx, wy, wz);
             if (sx < minX) minX = sx; if (sx > maxX) maxX = sx;
             if (sy < minY) minY = sy; if (sy > maxY) maxY = sy;
+            if (!pen) { path.moveTo(sx, sy); pen = true; } else path.lineTo(sx, sy);
+            any = true;
         }
+        if (!any) return false;
         // Cull by the ring's TRUE projected bounding box (tilt/yaw-aware), so a foreshortened,
         // zoomed-in orbit is not wrongly hidden — the bug the old Sun-radius test had under tilt.
         double m = 48;
         if (maxX < -m || minX > getWidth() + m || maxY < -m || minY > getHeight() + m) return false;
 
-        // Draw the ring as a single uniform ellipse (same colour all the way round).
-        Path2D.Double path = new Path2D.Double();
-        path.moveTo(ringSX[0], ringSY[0]);
-        for (int j = 1; j <= seg; j++) path.lineTo(ringSX[j], ringSY[j]);
         g2.setStroke(new BasicStroke(1f));
         g2.setColor(getOrbitColor(i));
         g2.draw(path);
@@ -2504,10 +2386,7 @@ public class SolarSystemSimulation extends JPanel
         return Math.max(256, Math.min(seg, 16384));
     }
 
-    // ------- 3-D Keplerian state + secular precession -------
 
-    /** Julian centuries of sim time elapsed since the J2000 epoch (simTimeSec = 0). */
-    private double centuriesSinceEpoch() { return simTimeSec / (36525.0 * 86400.0); }
 
     // ------- Real-date planetarium mapping (simTimeSec = 0 is the J2000.0 epoch) -------
 
@@ -2527,57 +2406,203 @@ public class SolarSystemSimulation extends JPanel
         }
     }
 
-    /** Human-readable simulated date, or an elapsed-years fallback at extreme offsets. */
+    /** Human-readable simulated date (UTC), or an elapsed-years fallback at extreme offsets. */
     private String simDateString() {
         java.time.LocalDateTime dt = simDateTime();
         if (dt == null) return String.format("J2000 %+.0f yr", simTimeSec / (365.25 * DAY));
         return dt.format(SIM_DATE_FMT);
     }
 
-    private static double wrapTwoPi(double a) {
-        a %= 2 * Math.PI;
-        if (a < 0) a += 2 * Math.PI;
-        return a;
+    /**
+     * Time zone that dates are typed and shown in: the computer's own zone, like a desk clock
+     * (and like Stellarium). The sim clock itself is UTC; this is only the human-facing label.
+     */
+    private final java.time.ZoneId displayZone = java.time.ZoneId.systemDefault();
+
+    /** The sim instant in {@link #displayZone}, e.g. "2026-10-02  20:01 EDT", or null if out of range. */
+    private String simLocalDateString() {
+        try {
+            java.time.ZonedDateTime z = J2000_INSTANT.plusSeconds((long) simTimeSec).atZone(displayZone);
+            return z.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd  HH:mm zzz"));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * A plain-text snapshot of the live simulation state, injected into the AI
+     * assistant's prompt so it can answer questions like "what planet am I
+     * looking at?" or "how fast is time running?" accurately.
+     */
+    String aiContextSnapshot() {
+        StringBuilder b = new StringBuilder(512);
+        b.append("Simulated date/time (UTC): ").append(simDateString()).append('\n');
+        String local = simLocalDateString();
+        if (local != null) b.append("Same instant in the user's time zone (").append(displayZone).append("): ").append(local).append('\n');
+        b.append("Elapsed since J2000 epoch: ")
+         .append(String.format("%.2f years", simTimeSec / (365.25 * DAY))).append('\n');
+        b.append("Time speed: ").append(formatTimeScale(timeScale))
+         .append(simulationPaused ? " (PAUSED)" : " (running)").append('\n');
+
+        String selName = (selectedPlanet >= 0 && selectedPlanet < NAMES.length)
+                ? NAMES[selectedPlanet] : "none";
+        b.append("Selected body: ").append(selName).append('\n');
+
+        // Which planet's moon system is active (the one being followed, else selected).
+        int moonParent = (cameraFocusIndex >= 0) ? cameraFocusIndex : selectedPlanet;
+        if (selectedMoon >= 0 && moonParent >= 0 && moonParent < MOON_NAMES.length
+                && selectedMoon < MOON_NAMES[moonParent].length) {
+            b.append("Selected moon: ").append(MOON_NAMES[moonParent][selectedMoon])
+             .append(" (of ").append(NAMES[moonParent]).append(")\n");
+        }
+
+        if (followingMoon && moonParent >= 0 && cameraFocusMoon >= 0
+                && cameraFocusMoon < MOON_NAMES[moonParent].length) {
+            b.append("Camera is following: moon ")
+             .append(MOON_NAMES[moonParent][cameraFocusMoon])
+             .append(" of ").append(NAMES[moonParent]).append('\n');
+        } else if (followingPlanet && cameraFocusIndex >= 0 && cameraFocusIndex < NAMES.length) {
+            b.append("Camera is following: ").append(NAMES[cameraFocusIndex]).append('\n');
+        } else {
+            b.append("Camera is following: nothing (free / whole-system view)\n");
+        }
+
+        b.append("Zoom mode: ")
+         .append(switch (zoomMode) { case 0 -> "Planet"; case 1 -> "Orbit"; default -> "Manual"; })
+         .append("; auto-zoom ").append(autoZoomEnabled ? "on" : "off").append('\n');
+        b.append("Planet orbits shown: ").append(showPlanetOrbits ? "yes" : "no")
+         .append("; labels shown: ").append(showLabels ? "yes" : "no")
+         .append("; barycentric (Sun-wobble) frame: ").append(barycentricFrame ? "on" : "off")
+         .append('\n');
+        return b.toString();
     }
 
     /**
      * Jump the whole simulation to a real calendar date/time: sets sim time and places every
-     * body at the mean-anomaly it has then (planets from real J2000 elements; moons/added
-     * small bodies phased from the epoch). Works while paused, so it acts as a date scrubber.
+     * body at the state it has then — planets, dwarf planets and minor bodies from the N-body
+     * integration, Earth's Moon from {@link MoonEphemeris}, other moons from
+     * {@link SatelliteEphemeris}. Works while paused, so it acts as a date scrubber.
      */
     private void goToDate(java.time.LocalDateTime dt) {
         long secs = java.time.Duration.between(J2000_INSTANT,
                 dt.toInstant(java.time.ZoneOffset.UTC)).getSeconds();
+        goToSimTime(secs);
+    }
+
+    /** Place every body at its state {@code secs} seconds after J2000 (see {@link #goToDate}). */
+    private void goToSimTime(double secs) {
         simTimeSec = secs;
-        for (int i = 0; i < NAMES.length; i++) {
-            double n = 2 * Math.PI / (PERIOD_Y[i] * 365.25 * DAY);
-            double M0 = Math.toRadians(PLANET_L0[i] - PLANET_VARPI0[i]);
-            meanAnomaly[i] = wrapTwoPi(M0 + n * simTimeSec);
-            for (int m = 0; m < moonMean[i].length; m++) {
-                moonMean[i][m] = wrapTwoPi((2 * Math.PI / (MOON_PERIOD_DAYS[i][m] * DAY)) * simTimeSec);
-            }
-        }
-        for (int i = 0; i < NAMES.length; i++) {
-            double[] pos = planetXYZ(i);
-            planetX[i] = pos[0]; planetY[i] = pos[1]; planetZ[i] = pos[2];
-        }
-        for (SmallBody sb : smallBodies) sb.updatePosition(simTimeSec);
-        computeBarycenter();
+        // A jump of centuries means integrating that far from the nearest cached checkpoint
+        // (~0.4 s per century the first time); show a busy cursor meanwhile.
+        Cursor old = getCursor();
+        setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+        try { updateEphemeris(); } finally { setCursor(old); }
         updateTimeScaleLabel();
         repaint();
     }
 
-    /** Current (precessed) longitude of the ascending node for planet i (radians). */
-    private double planetOmega(int i) {
-        return Math.toRadians(PLANET_OMEGA0[i] + PLANET_OMEGA_DOT[i] * centuriesSinceEpoch());
+    // ------- Ephemeris: integrated heliocentric states (see NBodyEphemeris) -------
+
+    /** GM(Moon) / GM(Earth + Moon), DE440: how far Earth's centre sits from the Earth–Moon barycentre. */
+    private static final double MOON_MASS_FRACTION = 4902.800118 / 403503.235502;
+    private static final double AU_KM = AU / 1000.0;
+
+    /** Ecliptic-J2000 vector (x → equinox, z → ecliptic north) to the sim's world axes {ye, −xe, ze}. */
+    static double[] eclToWorld(double x, double y, double z) { return new double[]{ y, -x, z }; }
+
+    /**
+     * Offset (AU, ecliptic J2000) of planet {@code i}'s centre from its system barycentre — the
+     * reflex of its moons (Earth: the Moon from the lunar theory) — or null if it has none.
+     */
+    private static double[] centreOffsetAU(int i, double simSec) {
+        if (i == EARTH_INDEX) {
+            double[] m = MoonEphemeris.geocentricEclipticAU(simSec);
+            return new double[]{ -MOON_MASS_FRACTION * m[0], -MOON_MASS_FRACTION * m[1], -MOON_MASS_FRACTION * m[2] };
+        }
+        if (SatelliteEphemeris.count(i) == 0) return null;
+        double[] o = SatelliteEphemeris.centreOffsetKm(i, Astro.ttSeconds(simSec));
+        return new double[]{ o[0] / AU_KM, o[1] / AU_KM, o[2] / AU_KM };
     }
-    /** Current (precessed) longitude of perihelion for planet i (radians). */
-    private double planetVarpi(int i) {
-        return Math.toRadians(PLANET_VARPI0[i] + PLANET_VARPI_DOT[i] * centuriesSinceEpoch());
+
+    /** Move body {@code i}'s state in {@code s} from its system barycentre to the planet's centre. */
+    private static void toPlanetCentre(double[] s, int i, double simSec) {
+        double[] o = centreOffsetAU(i, simSec);
+        if (o == null) return;
+        double[] a = centreOffsetAU(i, simSec - 60), b = centreOffsetAU(i, simSec + 60);
+        for (int c = 0; c < 3; c++) {
+            s[6 * i + c] += o[c];
+            s[6 * i + 3 + c] += (b[c] - a[c]) / (120.0 / DAY);   // AU/day
+        }
     }
-    /** Current (precessed) inclination to the ecliptic for planet i (radians). */
-    private double planetIncl(int i) {
-        return Math.toRadians(PLANET_INCL_DEG[i] + PLANET_INCL_DOT[i] * centuriesSinceEpoch());
+
+    /**
+     * Heliocentric ecliptic-J2000 states {x,y,z,vx,vy,vz} (AU, AU/day) of every integrated body
+     * at UTC sim time {@code simSec} — planets at their own centres, minor bodies as integrated —
+     * followed by the Sun's position relative to the Solar-System barycentre (3 more doubles, AU).
+     */
+    static double[] ephemerisStates(double simSec) {
+        int n = NBodyEphemeris.N_BODIES;
+        double[] s = new double[6 * n + 3];
+        NBodyEphemeris.shared().heliocentric(Astro.ttSeconds(simSec), s);
+        double[] sun = NBodyEphemeris.sunBarycentric(s);   // from the barycentres, before re-centring
+        System.arraycopy(sun, 0, s, 6 * n, 3);
+        for (int i = 0; i < NAMES.length; i++) toPlanetCentre(s, i, simSec);
+        return s;
+    }
+
+    /** Heliocentric ecliptic-J2000 state (AU, AU/day) of planet {@code i}'s centre. */
+    static double[] planetStateAU(int i, double simSec) {
+        double[] s = new double[6 * NBodyEphemeris.N_BODIES];
+        NBodyEphemeris.shared().heliocentric(Astro.ttSeconds(simSec), s);
+        toPlanetCentre(s, i, simSec);
+        return java.util.Arrays.copyOfRange(s, 6 * i, 6 * i + 6);
+    }
+
+    /**
+     * Heliocentric ecliptic-J2000 position (AU) of planet {@code i}'s centre at elapsed (UTC) sim
+     * time, as {x, y, z} with x toward the vernal equinox and z toward ecliptic north — the
+     * frame JPL Horizons reports, so the accuracy tests compare it directly.
+     */
+    static double[] planetEclipticAU(int i, double simTimeSec) {
+        double[] s = planetStateAU(i, simTimeSec);
+        return new double[]{ s[0], s[1], s[2] };
+    }
+
+    /** Integrated heliocentric states at the current sim time (layout of {@link #ephemerisStates}). */
+    private double[] ephem;
+    /** The Sun's offset from the Solar-System barycentre, world axes (m). */
+    private double sunBaryWX, sunBaryWY;
+
+    /**
+     * Pull every body's state for the current sim time from the ephemerides: planet positions,
+     * speeds and osculating elements, the minor bodies, and the Sun's barycentric offset.
+     */
+    private void updateEphemeris() {
+        double[] s = ephemerisStates(simTimeSec);
+        ephem = s;
+        for (int i = 0; i < NAMES.length; i++) {
+            int o = 6 * i;
+            double[] w = eclToWorld(s[o] * AU, s[o + 1] * AU, s[o + 2] * AU);
+            planetX[i] = w[0]; planetY[i] = w[1]; planetZ[i] = w[2];
+            planetDistM[i] = Math.sqrt(s[o] * s[o] + s[o + 1] * s[o + 1] + s[o + 2] * s[o + 2]) * AU;
+            double v = Math.sqrt(s[o + 3] * s[o + 3] + s[o + 4] * s[o + 4] + s[o + 5] * s[o + 5]);
+            planetSpeedKmS[i] = v * AU / DAY / 1000.0;
+            double mu = NBodyEphemeris.GM_SUN + NBodyEphemeris.GM[i];
+            double[] el = NBodyEphemeris.elements(mu, s[o], s[o + 1], s[o + 2], s[o + 3], s[o + 4], s[o + 5]);
+            oscA[i] = el[0] * AU; oscE[i] = el[1]; oscI[i] = el[2]; oscNode[i] = el[3];
+            oscVarpi[i] = el[4]; oscM[i] = el[5]; oscEanom[i] = el[6];
+            oscPeriodY[i] = 2 * Math.PI * Math.sqrt(el[0] * el[0] * el[0] / mu) / 365.25;
+        }
+        for (SmallBody sb : smallBodies) sb.update(s);
+        int n = NBodyEphemeris.N_BODIES;
+        double[] sun = eclToWorld(s[6 * n] * AU, s[6 * n + 1] * AU, s[6 * n + 2] * AU);
+        sunBaryWX = sun[0]; sunBaryWY = sun[1];
+        computeBarycenter();
+    }
+
+    /** Point at eccentric anomaly {@code E} on planet {@code i}'s current osculating orbit (world, m, heliocentric). */
+    private double[] planetOrbitPoint(int i, double E) {
+        return keplerXYZ(oscA[i], oscE[i], E, oscI[i], oscNode[i], oscVarpi[i]);
     }
 
     /** Newton solve of Kepler's equation M = E - e sinE for the eccentric anomaly E. */
@@ -2595,10 +2620,9 @@ public class SolarSystemSimulation extends JPanel
     /**
      * Heliocentric position for a point on an inclined Keplerian ellipse, returned in the
      * sim's world convention {@code {wx, wy, wz}} where wx,wy lie in the ecliptic reference
-     * plane (as previously drawn) and wz is height above it. The perifocal point is rotated
-     * by the argument of perihelion, inclined by {@code incl} about the node line, and swung
-     * by the node {@code Omega}; the final {@code {wy, -wx-in-plane}} swap reproduces the
-     * original screen orientation exactly when incl = 0.
+     * plane and wz is height above it. The perifocal point is rotated by the argument of
+     * perihelion, inclined by {@code incl} about the node line, and swung by the node
+     * {@code Omega}, then mapped to world axes by {@link #eclToWorld}.
      */
     private static double[] keplerXYZ(double a, double e, double E, double incl, double Omega, double varpi) {
         double b = a * Math.sqrt(1 - e * e);
@@ -2610,60 +2634,130 @@ public class SolarSystemSimulation extends JPanel
         double xe = (cO * cw - sO * sw * ci) * xr + (-cO * sw - sO * cw * ci) * yr;
         double ye = (sO * cw + cO * sw * ci) * xr + (-sO * sw + cO * cw * ci) * yr;
         double ze = (sw * si) * xr + (cw * si) * yr;
-        return new double[]{ ye, -xe, ze };   // matches the legacy (x = ye, y = -xe) mapping at incl = 0
+        return eclToWorld(xe, ye, ze);
     }
 
-    /** Current heliocentric 3-D position of planet i from its mean anomaly + precessed elements. */
-    private double[] planetXYZ(int i) {
-        double E = solveEccentricAnomaly(meanAnomaly[i], ECC[i]);
-        return keplerXYZ(A_METERS[i], ECC[i], E, planetIncl(i), planetOmega(i), planetVarpi(i));
+    // ------- IAU rotation model: real prime-meridian orientation of a planet -------
+
+    /** Prime-meridian angle W = W0 + Ẇ·d (deg, unwrapped) for planet i at elapsed sim time. */
+    static double iauPrimeMeridianDeg(int i, double simTimeSec) {
+        return IAU_W0[i] + IAU_WDOT[i] * (simTimeSec / DAY);
+    }
+
+    /**
+     * The planet's north-pole unit vector at time {@code simTimeSec}, expressed in the
+     * ecliptic-J2000 frame the sim's positions live in (x → vernal equinox, z → ecliptic
+     * north). Built from the IAU pole (a0, d0) given in ICRF equatorial coords, then
+     * rotated by the obliquity of the ecliptic into the ecliptic frame.
+     */
+    static double[] iauPoleEcliptic(int i, double simTimeSec) {
+        double T = simTimeSec / (36525.0 * DAY);
+        double a0 = Math.toRadians(IAU_RA0[i]  + IAU_RA0_T[i]  * T);
+        double d0 = Math.toRadians(IAU_DEC0[i] + IAU_DEC0_T[i] * T);
+        // Pole in equatorial J2000.
+        double ex = Math.cos(d0) * Math.cos(a0);
+        double ey = Math.cos(d0) * Math.sin(a0);
+        double ez = Math.sin(d0);
+        return equatorialToEcliptic(ex, ey, ez);
+    }
+
+    /** Rotate an equatorial-J2000 vector into the ecliptic-J2000 frame (−ε about x). */
+    private static double[] equatorialToEcliptic(double x, double y, double z) {
+        double e = Math.toRadians(ECLIPTIC_OBLIQUITY_DEG), c = Math.cos(e), s = Math.sin(e);
+        return new double[]{ x, c * y + s * z, -s * y + c * z };
+    }
+
+    /** Rotate an ecliptic-J2000 vector into the equatorial-J2000 frame (+ε about x). */
+    private static double[] eclipticToEquatorial(double x, double y, double z) {
+        double e = Math.toRadians(ECLIPTIC_OBLIQUITY_DEG), c = Math.cos(e), s = Math.sin(e);
+        return new double[]{ x, c * y - s * z, s * y + c * z };
+    }
+
+    /**
+     * Real sub-solar planetographic <em>east</em> longitude (radians, prime meridian = 0)
+     * for planet i at elapsed sim time — the geographic longitude the Sun stands directly
+     * over. This is the physical datum the on-screen texture is anchored to, so the meridian
+     * lit at local noon on the rendered globe is the one truly in noon at that instant.
+     *
+     * <p>Computed from the full IAU body-to-inertial rotation R = Rz(a0+90°)·Rx(90°−d0)·Rz(W):
+     * the Sun direction is transformed into the body-fixed frame with Rᵀ and its longitude
+     * read off. Frame- and camera-independent, and a pure function of {@code simTimeSec}, so
+     * it holds at any time-warp speed.
+     */
+    static double iauSubSolarEastLon(int i, double simTimeSec) {
+        // Planet → Sun direction in ecliptic J2000 (Sun at heliocentric origin).
+        double[] p = planetEclipticAU(i, simTimeSec);
+        double[] sEq = eclipticToEquatorial(-p[0], -p[1], -p[2]);
+        double n = Math.sqrt(sEq[0]*sEq[0] + sEq[1]*sEq[1] + sEq[2]*sEq[2]);
+        if (n < 1e-12) return 0;
+        double sx = sEq[0]/n, sy = sEq[1]/n, sz = sEq[2]/n;
+
+        double T = simTimeSec / (36525.0 * DAY);
+        double a0 = Math.toRadians(IAU_RA0[i]  + IAU_RA0_T[i]  * T) + Math.PI / 2;   // node RA + 90°
+        double d0 = Math.toRadians(IAU_DEC0[i] + IAU_DEC0_T[i] * T);
+        double W  = Math.toRadians(iauPrimeMeridianDeg(i, simTimeSec));
+
+        // Body-fixed Sun vector = Rᵀ·s = Rz(−W)·Rx(−(90°−d0))·Rz(−a0)·s.
+        double[] v = rotZ(sx, sy, sz, -a0);
+        v = rotX(v[0], v[1], v[2], -(Math.PI / 2 - d0));
+        v = rotZ(v[0], v[1], v[2], -W);
+        return Math.atan2(v[1], v[0]);   // east longitude from the prime meridian
+    }
+
+    private static double[] rotZ(double x, double y, double z, double a) {
+        double c = Math.cos(a), s = Math.sin(a);
+        return new double[]{ c * x - s * y, s * x + c * y, z };
+    }
+    private static double[] rotX(double x, double y, double z, double a) {
+        double c = Math.cos(a), s = Math.sin(a);
+        return new double[]{ x, c * y - s * z, s * y + c * z };
     }
 
     /** Which built-in catalog a minor body belongs to (drives the View toggles). */
     enum BodyClass { COMET, ASTEROID, DISTANT }
 
     /**
-     * A real minor body — comet, asteroid, or distant object — propagated on its own fixed
-     * Keplerian orbit from six classical elements (JPL Small-Body Database convention).
-     * Comets are flagged so they get an anti-sunward tail. {@code M0} is the mean anomaly
-     * at the J2000 epoch (simTimeSec = 0).
+     * A real minor body — comet, asteroid, or distant object — integrated as a test particle
+     * of the N-body system ({@link NBodyEphemeris}) from its JPL Horizons J2000 state, so it
+     * feels Jupiter and the other planets. Comets are flagged so they get an anti-sunward tail.
+     * Its osculating elements (refreshed every frame) give the orbit ring.
      */
     static final class SmallBody {
         final String name;
-        final double aM;                 // semi-major axis (m)
-        final double ecc;
-        final double inclRad, omegaRad, varpiRad, M0Rad;
         final boolean comet;
         final BodyClass cls;
         final Color color;
-        double x, y, z;                  // current heliocentric position (m)
+        /** Index of this body in {@link NBodyEphemeris}. */
+        final int index;
+        double x, y, z;                  // current heliocentric position (world axes, m)
+        // Current osculating heliocentric orbit (m, radians).
+        double aM, ecc, inclRad, omegaRad, varpiRad, meanAnom, eccAnom;
 
-        SmallBody(String name, double aAU, double ecc, double inclDeg, double nodeDeg,
-                  double varpiDeg, double M0Deg, BodyClass cls, Color color) {
+        SmallBody(String name, BodyClass cls, Color color) {
             this.name = name;
-            this.aM = aAU * AU;
-            this.ecc = ecc;
-            this.inclRad = Math.toRadians(inclDeg);
-            this.omegaRad = Math.toRadians(nodeDeg);
-            this.varpiRad = Math.toRadians(varpiDeg);
-            this.M0Rad = Math.toRadians(M0Deg);
             this.cls = cls;
             this.comet = (cls == BodyClass.COMET);
             this.color = color;
-            updatePosition(0);
+            this.index = NBodyEphemeris.indexOf(name);
+            if (index < NBodyEphemeris.N_MASSIVE) throw new IllegalArgumentException("not an integrated minor body: " + name);
         }
 
-        /** Mean motion (rad/s) from Kepler's 3rd law: P[yr] = a[AU]^1.5. */
-        double meanMotion() {
+        /** Take this body's state from a set of states laid out as {@link #ephemerisStates}. */
+        void update(double[] s) {
+            int o = 6 * index;
+            double[] w = eclToWorld(s[o] * AU, s[o + 1] * AU, s[o + 2] * AU);
+            x = w[0]; y = w[1]; z = w[2];
+            double[] el = NBodyEphemeris.elements(NBodyEphemeris.GM_SUN, s[o], s[o + 1], s[o + 2], s[o + 3], s[o + 4], s[o + 5]);
+            aM = el[0] * AU; ecc = el[1]; inclRad = el[2]; omegaRad = el[3]; varpiRad = el[4];
+            meanAnom = el[5]; eccAnom = el[6];
+        }
+
+        /** Position (world, m) {@code days} from now along the current osculating orbit. */
+        double[] positionAfter(double days) {
             double aAU = aM / AU;
-            return 2 * Math.PI / (Math.pow(aAU, 1.5) * 365.25 * DAY);
-        }
-
-        void updatePosition(double simTimeSecNow) {
-            double M = M0Rad + meanMotion() * simTimeSecNow;
-            double E = solveEccentricAnomaly(M, ecc);
-            double[] p = keplerXYZ(aM, ecc, E, inclRad, omegaRad, varpiRad);
-            x = p[0]; y = p[1]; z = p[2];
+            double n = Math.sqrt(NBodyEphemeris.GM_SUN / (aAU * aAU * aAU));   // rad/day
+            double E = solveEccentricAnomaly(meanAnom + n * days, ecc);
+            return keplerXYZ(aM, ecc, E, inclRad, omegaRad, varpiRad);
         }
 
         /** Heliocentric distance (m) — drives comet-tail length/brightness. */
@@ -2675,35 +2769,26 @@ public class SolarSystemSimulation extends JPanel
     private static final Color DISTANT_COLOR = new Color(200, 190, 225);
 
     /**
-     * A small catalog of real Solar-System minor bodies with their J2000 orbital elements
-     * (semi-major axis AU, eccentricity, inclination, node Ω, longitude of perihelion
-     * ϖ = Ω + ω, and mean anomaly at J2000, all in degrees). Positions are close but not
-     * ephemeris-exact — good enough to show each object on its true-shape, true-tilt orbit.
+     * The catalog of real Solar-System minor bodies. Their states come from the N-body
+     * integration (JPL Horizons initial conditions, see {@link NBodyEphemeris#TEST}).
      */
     private static java.util.List<SmallBody> buildBodyCatalog() {
         java.util.List<SmallBody> c = new java.util.ArrayList<>();
         // ---- Comets (get tails near the Sun) ----
-        c.add(new SmallBody("1P/Halley",         17.834, 0.96714, 162.26,  58.42, 169.75,  66.4, BodyClass.COMET, COMET_COLOR));
-        c.add(new SmallBody("2P/Encke",           2.2155, 0.84833,  11.78, 334.57, 161.12, 285.0, BodyClass.COMET, COMET_COLOR));
-        c.add(new SmallBody("55P/Tempel-Tuttle", 10.337, 0.90551, 162.49, 235.27,  47.77,  20.0, BodyClass.COMET, COMET_COLOR));
-        c.add(new SmallBody("109P/Swift-Tuttle", 26.092, 0.96322, 113.45, 139.38, 292.36,  19.0, BodyClass.COMET, COMET_COLOR));
-        c.add(new SmallBody("C/1995 O1 Hale-Bopp", 186.0, 0.99509, 89.43, 282.47,  53.06,   0.4, BodyClass.COMET, COMET_COLOR));
+        for (String n : new String[]{"1P/Halley", "2P/Encke", "55P/Tempel-Tuttle", "109P/Swift-Tuttle", "C/1995 O1 Hale-Bopp"})
+            c.add(new SmallBody(n, BodyClass.COMET, COMET_COLOR));
         // ---- Asteroids / near-Earth objects ----
-        c.add(new SmallBody("4 Vesta",            2.3617, 0.0887,   7.14, 103.81, 255.0,   20.0, BodyClass.ASTEROID, ASTEROID_COLOR));
-        c.add(new SmallBody("2 Pallas",           2.7729, 0.2302,  34.84, 173.02, 123.9,   40.0, BodyClass.ASTEROID, ASTEROID_COLOR));
-        c.add(new SmallBody("3 Juno",             2.6693, 0.2563,  12.99, 169.85,  57.6,   90.0, BodyClass.ASTEROID, ASTEROID_COLOR));
-        c.add(new SmallBody("10 Hygiea",          3.1415, 0.1125,   3.83, 283.20, 195.0,  150.0, BodyClass.ASTEROID, ASTEROID_COLOR));
-        c.add(new SmallBody("433 Eros",           1.4580, 0.2226,  10.83, 304.30, 122.19, 320.0, BodyClass.ASTEROID, ASTEROID_COLOR));
-        c.add(new SmallBody("101955 Bennu",       1.1264, 0.2037,   6.03,   2.02,  68.0,  100.0, BodyClass.ASTEROID, ASTEROID_COLOR));
+        for (String n : new String[]{"4 Vesta", "2 Pallas", "3 Juno", "10 Hygiea", "433 Eros", "101955 Bennu"})
+            c.add(new SmallBody(n, BodyClass.ASTEROID, ASTEROID_COLOR));
         // ---- Distant objects (centaurs / TNOs; off by default — very large orbits) ----
-        c.add(new SmallBody("2060 Chiron",       13.648, 0.3823,   6.93, 209.29, 339.0,  120.0, BodyClass.DISTANT, DISTANT_COLOR));
-        c.add(new SmallBody("50000 Quaoar",      43.69,  0.0389,   7.99, 188.93, 158.0,  280.0, BodyClass.DISTANT, DISTANT_COLOR));
-        c.add(new SmallBody("90377 Sedna",      506.0,   0.8590,  11.93, 144.40,  96.0,  358.0, BodyClass.DISTANT, DISTANT_COLOR));
+        for (String n : new String[]{"2060 Chiron", "50000 Quaoar", "90377 Sedna"})
+            c.add(new SmallBody(n, BodyClass.DISTANT, DISTANT_COLOR));
         return c;
     }
 
     /** True when body {@code sb} should be shown/updated under the current category toggles. */
     private boolean bodyVisible(SmallBody sb) {
+        if (lessonActive() && lessonOnlyBody != null) return sb.name.equals(lessonOnlyBody);
         return switch (sb.cls) {
             case COMET -> showComets;
             case ASTEROID -> showAsteroids;
@@ -2713,29 +2798,33 @@ public class SolarSystemSimulation extends JPanel
 
     /** Draw the enabled real minor bodies: orbit ring, anti-sunward tail (comets), nucleus + label. */
     private void drawSmallBodies(Graphics2D g2) {
-        double sunSX = projX(sunBarycenterX, sunBarycenterY), sunSY = projY(sunBarycenterX, sunBarycenterY, 0);
+        double sunSX = projX(sunBarycenterX, sunBarycenterY, 0), sunSY = projY(sunBarycenterX, sunBarycenterY, 0);
         Object oldAA = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         Font oldFont = g2.getFont();
         for (SmallBody sb : smallBodies) {
             if (!bodyVisible(sb)) continue;
-            double px = projX(sb.x + sunBarycenterX, sb.y + sunBarycenterY), py = projY(sb.x + sunBarycenterX, sb.y + sunBarycenterY, sb.z);
 
             // Orbit ring — skipped for very large orbits (a > 90 AU) whose ellipse would be absurd.
             if (showPlanetOrbits && sb.aM / AU <= 90.0) {
                 Path2D.Double path = new Path2D.Double();
                 int seg = orbitSegments(sb.aM);   // zoom-adaptive so the ring stays smooth up close
+                boolean pen = false;
                 for (int j = 0; j <= seg; j++) {
                     double E = 2 * Math.PI * j / seg;
                     double[] w = keplerXYZ(sb.aM, sb.ecc, E, sb.inclRad, sb.omegaRad, sb.varpiRad);
-                    double sx = projX(w[0] + sunBarycenterX, w[1] + sunBarycenterY), sy = projY(w[0] + sunBarycenterX, w[1] + sunBarycenterY, w[2]);
-                    if (j == 0) path.moveTo(sx, sy); else path.lineTo(sx, sy);
+                    double wx = w[0] + sunBarycenterX, wy = w[1] + sunBarycenterY, wz = w[2];
+                    if (!inFront(wx, wy, wz)) { pen = false; continue; }
+                    double sx = projX(wx, wy, wz), sy = projY(wx, wy, wz);
+                    if (!pen) { path.moveTo(sx, sy); pen = true; } else path.lineTo(sx, sy);
                 }
-                path.closePath();
                 g2.setColor(new Color(sb.color.getRed(), sb.color.getGreen(), sb.color.getBlue(), 55));
                 g2.setStroke(new BasicStroke(1f));
                 g2.draw(path);
             }
+
+            if (!inFront(sb.x + sunBarycenterX, sb.y + sunBarycenterY, sb.z)) continue;   // nucleus behind camera
+            double px = projX(sb.x + sunBarycenterX, sb.y + sunBarycenterY, sb.z), py = projY(sb.x + sunBarycenterX, sb.y + sunBarycenterY, sb.z);
 
             if (sb.comet) drawCometTail(g2, sb, px, py, sunSX, sunSY);
 
@@ -2779,10 +2868,8 @@ public class SolarSystemSimulation extends JPanel
 
         // Comet's screen-space motion direction (dust lags toward the orbital wake).
         double dtv = 5.0 * 86400.0;
-        double[] pFut = keplerXYZ(sb.aM, sb.ecc,
-                solveEccentricAnomaly(sb.M0Rad + sb.meanMotion() * (simTimeSec + dtv), sb.ecc),
-                sb.inclRad, sb.omegaRad, sb.varpiRad);
-        double fx = projX(pFut[0] + sunBarycenterX, pFut[1] + sunBarycenterY), fy = projY(pFut[0] + sunBarycenterX, pFut[1] + sunBarycenterY, pFut[2]);
+        double[] pFut = sb.positionAfter(dtv / DAY);
+        double fx = projX(pFut[0] + sunBarycenterX, pFut[1] + sunBarycenterY, pFut[2]), fy = projY(pFut[0] + sunBarycenterX, pFut[1] + sunBarycenterY, pFut[2]);
         double mvx = fx - px, mvy = fy - py, mvl = Math.hypot(mvx, mvy);
         double trailx = mvl > 1e-6 ? -mvx / mvl : ux, traily = mvl > 1e-6 ? -mvy / mvl : uy;
 
@@ -2850,9 +2937,55 @@ public class SolarSystemSimulation extends JPanel
     /* ---------- Real-date scrubbing + adding minor bodies (UI) ---------- */
 
     /** Parse "YYYY-MM-DD" or "YYYY-MM-DD HH:MM" (also accepting 'T') to a LocalDateTime, or null. */
+    /**
+     * Read "YYYY-MM-DD[ HH:MM]" optionally followed by a zone — "UTC"/"Z", an offset like
+     * "+09:00" / "-5", a region like "Asia/Tokyo", or the zone abbreviation the dialog
+     * prefills — interpreting a bare time in {@code defaultZone}. Returns the instant as a UTC
+     * date-time (what {@link #goToDate} takes), or null if unreadable.
+     */
+    static java.time.LocalDateTime parseDateTimeInZone(String s, java.time.ZoneId defaultZone) {
+        if (s == null) return null;
+        // ISO "2026-10-03T00:01" → a space; only a T between digits, so "UTC" etc. survive.
+        String[] parts = s.trim().replaceFirst("(\\d)T(\\d)", "$1 $2").split("\\s+");
+        java.time.ZoneId zone = defaultZone;
+        int n = parts.length;
+        if (n >= 2) {
+            java.time.ZoneId z = parseZone(parts[n - 1], defaultZone);
+            if (z != null) { zone = z; n--; }
+        }
+        java.time.LocalDateTime local = parseDateTime(String.join(" ", java.util.Arrays.copyOf(parts, n)));
+        if (local == null) return null;
+        return local.atZone(zone).withZoneSameInstant(java.time.ZoneOffset.UTC).toLocalDateTime();
+    }
+
+    /** A zone token: UTC/GMT/Z, ±H[H][:MM], a region ID, or the default zone's own abbreviation; else null. */
+    private static java.time.ZoneId parseZone(String t, java.time.ZoneId defaultZone) {
+        String u = t.toUpperCase(java.util.Locale.ROOT);
+        if (u.equals("UTC") || u.equals("GMT") || u.equals("Z") || u.equals("UT")) return java.time.ZoneOffset.UTC;
+        try {
+            if (u.matches("(UTC|GMT)?[+-]\\d{1,2}(:?\\d{2})?")) {
+                String o = u.replaceFirst("^(UTC|GMT)", "");
+                if (o.matches("[+-]\\d")) o = o.charAt(0) + "0" + o.charAt(1);
+                return java.time.ZoneOffset.of(o);
+            }
+            if (t.contains("/")) return java.time.ZoneId.of(t);
+        } catch (Exception ignored) { }
+        for (java.time.format.TextStyle st : new java.time.format.TextStyle[]{java.time.format.TextStyle.SHORT, java.time.format.TextStyle.FULL})
+            if (defaultZone.getDisplayName(st, java.util.Locale.getDefault()).equalsIgnoreCase(t)) return defaultZone;
+        // Daylight-time abbreviations (e.g. "EDT") aren't the zone's generic name; accept any that
+        // the default zone actually uses at some point in the year.
+        java.time.format.DateTimeFormatter abbr = java.time.format.DateTimeFormatter.ofPattern("zzz");
+        java.time.ZonedDateTime probe = java.time.ZonedDateTime.now(defaultZone);
+        for (int m = 0; m < 12; m++)
+            if (probe.plusMonths(m).format(abbr).equalsIgnoreCase(t)) return defaultZone;
+        return null;
+    }
+
     private static java.time.LocalDateTime parseDateTime(String s) {
         if (s == null) return null;
-        s = s.trim().replace('T', ' ');
+        // Collapse any run of whitespace to one space: the dialog prefills the date with the
+        // double-spaced SIM_DATE_FMT, and the patterns below expect a single date/time separator.
+        s = s.trim().replaceFirst("(\\d)T(\\d)", "$1 $2").replaceAll("\\s+", " ");
         String[] dt = {"yyyy-M-d H:m", "yyyy-M-d HH:mm", "yyyy-MM-dd HH:mm", "yyyy-MM-dd H:m"};
         for (String p : dt) {
             try { return java.time.LocalDateTime.parse(s, java.time.format.DateTimeFormatter.ofPattern(p)); }
@@ -2865,15 +2998,20 @@ public class SolarSystemSimulation extends JPanel
 
     /** Ask for a real date and scrub the whole system to it (pauses so it holds on that date). */
     private void promptGoToDate(Window owner) {
+        String zoneName = displayZone.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.getDefault());
+        String prefill = simLocalDateString();
         String input = (String) JOptionPane.showInputDialog(owner,
                 "Jump to a real date — the whole system moves to its configuration then.\n"
-                + "Format:  YYYY-MM-DD   or   YYYY-MM-DD HH:MM",
-                "Go to Date", JOptionPane.QUESTION_MESSAGE, null, null, simDateString().trim());
+                + "Format:  YYYY-MM-DD   or   YYYY-MM-DD HH:MM\n"
+                + "Times are in your time zone (" + zoneName + ", " + displayZone + ").\n"
+                + "Add UTC, an offset (+09:00) or a zone (Asia/Tokyo) to use another.",
+                "Go to Date", JOptionPane.QUESTION_MESSAGE, null, null,
+                (prefill != null ? prefill : simDateString()).trim().replaceAll("\\s+", " "));
         if (input == null || input.isBlank()) return;
-        java.time.LocalDateTime dt = parseDateTime(input);
+        java.time.LocalDateTime dt = parseDateTimeInZone(input, displayZone);
         if (dt == null) {
             JOptionPane.showMessageDialog(owner,
-                    "Couldn't read \"" + input + "\".\nUse YYYY-MM-DD or YYYY-MM-DD HH:MM.",
+                    "Couldn't read \"" + input + "\".\nUse YYYY-MM-DD or YYYY-MM-DD HH:MM, optionally followed by a zone.",
                     "Invalid date", JOptionPane.WARNING_MESSAGE);
             return;
         }
@@ -2890,7 +3028,7 @@ public class SolarSystemSimulation extends JPanel
         viewPitchRad = p;
         viewCosP = Math.cos(p);
         viewSinP = Math.sin(p);
-        geomCache.clear();   // sphere lighting frame depends on the view elevation (= 90° - pitch)
+        invalidateSphereGeometry();   // the sphere body frame depends on the view orientation
     }
 
     /** Set the view yaw/azimuth (radians, wrapped) and refresh cached cos/sin. */
@@ -2900,27 +3038,697 @@ public class SolarSystemSimulation extends JPanel
         viewYawRad = y;
         viewCosY = Math.cos(y);
         viewSinY = Math.sin(y);
-        // Sphere geometry/lighting is derived in screen space, so it needs no rebuild on yaw.
+        invalidateSphereGeometry();   // yaw turns the globe to a new face, so the baked geometry is stale
+    }
+
+    /** Drop the cached sphere/ring geometry so it is rebuilt for the new view orientation. */
+    private void invalidateSphereGeometry() {
+        geomCache.clear();
+        ringGeom = null;
+    }
+
+    // ===================== Earth Explorer ("Google Earth" mode) =====================
+    // A self-contained surface explorer: when you zoom into Earth we ray-cast the
+    // full-resolution equirectangular map as an orthographic globe centred on a
+    // geographic point (geLat/geLon) at an arbitrary zoom (geZoom). Zoomed out it is
+    // a globe hanging in the solar system; as geZoom climbs the visible cap flattens
+    // into a smooth, keep-zooming ground view. Pan by dragging, zoom with the wheel,
+    // Esc to pop back to the solar-system view. No network — detail is bounded only by
+    // the texture you drop in (a higher-res earth_diffuse.jpg is used at full size).
+
+    private static double wrapLonDeg(double lon) {
+        return ((lon + 180) % 360 + 360) % 360 - 180;
+    }
+
+    /** On-screen radius (px) of Earth right now under the current follow/zoom. */
+    private double earthScreenRadiusPx() {
+        double wx = planetX[EARTH_INDEX] + sunBarycenterX;
+        double wy = planetY[EARTH_INDEX] + sunBarycenterY;
+        double wz = planetZ[EARTH_INDEX];
+        return RADIUS_M[EARTH_INDEX] * perspScaleAt(wx, wy, wz);
+    }
+
+    /**
+     * Geographic (lat, lon) in degrees of the point on Earth currently facing the camera,
+     * derived with exactly the sphere renderer's orientation math so the hand-off into the
+     * explorer lands on the same face the user was looking at.
+     */
+    private double[] earthSubViewerLatLon() {
+        double[] fr = bodyFrame(OBLIQUITY_DEG[EARTH_INDEX]);   // pole,a,b in view space
+        double lat = Math.asin(Math.max(-1, Math.min(1, fr[2])));           // N·pole with N=(0,0,1)
+        double lon0 = Math.atan2(fr[8], fr[5]);                             // atan2(N·b, N·a)
+        double lonGeo = renderedEastLon(lon0, planetSpin(EARTH_INDEX));
+        return new double[]{ Math.toDegrees(lat), Math.toDegrees(lonGeo) };
+    }
+
+    /** Sub-solar direction in the Earth-fixed frame (Z=north), for a date-accurate terminator. */
+    private double[] earthSunDirGeo() {
+        java.time.LocalDateTime dt = simDateTime();
+        double utcH = (dt != null) ? dt.getHour() + dt.getMinute() / 60.0 + dt.getSecond() / 3600.0 : 12.0;
+        double lamSun = -(utcH - 12.0) * Math.PI / 12.0;                     // sub-solar east longitude
+        int doy = (dt != null) ? dt.getDayOfYear() : 172;
+        double decl = Math.toRadians(23.44) * Math.sin(2 * Math.PI * (doy - 80) / 365.25);
+        double cD = Math.cos(decl);
+        return new double[]{ cD * Math.cos(lamSun), cD * Math.sin(lamSun), Math.sin(decl) };
+    }
+
+    private void enterEarthExplorer() {
+        if (!ensureEarthExplorerTextures()) return;   // no Earth map on disk: stay in the solar view
+        double[] c = earthSubViewerLatLon();
+        geLat = c[0];
+        geLon = c[1];
+        // Freeze the solar view's on-screen tilt (roll of local north at the sub-viewer point) so
+        // the globe starts leaning exactly like it did in the solar view, then straightens on descent.
+        double[] fr = bodyFrame(OBLIQUITY_DEG[EARTH_INDEX]);   // pole in view space (x right, y up)
+        geRoll0 = Math.atan2(fr[0], fr[1]);
+        // Seed the globe at exactly Earth's current on-screen size so the hand-off has no size
+        // pop, then glide in to a comfortable globe framing while the UI fades up.
+        double minHalf = Math.min(getWidth(), getHeight()) * 0.5;
+        double entryZoom = minHalf > 0 ? earthScreenRadiusPx() / minHalf : 1.0;
+        geZoom = Math.max(GE_MIN_ZOOM, Math.min(entryZoom, 1.6));
+        geTargetZoom = 1.15;
+        geTransition = 0.0;
+        earthExplorerActive = true;
+        draggingView = false;
+        repaint();
+    }
+
+    private void exitEarthExplorer() {
+        if (!earthExplorerActive) return;
+        earthExplorerActive = false;
+        // Match Earth's solar-view size to the globe we were showing, then let auto-zoom glide it
+        // back to the normal framing — a smooth zoom-out rather than a jump.
+        double minHalf = Math.min(getWidth(), getHeight()) * 0.5;
+        double matched = geZoom * minHalf / (RADIUS_M[EARTH_INDEX] * METERS_TO_PIXELS);
+        currentZoom = Math.max(0.02, Math.min(matched, 50000));
+        autoZoomEnabled = true;         // resume the ordinary followed-Earth framing
+        if (cameraFocusIndex == EARTH_INDEX) updateAutoZoomTarget();
+        repaint();
+    }
+
+    /** Load the full-resolution Earth maps once (uncapped, so higher-res drop-ins add detail). */
+    private boolean ensureEarthExplorerTextures() {
+        if (geDiffuse != null) return true;
+        if (geTexTried) return false;
+        geTexTried = true;
+        final int MAX_W = 8192;
+        int[][] px = new int[1][]; int[] wh = new int[2];
+        if (loadRawTexture("earth_diffuse.jpg", MAX_W, px, wh)) {
+            geDiffuse = px[0]; geDiffW = wh[0]; geDiffH = wh[1];
+        } else if (loadTexture("earth")) {                       // fall back to the sim's 2K copy
+            geDiffuse = texPixels.get("earth");
+            geDiffW = texSize.get("earth")[0]; geDiffH = texSize.get("earth")[1];
+        }
+        if (geDiffuse == null) return false;
+        int[][] n = new int[1][]; int[] nwh = new int[2];
+        if (loadRawTexture("earth_night.jpg", MAX_W, n, nwh)) { geNight = n[0]; geNightW = nwh[0]; geNightH = nwh[1]; }
+        int[][] cl = new int[1][]; int[] cwh = new int[2];
+        if (loadRawTexture("earth_clouds.jpg", MAX_W, cl, cwh)) { geClouds = cl[0]; geCloudW = cwh[0]; geCloudH = cwh[1]; }
+        return true;
+    }
+
+    /** Read an equirectangular map at up to {@code maxW} wide into {@code outPix}/{@code outWH}. */
+    private boolean loadRawTexture(String fileName, int maxW, int[][] outPix, int[] outWH) {
+        File f = new File("assets/textures/" + fileName);
+        if (!f.isFile()) return false;
+        try {
+            BufferedImage img = ImageIO.read(f);
+            if (img == null) return false;
+            if (img.getWidth() > maxW) {
+                int nw = maxW, nh = Math.max(1, img.getHeight() * maxW / img.getWidth());
+                BufferedImage small = new BufferedImage(nw, nh, BufferedImage.TYPE_INT_RGB);
+                Graphics2D sg = small.createGraphics();
+                sg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                sg.drawImage(img, 0, 0, nw, nh, null);
+                sg.dispose();
+                img = small;
+            }
+            int w = img.getWidth(), h = img.getHeight();
+            outPix[0] = img.getRGB(0, 0, w, h, null, 0, w);
+            outWH[0] = w; outWH[1] = h;
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Bilinear equirectangular sample (u wraps, v clamps); returns packed RGB. */
+    private static int sampleBilin(int[] tex, int tw, int th, double u, double v) {
+        u -= Math.floor(u);
+        if (v < 0) v = 0; else if (v > 1) v = 1;
+        double fx = u * tw - 0.5, fy = v * (th - 1);
+        int x0 = (int) Math.floor(fx), y0 = (int) Math.floor(fy);
+        double tx = fx - x0, ty = fy - y0;
+        int x1 = x0 + 1;
+        x0 = ((x0 % tw) + tw) % tw; x1 = ((x1 % tw) + tw) % tw;
+        int y1 = Math.min(th - 1, Math.max(0, y0 + 1));
+        y0 = Math.min(th - 1, Math.max(0, y0));
+        int c00 = tex[y0 * tw + x0], c10 = tex[y0 * tw + x1];
+        int c01 = tex[y1 * tw + x0], c11 = tex[y1 * tw + x1];
+        double r = (((c00 >> 16) & 0xFF) * (1 - tx) + ((c10 >> 16) & 0xFF) * tx) * (1 - ty)
+                 + (((c01 >> 16) & 0xFF) * (1 - tx) + ((c11 >> 16) & 0xFF) * tx) * ty;
+        double g = (((c00 >> 8) & 0xFF) * (1 - tx) + ((c10 >> 8) & 0xFF) * tx) * (1 - ty)
+                 + (((c01 >> 8) & 0xFF) * (1 - tx) + ((c11 >> 8) & 0xFF) * tx) * ty;
+        double b = (((c00) & 0xFF) * (1 - tx) + ((c10) & 0xFF) * tx) * (1 - ty)
+                 + (((c01) & 0xFF) * (1 - tx) + ((c11) & 0xFF) * tx) * ty;
+        return ((int) r << 16) | ((int) g << 8) | (int) b;
+    }
+
+    /** Nearest equirectangular sample (cheap; used for low-frequency night/cloud layers). */
+    private static int sampleNearest(int[] tex, int tw, int th, double u, double v) {
+        u -= Math.floor(u);
+        if (v < 0) v = 0; else if (v > 1) v = 1;
+        int x = (int) (u * tw); if (x >= tw) x = tw - 1;
+        int y = (int) (v * (th - 1));
+        return tex[y * tw + x];
+    }
+
+    /** Render the whole canvas as the Earth explorer globe. */
+    private void drawEarthExplorer(Graphics2D g2) {
+        int W = getWidth(), H = getHeight();
+        if (W <= 0 || H <= 0) return;
+        if (geDiffuse == null && !ensureEarthExplorerTextures()) { exitEarthExplorer(); return; }
+
+        if (geZoom < GE_TILE_MIN) drawStarfield(g2, W, H);   // space behind the globe (hidden once tiles fill)
+
+        // Internal raster: cap the long side so the per-pixel ray-cast stays real-time,
+        // then bilinear-upscale to the panel.
+        final int CAP = 820;
+        int bw, bh;
+        if (W >= H) { bw = Math.min(W, CAP); bh = Math.max(1, (int) Math.round(bw * (double) H / W)); }
+        else        { bh = Math.min(H, CAP); bw = Math.max(1, (int) Math.round(bh * (double) W / H)); }
+        if (geBuf == null || geBufW != bw || geBufH != bh) {
+            geBuf = new BufferedImage(bw, bh, BufferedImage.TYPE_INT_ARGB);
+            geBufW = bw; geBufH = bh; geBufValid = false;
+        }
+        int[] out = ((DataBufferInt) geBuf.getRaster().getDataBuffer()).getData();
+
+        double half = Math.min(bw, bh) * 0.5;
+        double Rpx = half * geZoom;                 // globe radius in internal-buffer px
+        geLastRadiusPx = Rpx;
+        double bcx = bw * 0.5, bcy = bh * 0.5, invR = 1.0 / Rpx;
+
+        double[] sun = earthSunDirGeo();
+        double sunX = sun[0], sunY = sun[1], sunZ = sun[2];
+        boolean lit = shadingEnabled;
+
+        boolean drawGlobe = geZoom < GE_TILE_MIN;                        // above the band: pure tiles
+        double tileAlpha = smoothstep(GE_GLOBE_MAX, GE_TILE_MIN, geZoom); // globe → satellite cross-fade
+
+        if (drawGlobe) {
+        // Reuse the last raster on idle frames (view + lighting unchanged) — the timer
+        // repaints at 60 FPS, but a static globe need not be ray-cast every time.
+        boolean reuse = geBufValid
+                && geRLat == geLat && geRLon == geLon && geRZoom == geZoom
+                && geRShade == lit && geRNight == showNightLights && geRClouds == showClouds
+                && Math.abs(geRSunX - sunX) + Math.abs(geRSunY - sunY) + Math.abs(geRSunZ - sunZ) < 3e-3;
+        if (!reuse) {
+        // Orthonormal view basis in the Earth-fixed frame (Z=north pole, X=Greenwich equator).
+        double phi0 = Math.toRadians(geLat), lam0 = Math.toRadians(geLon);
+        double cP = Math.cos(phi0), sP = Math.sin(phi0), cL = Math.cos(lam0), sL = Math.sin(lam0);
+        double ctrX = cP * cL, ctrY = cP * sL, ctrZ = sP;         // toward camera
+        double norX = -sP * cL, norY = -sP * sL, norZ = cP;       // screen up (north)
+        double easX = -sL, easY = cL, easZ = 0;                   // screen right (east)
+
+        // Roll the globe to the frozen axial tilt near entry, straightening to north-up by the
+        // time the flat tile map takes over — so both hand-offs (solar↔globe, globe↔tiles) line up.
+        double roll = geRoll0 * (1.0 - smoothstep(1.0, GE_GLOBE_MAX, geZoom));
+        double cR = Math.cos(roll), sR = Math.sin(roll);
+
+        final double AMB = 0.13;
+
+        int[] dif = geDiffuse; int dW = geDiffW, dH = geDiffH;
+        int[] night = showNightLights ? geNight : null; int nW = geNightW, nH = geNightH;
+        int[] cloud = showClouds ? geClouds : null; int cW = geCloudW, cH = geCloudH;
+        final double TWO_PI = 2 * Math.PI;
+
+        for (int py = 0; py < bh; py++) {
+            double y0 = -(py - bcy) * invR;          // north-up (pre-roll)
+            int rowoff = py * bw;
+            for (int px = 0; px < bw; px++) {
+                double x0 = (px - bcx) * invR;        // east (pre-roll)
+                double x = x0 * cR - y0 * sR;         // apply screen roll
+                double y = x0 * sR + y0 * cR;
+                double rr = x * x + y * y;
+                if (rr > 1.0) { out[rowoff + px] = 0x00000000; continue; }
+                double nz = Math.sqrt(1.0 - rr);
+                // Earth-fixed unit surface point.
+                double Px = x * easX + y * norX + nz * ctrX;
+                double Py = x * easY + y * norY + nz * ctrY;
+                double Pz = x * easZ + y * norZ + nz * ctrZ;
+                double lat = Math.asin(Pz > 1 ? 1 : (Pz < -1 ? -1 : Pz));
+                double lon = Math.atan2(Py, Px);
+                double u = lon / TWO_PI + 0.5;
+                double v = 0.5 - lat / Math.PI;
+
+                int base = sampleBilin(dif, dW, dH, u, v);
+                double cr = (base >> 16) & 0xFF, cg = (base >> 8) & 0xFF, cb = base & 0xFF;
+
+                // Clouds over the surface.
+                if (cloud != null) {
+                    int cp = sampleNearest(cloud, cW, cH, u, v);
+                    double ca = (((cp >> 16) & 0xFF) + ((cp >> 8) & 0xFF) + (cp & 0xFF)) / 765.0;
+                    ca = Math.max(0.0, (ca - 0.12) / 0.88);
+                    cr += (255 - cr) * ca; cg += (255 - cg) * ca; cb += (255 - cb) * ca;
+                }
+
+                double dot = lit ? (Px * sunX + Py * sunY + Pz * sunZ) : 1.0;
+                double shade = lit ? (AMB + (1 - AMB) * Math.max(0.0, dot)) : 1.0;
+                cr *= shade; cg *= shade; cb *= shade;
+
+                // City lights on the night side.
+                if (night != null && lit && dot < 0.18) {
+                    double nw = Math.min(1.0, (0.18 - dot) / 0.30);
+                    int np = sampleNearest(night, nW, nH, u, v);
+                    cr += ((np >> 16) & 0xFF) * 1.6 * nw;
+                    cg += ((np >> 8) & 0xFF) * 1.6 * nw;
+                    cb += (np & 0xFF) * 1.6 * nw;
+                }
+
+                int r = cr > 255 ? 255 : (int) cr;
+                int g = cg > 255 ? 255 : (int) cg;
+                int b = cb > 255 ? 255 : (int) cb;
+                out[rowoff + px] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            }
+        }
+        geBufValid = true;
+        geRLat = geLat; geRLon = geLon; geRZoom = geZoom;
+        geRShade = lit; geRNight = showNightLights; geRClouds = showClouds;
+        geRSunX = sunX; geRSunY = sunY; geRSunZ = sunZ;
+        }  // end if (!reuse)
+
+        // Soft atmosphere rim while the globe is small enough to see space around it
+        // (faded out as the satellite tiles take over, and up during the fly-in).
+        double panelR = Rpx * (double) W / bw;
+        double pcx = W * 0.5, pcy = H * 0.5;
+        int atmA = (int) Math.round(90 * (1 - tileAlpha) * Math.min(1.0, geTransition));
+        if (panelR < Math.hypot(W, H) && atmA > 1) {
+            Paint old = g2.getPaint();
+            float inner = (float) Math.max(0.0, (panelR - 2) / (panelR * 1.09));
+            g2.setPaint(new RadialGradientPaint(
+                    new Point2D.Double(pcx, pcy), (float) (panelR * 1.09),
+                    new float[]{ Math.min(0.999f, inner), 0.955f, 1f },
+                    new Color[]{ new Color(120, 170, 255, 0),
+                                 new Color(120, 170, 255, atmA),
+                                 new Color(120, 170, 255, 0) }));
+            g2.fill(new Ellipse2D.Double(pcx - panelR * 1.09, pcy - panelR * 1.09,
+                    panelR * 2.18, panelR * 2.18));
+            g2.setPaint(old);
+        }
+
+        // Blit the globe over space + atmosphere.
+        Object oldInterp = g2.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
+        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g2.drawImage(geBuf, 0, 0, W, H, null);
+        if (oldInterp != null) g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterp);
+        }  // end if (drawGlobe)
+
+        // Streamed satellite tiles take over for street-level detail (drawn over the globe,
+        // cross-fading in through the band and fully opaque once we're close to the ground).
+        if (tileAlpha > 0.004) {
+            double zf = mercatorZoomFor(geZoom, geLat, Math.min(W, H) * 0.5);
+            drawTileMap(g2, W, H, zf, (float) tileAlpha);
+        }
+
+        drawDynamicScale(g2, H);              // surface scale + coordinates on the existing ruler
+        drawEarthExplorerHud(g2, W, H, tileAlpha);
+    }
+
+    /** Fractional Web-Mercator zoom that matches the globe's on-screen ground scale (see notes). */
+    private double mercatorZoomFor(double gZoom, double lat, double minHalfPx) {
+        double cosLat = Math.max(0.02, Math.cos(Math.toRadians(lat)));
+        double val = gZoom * minHalfPx * cosLat * 2 * Math.PI / GE_TILE_PX;
+        return Math.max(0.0, Math.log(val) / Math.log(2));
+    }
+
+    // ---- Web-Mercator slippy-map of streamed satellite tiles ----
+
+    private static long tileKey(int layer, int z, int x, int y) {
+        return ((long) layer << 47) | ((long) z << 42) | ((long) x << 21) | y;
+    }
+
+    /** Draw the satellite map centred on geLat/geLon at fractional zoom {@code zf}: imagery,
+     *  then the day/night terminator, then the place + road label overlays. */
+    private void drawTileMap(Graphics2D g2, int W, int H, double zf, float alpha) {
+        // Imagery at the matched zoom level.
+        int z = Math.max(0, Math.min(GE_MAX_TILE_Z, (int) Math.floor(zf)));
+        double s = Math.pow(2, zf - z);                 // fractional over-zoom (>=1)
+        int n = 1 << z;
+        double mercY = mercatorY(geLat);
+        double cxw = (geLon + 180.0) / 360.0 * n * GE_TILE_PX;
+        double cyw = mercY * n * GE_TILE_PX;
+
+        drawTileLayer(g2, W, H, z, s, cxw, cyw, n, LYR_IMAGERY, alpha, true);
+        if (shadingEnabled) drawTileDayNight(g2, W, H, z, s, cxw, cyw, n, alpha);
+
+        if (geLabels) {
+            // Labels one level finer (drawn at half size) so place/road text stays map-sized
+            // rather than doubling with the imagery's over-zoom.
+            int lz = Math.max(0, Math.min(GE_MAX_TILE_Z, (int) Math.floor(zf) + 1));
+            double ls = Math.pow(2, zf - lz);
+            int ln = 1 << lz;
+            double lcxw = (geLon + 180.0) / 360.0 * ln * GE_TILE_PX;
+            double lcyw = mercY * ln * GE_TILE_PX;
+            // Roads (lines + street names) UNDER place/boundary labels, so area names — cities,
+            // airports, parks — sit on top of every road line and road label, never buried by them.
+            drawTileLayer(g2, W, H, lz, ls, lcxw, lcyw, ln, LYR_ROADS, alpha, false);
+            drawTileLayer(g2, W, H, lz, ls, lcxw, lcyw, ln, LYR_PLACES, alpha, false);
+        }
+    }
+
+    /** Normalised Web-Mercator Y (0 at +85°, 1 at −85°) for a latitude in degrees. */
+    private static double mercatorY(double latDeg) {
+        double latR = Math.toRadians(Math.max(-85.05, Math.min(85.05, latDeg)));
+        return (1 - Math.log(Math.tan(latR) + 1.0 / Math.cos(latR)) / Math.PI) / 2.0;
+    }
+
+    /** Blit one tile layer across the viewport. {@code base} enables the ancestor/neutral fallback
+     *  (imagery); overlay label layers just skip a tile that has not arrived. */
+    private void drawTileLayer(Graphics2D g2, int W, int H, int z, double s,
+                               double cxw, double cyw, int n, int layer, float alpha, boolean base) {
+        double scx = W / 2.0, scy = H / 2.0;
+        int minTx = (int) Math.floor((cxw - scx / s) / GE_TILE_PX), maxTx = (int) Math.floor((cxw + (W - scx) / s) / GE_TILE_PX);
+        int minTy = (int) Math.floor((cyw - scy / s) / GE_TILE_PX), maxTy = (int) Math.floor((cyw + (H - scy) / s) / GE_TILE_PX);
+        int dw = (int) Math.ceil(GE_TILE_PX * s) + 1;
+
+        Composite oldC = g2.getComposite();
+        if (alpha < 0.999f) g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha));
+        Object oldI = g2.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
+        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        for (int ty = minTy; ty <= maxTy; ty++) {
+            if (ty < 0 || ty >= n) continue;                 // no vertical wrap (poles)
+            int dsty = (int) Math.floor((ty * GE_TILE_PX - cyw) * s + scy);
+            for (int tx = minTx; tx <= maxTx; tx++) {
+                int wx = ((tx % n) + n) % n;                 // longitude wraps
+                int dstx = (int) Math.floor((tx * GE_TILE_PX - cxw) * s + scx);
+                BufferedImage img = getTile(layer, z, wx, ty);
+                if (img != null) {
+                    g2.drawImage(img, dstx, dsty, dw, dw, null);
+                } else if (base) {
+                    drawTileFallback(g2, z, wx, ty, dstx, dsty, dw);
+                }
+            }
+        }
+        g2.setComposite(oldC);
+        if (oldI != null) g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldI);
+    }
+
+    /**
+     * Day/night terminator over the satellite map: build a small buffer of dark-blue night with
+     * per-pixel alpha = (1 − shade) from the sub-solar geometry (the same Sun the globe uses),
+     * then upscale it as a darkening overlay so the map fades into night exactly where the globe does.
+     */
+    private void drawTileDayNight(Graphics2D g2, int W, int H, int z, double s,
+                                  double cxw, double cyw, int n, float alpha) {
+        final int LW = 256, LH = 144;
+        if (geLightBuf == null) geLightBuf = new BufferedImage(LW, LH, BufferedImage.TYPE_INT_ARGB);
+        int[] lm = ((DataBufferInt) geLightBuf.getRaster().getDataBuffer()).getData();
+        double[] sun = earthSunDirGeo();
+        double sunX = sun[0], sunY = sun[1], sunZ = sun[2];
+        double scx = W / 2.0, scy = H / 2.0, span = n * GE_TILE_PX;
+        boolean anyNight = false;
+        for (int j = 0; j < LH; j++) {
+            double sy = (j + 0.5) / LH * H;
+            double myn = (cyw + (sy - scy) / s) / span;                 // mercator y in [0,1]
+            double lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * myn)));
+            double cLat = Math.cos(lat), sLat = Math.sin(lat);
+            for (int i = 0; i < LW; i++) {
+                double sx = (i + 0.5) / LW * W;
+                double lon = ((cxw + (sx - scx) / s) / span) * 2 * Math.PI - Math.PI;
+                double dot = (cLat * Math.cos(lon)) * sunX + (cLat * Math.sin(lon)) * sunY + sLat * sunZ;
+                double day = smoothstep(-0.12, 0.12, dot);
+                int a = (int) ((1 - (0.30 + 0.70 * day)) * 255);        // night floor 0.30
+                if (a > 0) anyNight = true;
+                lm[j * LW + i] = (a << 24) | 0x0A1226;                  // dark night-blue tint
+            }
+        }
+        if (!anyNight) return;                                          // fully daylit: no overlay
+        Composite oldC = g2.getComposite();
+        g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha));
+        Object oldI = g2.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
+        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g2.drawImage(geLightBuf, 0, 0, W, H, null);
+        g2.setComposite(oldC);
+        if (oldI != null) g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldI);
+    }
+
+    /** While an imagery tile loads, upsample the nearest cached ancestor; else a neutral fill. */
+    private void drawTileFallback(Graphics2D g2, int z, int x, int y, int dx, int dy, int dw) {
+        for (int k = 1; k <= 6; k++) {
+            int pz = z - k;
+            if (pz < 0) break;
+            int mask = (1 << k) - 1, sub = GE_TILE_PX >> k;
+            if (sub < 1) break;
+            BufferedImage p = tileCache.get(tileKey(LYR_IMAGERY, pz, x >> k, y >> k));
+            if (p != null) {
+                int ox = (x & mask) * sub, oy = (y & mask) * sub;
+                g2.drawImage(p, dx, dy, dx + dw, dy + dw, ox, oy, ox + sub, oy + sub, null);
+                return;
+            }
+        }
+        g2.setColor(new Color(26, 34, 48));
+        g2.fillRect(dx, dy, dw, dw);
+    }
+
+    /** Cached tile, or null (kicking off an async fetch on first miss). */
+    private BufferedImage getTile(int layer, int z, int x, int y) {
+        long k = tileKey(layer, z, x, y);
+        BufferedImage im = tileCache.get(k);
+        if (im != null) return im;
+        requestTile(layer, z, x, y, k);
+        return null;
+    }
+
+    private void requestTile(int layer, int z, int x, int y, long k) {
+        Long ft = tileFailAt.get(k);
+        if (ft != null && System.currentTimeMillis() - ft < 5000) return;   // brief back-off after a failure
+        if (tileLoading.size() > 200 || !tileLoading.add(k)) return;        // already loading / flood guard
+        ensureTilePool();
+        Runnable body = () -> {
+            try {
+                BufferedImage im = loadTileBlocking(layer, z, x, y);
+                if (im != null) {
+                    tileCache.put(k, im);
+                    tileFailAt.remove(k);
+                    tileFailStreak = 0;
+                    tilesReachable = true;
+                } else {
+                    tileFailAt.put(k, System.currentTimeMillis());
+                }
+            } catch (Throwable t) {
+                tileFailAt.put(k, System.currentTimeMillis());
+                if (layer == LYR_IMAGERY && ++tileFailStreak > 8) tilesReachable = false;
+            } finally {
+                tileLoading.remove(k);
+                if (earthExplorerActive) repaint();
+            }
+        };
+        // Priority: satellite base first, then place labels, then roads; newest view first within a layer.
+        ((ThreadPoolExecutor) tilePool).execute(new TileTask(layer, tileSeq.incrementAndGet(), body));
+    }
+
+    private final AtomicLong tileSeq = new AtomicLong();
+
+    /** A prioritised fetch job: lower {@code layer} runs first; ties break to the most recent request. */
+    private static final class TileTask implements Runnable, Comparable<TileTask> {
+        final int layer; final long seq; final Runnable body;
+        TileTask(int layer, long seq, Runnable body) { this.layer = layer; this.seq = seq; this.body = body; }
+        @Override public void run() { body.run(); }
+        @Override public int compareTo(TileTask o) {
+            if (layer != o.layer) return Integer.compare(layer, o.layer);   // imagery(0) < places(1) < roads(2)
+            return Long.compare(o.seq, seq);                                // newer request first
+        }
+    }
+
+    /** Lazily build the fetch pool (imagery-first, newest-view-first), disk-writer and shared
+     *  HTTP/2 client. Called only from the EDT (paint), so no init race. */
+    private void ensureTilePool() {
+        if (tilePool != null) return;
+        ThreadPoolExecutor ex = new ThreadPoolExecutor(16, 16, 30, TimeUnit.SECONDS,
+                new PriorityBlockingQueue<>(256), r -> {
+            Thread t = new Thread(r, "earth-tile-fetch");
+            t.setDaemon(true);
+            return t;
+        });
+        ex.allowCoreThreadTimeOut(true);
+        tilePool = ex;
+        tileDiskPool = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "earth-tile-disk");
+            t.setDaemon(true);
+            t.setPriority(Thread.MIN_PRIORITY);
+            return t;
+        });
+        tileHttp = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_2)          // multiplex many tiles over few connections
+                .connectTimeout(Duration.ofSeconds(6))
+                .build();
+        tileCacheDir = new File(System.getProperty("java.io.tmpdir", "."), "astro-earth-tiles");
+    }
+
+    private final Map<Long, Long> tileFailAt = new ConcurrentHashMap<>();
+
+    /** Fetch one layer's tile from disk cache or the network (blocking; runs on a worker thread).
+     *  Uses the shared HTTP/2 client for connection reuse, and writes the disk cache off-thread so
+     *  the decoded tile reaches the screen without waiting on disk I/O. */
+    private BufferedImage loadTileBlocking(int layer, int z, int x, int y) throws Exception {
+        String ext = layer == LYR_IMAGERY ? ".jpg" : ".png";
+        File cf = (tileCacheDir != null) ? new File(tileCacheDir, layer + "/" + z + "/" + x + "_" + y + ext) : null;
+        if (cf != null && cf.isFile()) {
+            try { BufferedImage im = ImageIO.read(cf); if (im != null) return im; } catch (Exception ignore) { }
+        }
+        String url = GE_LAYER_URL[layer] + z + "/" + y + "/" + x;   // ArcGIS order is {z}/{y}/{x}
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                .header("User-Agent", "AstronomySuite/1.0 (Earth Explorer)")
+                .timeout(Duration.ofSeconds(12))
+                .GET().build();
+        HttpResponse<byte[]> resp = tileHttp.send(req, HttpResponse.BodyHandlers.ofByteArray());
+        if (resp.statusCode() != 200) throw new java.io.IOException("HTTP " + resp.statusCode());
+        byte[] bytes = resp.body();
+        BufferedImage im = ImageIO.read(new ByteArrayInputStream(bytes));
+        if (im != null && cf != null) {
+            final File f = cf;
+            tileDiskPool.submit(() -> {
+                try { f.getParentFile().mkdirs(); Files.write(f.toPath(), bytes); } catch (Exception ignore) { }
+            });
+        }
+        return im;
+    }
+
+    /** Explorer overlays: just the controls hint and the imagery attribution — the position and
+     *  scale live on the existing scale ruler, not in a separate panel. */
+    private void drawEarthExplorerHud(Graphics2D g2, int W, int H, double tileAlpha) {
+        float fade = (float) Math.max(0.0, Math.min(1.0, geTransition));   // fly-in fade of the UI
+        if (fade <= 0.02f) return;
+        float rowSize = switch (uiSize) { case SMALL -> 10f; case LARGE -> 13f; default -> 11f; };
+
+        Font oldFont = g2.getFont();
+
+        // Bottom hint bar.
+        String hint = "Drag to pan  •  Scroll to zoom  •  L labels  •  Esc to exit";
+        g2.setFont(oldFont.deriveFont(Font.PLAIN, rowSize));
+        FontMetrics hfm = g2.getFontMetrics();
+        int hw = hfm.stringWidth(hint) + 24;
+        int hx = (W - hw) / 2, hy = H - hfm.getHeight() - 16;
+        g2.setColor(new Color(10, 16, 30, (int) (190 * fade)));
+        g2.fillRoundRect(hx, hy, hw, hfm.getHeight() + 10, 12, 12);
+        g2.setColor(new Color(210, 225, 245, (int) (255 * fade)));
+        g2.drawString(hint, hx + 12, hy + hfm.getAscent() + 5);
+
+        // Imagery attribution (required when satellite tiles are on screen).
+        if (tileAlpha > 0.05) {
+            String attrib = GE_TILE_ATTRIB;
+            int aw = hfm.stringWidth(attrib) + 12;
+            int ax = W - aw - 8, ay = hy - hfm.getHeight() - 6;
+            g2.setColor(new Color(0, 0, 0, (int) (150 * tileAlpha)));
+            g2.fillRoundRect(ax, ay, aw, hfm.getHeight() + 6, 8, 8);
+            g2.setColor(new Color(220, 228, 240, (int) (210 * tileAlpha)));
+            g2.drawString(attrib, ax + 6, ay + hfm.getAscent() + 3);
+        }
+        g2.setFont(oldFont);
     }
 
     /** Camera elevation above the ecliptic used by the sphere lighting frame (deg); 90 = top-down. */
     private double viewElevDeg() { return 90.0 - Math.toDegrees(viewPitchRad); }
 
-    // ---- Orthographic camera: yaw (about the vertical axis) then pitch (about the screen X axis). ----
-    // Both cos/sin are cached; at yaw = pitch = 0 these reduce to the original top-down projection.
+    // ---- Perspective camera: yaw (about the vertical axis) then pitch (about the screen X axis),
+    // with a real perspective divide so zooming reads as the camera dollying forward through 3-D
+    // rather than a flat magnification. The camera sits `cameraDistanceMeters()` behind the target
+    // along the view axis; `currentZoom` still sets the on-screen scale AT the target plane, so all
+    // the framing / focus / ruler logic is unchanged, but off-plane depth now foreshortens and
+    // parallaxes. A very large focal length would reduce this back to the old orthographic look. ----
 
-    /** Project a world point to screen x (px). Depends on X and Y because yaw couples them. */
-    private double projX(double worldX, double worldY) {
-        double dx = worldX - camX, dy = worldY - camY;
-        double xr = dx * viewCosY - dy * viewSinY;
-        return getWidth() / 2.0 + xr * (METERS_TO_PIXELS * currentZoom);
+    /** Focal length in pixels; ties the field of view to the viewport height (FOV ≈ 34°).
+     *  Larger = gentler perspective and the camera stays farther back for the same framing,
+     *  so distant companions (a planet's moon) stay in front of the camera as you zoom in. */
+    private static final double FOCAL_K = 1.6;
+    private double focalPx() { int h = getHeight(); return FOCAL_K * (h > 0 ? h : 1000); }
+    /**
+     * Distance (m) from the camera to the target plane. Normally {@code focalPx / (m2px * zoom)},
+     * so the target-plane scale equals the zoom. But when following a body, we never let the eye
+     * dolly closer than the whole followed system's radius — otherwise, zooming in on a planet
+     * puts the eye <em>inside</em> its moons' orbits, and a moon on the near side of its orbit
+     * ends up in front of (or behind) the near plane and gets culled, so it flickers out as it
+     * orbits and vanishes entirely once zoomed past ~4000×. Holding the eye back by the system
+     * radius keeps every moon in front of the camera at any zoom; the planet still fills the frame
+     * because the on-screen scale is set independently (see {@link #perspScale}). The only cost is
+     * a gentler perspective once you are zoomed in tight, which is unnoticeable at that scale. */
+    private double cameraDistanceMeters() {
+        double base = focalPx() / (METERS_TO_PIXELS * currentZoom);
+        return Math.max(base, followSystemRadiusMeters());
     }
-    /** Project a world point to screen y (px): yaw rotates in-plane, then pitch tilts about screen X. */
+    /**
+     * Radius (m) of the system currently being followed — the outermost moon apoapsis of a
+     * followed planet, or the parent-planet distance of a followed moon — with a margin, so the
+     * camera stays outside it. Zero when nothing is followed (then the camera behaves exactly as
+     * the plain {@code focalPx / (m2px * zoom)} dolly, unchanged from before).
+     */
+    private double followSystemRadiusMeters() {
+        int i = cameraFocusIndex;
+        if (i < 0) return 0.0;
+        if (followingMoon && cameraFocusMoon >= 0 && cameraFocusMoon < MOON_A_M[i].length) {
+            int m = cameraFocusMoon;
+            double e = moonEcc(i, m);
+            return MOON_A_M[i][m] * (1.0 + e) * 1.3;
+        }
+        if (followingPlanet) {
+            double maxApo = 0.0;
+            for (int m = 0; m < MOON_A_M[i].length; m++) {
+                double e = moonEcc(i, m);
+                maxApo = Math.max(maxApo, MOON_A_M[i][m] * (1.0 + e));
+            }
+            return maxApo * 1.3;
+        }
+        return 0.0;
+    }
+    /** Pixels per metre for a point at view-depth {@code zv} (m toward the viewer from the target). */
+    private double perspScale(double zv) {
+        double camDist = cameraDistanceMeters();
+        double s = METERS_TO_PIXELS * currentZoom;      // target-plane scale (framing invariant)
+        double d = camDist - zv;                        // distance from the camera along the view axis
+        double near = camDist * 1e-3;
+        if (d < near) d = near;                         // near clamp: never divide by ~0 behind the eye
+        return s * camDist / d;                          // == s at the target plane (zv = 0)
+    }
+    /** True if a world point is in front of the near plane (safe to project / draw). */
+    private boolean inFront(double worldX, double worldY, double worldZ) {
+        return viewDepth(worldX, worldY, worldZ) < cameraDistanceMeters() * (1.0 - 1e-3);
+    }
+
+    /** Pixels per metre at a body's centre — its on-screen size scale under perspective. */
+    private double perspScaleAt(double worldX, double worldY, double worldZ) {
+        return perspScale(viewDepth(worldX, worldY, worldZ));
+    }
+
+    /**
+     * Screen-space direction (dx, dy; y down) of a WORLD direction, rotated by the
+     * view yaw+pitch but WITHOUT the perspective divide. Used for lighting: the Sun
+     * can sit behind the camera when zoomed in on a body, which would garble a
+     * direction taken from projected positions, but a pure rotation of the true
+     * world Sun→body vector is always valid. Magnitude is irrelevant (the shader
+     * normalises), so only the orientation matters.
+     */
+    private double[] worldDirToScreen(double wx, double wy, double wz) {
+        double xv = wx * viewCosY - wy * viewSinY;
+        double yr = wx * viewSinY + wy * viewCosY;
+        double screenDown = yr * viewCosP - wz * viewSinP;
+        return new double[]{xv, screenDown};
+    }
+
+    /** Project a world point to screen x (px). Needs Z because the perspective divide uses depth. */
+    private double projX(double worldX, double worldY, double worldZ) {
+        double dx = worldX - camX, dy = worldY - camY, dz = worldZ - camZ;
+        double xv = dx * viewCosY - dy * viewSinY;
+        double yr = dx * viewSinY + dy * viewCosY;
+        double zv = yr * viewSinP + dz * viewCosP;
+        return getWidth() / 2.0 + xv * perspScale(zv);
+    }
+    /** Project a world point to screen y (px): yaw rotates in-plane, pitch tilts, then perspective. */
     private double projY(double worldX, double worldY, double worldZ) {
         double dx = worldX - camX, dy = worldY - camY, dz = worldZ - camZ;
         double yr = dx * viewSinY + dy * viewCosY;
-        double s = METERS_TO_PIXELS * currentZoom;
-        return getHeight() / 2.0 + (yr * viewCosP - dz * viewSinP) * s;
+        double zv = yr * viewSinP + dz * viewCosP;
+        double screenDown = yr * viewCosP - dz * viewSinP;
+        return getHeight() / 2.0 + screenDown * perspScale(zv);
     }
     /**
      * Camera-forward depth of a world point (metres along the view direction); larger = nearer the
@@ -2994,6 +3802,24 @@ public class SolarSystemSimulation extends JPanel
         return loadTextureFile(key, key + "_diffuse.jpg");
     }
 
+    /** Flat surface colour for moons that have no texture map (a neutral rock grey). */
+    private static final int MOON_FLAT_RGB = 0xFFB5B0A8;
+
+    /**
+     * Register (once) a tiny solid-colour texture so a body without a surface map can still be
+     * drawn by {@link #drawTexturedSphere} — the same lit sphere with a real terminator and true
+     * ray-traced eclipse shadows — instead of a flat gradient. Returns the cache key to pass as
+     * the texture key. Keyed by colour, so all moons sharing a colour reuse one entry.
+     */
+    private String ensureFlatTexture(int argb) {
+        String key = "flat_" + Integer.toHexString(argb);
+        if (!texPixels.containsKey(key)) {
+            texPixels.put(key, new int[]{argb, argb, argb, argb});   // 2x2 solid
+            texSize.put(key, new int[]{2, 2});
+        }
+        return key;
+    }
+
     /**
      * Load an equirectangular texture from {@code assets/textures/<fileName>} into the
      * pixel cache under {@code cacheKey}. Used for both the {@code *_diffuse} surface
@@ -3055,36 +3881,138 @@ public class SolarSystemSimulation extends JPanel
     }
 
     /**
-     * Orthonormal body frame in view space (x right, y up, z toward viewer):
-     * returns {poleX,poleY,poleZ, ax,ay,az, bx,by,bz}. The spin axis is the true
-     * obliquity off the (elevated) ecliptic normal; A,B span the equator.
+     * Spin angle for Earth, phase-locked to real time so the geography lines up with the clock:
+     * the sub-solar point (local solar noon) sits at longitude 0° at 12:00 UTC and moves 15°/hour
+     * west after that. We take the true Sun direction (Earth's real orbital position) to find which
+     * body-longitude currently faces the Sun, then choose the spin that places the correct
+     * geographic longitude there — so "jump to today" shows the hemisphere that is actually in
+     * daylight now. The map is equirectangular with 0° (Greenwich) at its centre (u = 0.5), and the
+     * surface samples u = frac(-(lon + spin)/2π); solving u for the wanted longitude gives the spin
+     * below. Rotation rate still comes out right because the Sun direction drifts with the orbit.
      */
-    private double[] bodyFrame(double obliquityDeg) {
-        double e = Math.toRadians(obliquityDeg), phi = Math.toRadians(viewElevDeg());
-        double cE = Math.cos(e), sE = Math.sin(e), cP = Math.cos(phi), sP = Math.sin(phi);
-        // ecliptic normal N=(0,cP,sP); pole = cosE*N + sinE*u, u=(1,0,0)
-        double poleX = sE, poleY = cE * cP, poleZ = cE * sP;
-        // A = normalize(u - (u·pole)pole); B = pole x A
-        double ud = poleX;
-        double axr = 1 - ud * poleX, ayr = -ud * poleY, azr = -ud * poleZ;
-        double al = Math.sqrt(axr * axr + ayr * ayr + azr * azr);
-        if (al < 1e-9) { axr = 0; ayr = 1; azr = 0; al = 1; }
-        double ax = axr / al, ay = ayr / al, az = azr / al;
-        double bx = poleY * az - poleZ * ay;
-        double by = poleZ * ax - poleX * az;
-        double bz = poleX * ay - poleY * ax;
-        return new double[]{poleX, poleY, poleZ, ax, ay, az, bx, by, bz};
+    private double earthSpinAngle() {
+        // Wanted sub-solar geographic longitude (mean sun): 0 at 12:00 UTC, -15°/h afterwards.
+        java.time.LocalDateTime dt = simDateTime();
+        double utcH = (dt != null)
+                ? dt.getHour() + dt.getMinute() / 60.0 + dt.getSecond() / 3600.0
+                : 12.0;
+        double lambda = -(utcH - 12.0) * Math.PI / 12.0;   // radians, east positive
+        return subSolarSpin(OBLIQUITY_DEG[2], -planetX[2], -planetY[2], -planetZ[2], lambda);
     }
 
-    /** Screen-space Sun vector (dx,dy; y down) -> unit 3-D light direction in the view frame. */
-    private double[] lightDirView(double lightDx, double lightDy) {
-        double phi = Math.toRadians(viewElevDeg()), sP = Math.sin(phi), cP = Math.cos(phi);
-        double ox = lightDx, oy = -lightDy;               // orbital-plane components (y up)
-        double ol = Math.hypot(ox, oy);
-        if (ol < 1e-9) { ox = 1; oy = 0; ol = 1; }
-        ox /= ol; oy /= ol;
-        // L = ox*u + oy*v, u=(1,0,0), v=(0,sP,-cP)
-        return new double[]{ox, oy * sP, -oy * cP};
+    // ---- Pure texture-orientation mapping (static, so the render datum is testable) ----
+
+    /**
+     * Longitude (rad) in a body's tilt frame that currently faces the Sun; {@code (sx,sy,sz)}
+     * is the body→Sun direction in world coords. This is the basis {@code buildSphereGeom}
+     * uses (A = worldX leaned by obliquity, B = worldY); the view rotation cancels here.
+     */
+    static double frameSubSolarLon(double obliquityDeg, double sx, double sy, double sz) {
+        double e = Math.toRadians(obliquityDeg), cE = Math.cos(e), sE = Math.sin(e);
+        return Math.atan2(sy, sx * cE - sz * sE);
+    }
+
+    /**
+     * Spin angle (rad) that makes the renderer place geographic east longitude {@code lambda}
+     * at the sub-solar point, given the body→Sun direction. Inverse of {@link #renderedEastLon}.
+     */
+    static double subSolarSpin(double obliquityDeg, double sx, double sy, double sz, double lambda) {
+        return -frameSubSolarLon(obliquityDeg, sx, sy, sz) - Math.PI - lambda;
+    }
+
+    /**
+     * Geographic east longitude (rad, wrapped to ±π) the shader samples at tilt-frame longitude
+     * {@code lon0} under {@code spin} — matches {@code u = -(lon0 + spin)/2π} with Greenwich at
+     * the map centre. Used to verify the sub-solar meridian lands where it should.
+     */
+    static double renderedEastLon(double lon0, double spin) {
+        double v = (-(lon0 + spin) - Math.PI) % (2 * Math.PI);
+        if (v < -Math.PI) v += 2 * Math.PI;
+        else if (v > Math.PI) v -= 2 * Math.PI;
+        return v;
+    }
+
+    /**
+     * Spin angle for planet {@code i} (0..7), anchored to its real IAU orientation so the
+     * meridian rendered facing the Sun is the one truly at local noon. Generalises
+     * {@link #earthSpinAngle}: the wanted sub-solar geographic longitude comes from the IAU
+     * prime-meridian model ({@link #iauSubSolarEastLon}) instead of the wall clock, and is
+     * placed at the Sun-facing point of the sim's tilt frame with the same construction. As
+     * with Earth, the rotation <em>rate</em> falls out correct because the Sun direction
+     * drifts with the orbit — and the whole thing is a pure function of {@code simTimeSec},
+     * so it stays right at any time-warp speed and under any camera rotation.
+     */
+    private double bodySpinAngle(int i) {
+        double lambda = iauSubSolarEastLon(i, simTimeSec);            // real sub-solar east longitude
+        return subSolarSpin(OBLIQUITY_DEG[i], -planetX[i], -planetY[i], -planetZ[i], lambda);
+    }
+
+    /**
+     * Spin angle used by the renderer for body {@code i}: Earth stays phase-locked to the
+     * civil clock, the other seven planets use their IAU-anchored real orientation, and any
+     * further body (dwarf/minor planets with no rotation datum) keeps a steady sidereal spin.
+     */
+    private double planetSpin(int i) {
+        if (i == 2) return earthSpinAngle();
+        if (i >= 0 && i < IAU_W0.length) return bodySpinAngle(i);
+        return spinAngle(ROTATION_PERIOD_H[i]);
+    }
+
+    /**
+     * Orthonormal body frame in view space (x right, y up, z toward viewer):
+     * returns {poleX,poleY,poleZ, ax,ay,az, bx,by,bz}. The spin axis is the true
+     * obliquity off the ecliptic normal, and both it and the longitude reference
+     * (world +x) are carried into view space through the SAME yaw+pitch rotation
+     * the projection uses — so orbiting the camera (yaw) turns the globe to show a
+     * new face, instead of leaving the texture pinned to the screen while only the
+     * shadow moves.
+     */
+    private double[] bodyFrame(double obliquityDeg) {
+        double e = Math.toRadians(obliquityDeg);
+        double cE = Math.cos(e), sE = Math.sin(e);
+        // Spin axis and longitude reference in WORLD coords (x,y ecliptic plane, z up):
+        // pole leans off the ecliptic normal (0,0,1) toward world +x by the obliquity.
+        double poleWX = sE, poleWY = 0, poleWZ = cE;
+        // A = normalize(worldX - (worldX·pole)pole); B = pole x A  (equatorial basis)
+        double dot = poleWX;                                  // worldX·pole = sE
+        double aWX = 1 - dot * poleWX, aWY = -dot * poleWY, aWZ = -dot * poleWZ;
+        double al = Math.sqrt(aWX * aWX + aWY * aWY + aWZ * aWZ);
+        if (al < 1e-9) { aWX = 0; aWY = 1; aWZ = 0; al = 1; }
+        aWX /= al; aWY /= al; aWZ /= al;
+        double bWX = poleWY * aWZ - poleWZ * aWY;
+        double bWY = poleWZ * aWX - poleWX * aWZ;
+        double bWZ = poleWX * aWY - poleWY * aWX;
+        double[] pole = worldToView(poleWX, poleWY, poleWZ);
+        double[] a = worldToView(aWX, aWY, aWZ);
+        double[] b = worldToView(bWX, bWY, bWZ);
+        return new double[]{pole[0], pole[1], pole[2], a[0], a[1], a[2], b[0], b[1], b[2]};
+    }
+
+    /**
+     * Rotate a world direction (x,y in the ecliptic plane, z up) into the view
+     * frame (x right, y up, z toward viewer) using the current yaw + pitch — the
+     * exact rotation behind {@link #projX}/{@link #projY} (screen y is down there,
+     * so the up axis is negated here).
+     */
+    private double[] worldToView(double wx, double wy, double wz) {
+        double inPlane = wx * viewSinY + wy * viewCosY;       // component that pitch tilts
+        double xv = wx * viewCosY - wy * viewSinY;
+        double yv = -(inPlane * viewCosP - wz * viewSinP);    // view up = -(screen down)
+        double zv = inPlane * viewSinP + wz * viewCosP;       // toward the viewer
+        return new double[]{xv, yv, zv};
+    }
+
+    /**
+     * Unit Sun→body light direction in the view frame (x right, y up, z toward
+     * viewer). Computed from the true world Sun-to-body vector, so day/night
+     * terminators and eclipse-shadow geometry are exact from any camera angle —
+     * not an elevation-only screen reconstruction.
+     */
+    private double[] viewLight(double bodyX, double bodyY, double bodyZ) {
+        double[] v = worldToView(sunBarycenterX - bodyX, sunBarycenterY - bodyY, -bodyZ);
+        double n = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        if (n < 1e-9) return new double[]{0, 0, 1};
+        return new double[]{v[0] / n, v[1] / n, v[2] / n};
     }
 
     private static int shadeRGB(int rgb, double shade) {
@@ -3100,9 +4028,9 @@ public class SolarSystemSimulation extends JPanel
      */
     private boolean drawTexturedSphere(Graphics2D g2, String key, double px, double py,
                                        double pr, double obliquityDeg, double spin,
-                                       boolean emissive, double lightDx, double lightDy) {
+                                       boolean emissive, double lx, double ly, double lz) {
         return drawTexturedSphere(g2, key, px, py, pr, obliquityDeg, spin, emissive,
-                lightDx, lightDy, null, 0);
+                lx, ly, lz, null, 0, 0);
     }
 
     /**
@@ -3114,8 +4042,8 @@ public class SolarSystemSimulation extends JPanel
      */
     private boolean drawTexturedSphere(Graphics2D g2, String key, double px, double py,
                                        double pr, double obliquityDeg, double spin,
-                                       boolean emissive, double lightDx, double lightDy,
-                                       double[] occ, int occN) {
+                                       boolean emissive, double lx0, double ly0, double lz0,
+                                       double[] occ, int occN, double sunAlpha) {
         if (!loadTexture(key)) return false;
         int R = (int) Math.ceil(pr);
         if (R < 2) return false;
@@ -3130,7 +4058,9 @@ public class SolarSystemSimulation extends JPanel
             geomCache.put(key, geom);
         }
 
-        double[] L = lightDirView(lightDx, lightDy);
+        double ln = Math.sqrt(lx0 * lx0 + ly0 * ly0 + lz0 * lz0);
+        if (ln < 1e-9) ln = 1;
+        double[] L = { lx0 / ln, ly0 / ln, lz0 / ln };   // view-frame Sun direction (exact)
         float lx = (float) L[0], ly = (float) L[1], lz = (float) L[2];
         final float ambient = 0.10f;
 
@@ -3182,7 +4112,7 @@ public class SolarSystemSimulation extends JPanel
                         new double[]{fr[6], fr[7], fr[8]}, L,
                         spin, cloudSpin, ambient, emissive, earthLike,
                         nightTex, nTw, nTh, cloudTex, cTw, cTh, oceanGlint,
-                        occ, doShadows ? occN : 0);
+                        occ, doShadows ? occN : 0, sunAlpha);
             }
         }
         if (!gpuFilled) {
@@ -3208,7 +4138,10 @@ public class SolarSystemSimulation extends JPanel
             int p = rowBase + ix;
             int ty = texY[p];
             if (ty < 0) { out[p] = 0; continue; }       // outside disc -> transparent
-            double u = (lon0[p] + spin) * INV_2PI;
+            // Negated so longitude runs the correct way round the globe (east to the right as seen
+            // from outside); the equirectangular maps would otherwise render mirrored east-west.
+            // Spin keeps its sign, so the rotation direction is unchanged.
+            double u = -(lon0[p] + spin) * INV_2PI;
             u -= Math.floor(u);
             int tx = (int) (u * tw);
             if (tx >= tw) tx = tw - 1;
@@ -3218,8 +4151,15 @@ public class SolarSystemSimulation extends JPanel
             float d = gnx[p] * lx + gny[p] * ly + gnz[p] * lz;
             if (d < 0) d = 0;
             double shade = ambient + (1 - ambient) * d;
-            if (doShadows && d > 0) {
-                shade *= eclipseFactor(gnx[p], gny[p], gnz[p], lxd, lyd, lzd, occ, occN);
+            double ecl = 1.0;                              // fraction of the Sun still visible (1 = full sun)
+            if (doShadows) {
+                // True ray-traced cast shadow (1 = full sun, 0 = deep umbra), applied to the WHOLE
+                // surface — direct sun and ambient alike — so the shadow reads as one complete disc
+                // that carries on across the day/night terminator instead of being clipped at it.
+                // City lights are added afterwards, so they still shine through the shadowed ground.
+                ecl = eclipseFactor(gnx[p], gny[p], gnz[p], lxd, lyd, lzd, occ, occN, sunAlpha);
+                ecl = perceptualEclipse(ecl);
+                shade *= ecl;
             }
 
             if (!earthLike) {
@@ -3232,7 +4172,7 @@ public class SolarSystemSimulation extends JPanel
             double cloud = 0;
             if (cloudTex != null) {
                 int cty = (int) ((long) ty * cTh / th); if (cty >= cTh) cty = cTh - 1;
-                double cu = (lon0[p] + cloudSpin) * INV_2PI; cu -= Math.floor(cu);
+                double cu = -(lon0[p] + cloudSpin) * INV_2PI; cu -= Math.floor(cu);   // match surface (un-mirror)
                 int ctx = (int) (cu * cTw); if (ctx >= cTw) ctx = cTw - 1;
                 int cp = cloudTex[cty * cTw + ctx];
                 cloud = (((cp >> 16) & 0xFF) + ((cp >> 8) & 0xFF) + (cp & 0xFF)) / 765.0;
@@ -3255,7 +4195,9 @@ public class SolarSystemSimulation extends JPanel
                     lr += add; lg += add; lb += (int) (add * 0.85);
                 }
             }
-            // Night-side city lights (emissive), dimmed under cloud cover.
+            // Night-side city lights (emissive), dimmed under cloud cover. Driven only by the
+            // day/night terminator — an eclipse umbra darkens the ground but does not switch city
+            // lights on, so a day-side umbra reads as a plain dark shadow disc.
             if (nightTex != null) {
                 double nightW = 1.0 - smoothstep(0.02, 0.22, d);
                 if (nightW > 0.001) {
@@ -3284,18 +4226,33 @@ public class SolarSystemSimulation extends JPanel
     }
 
     /**
-     * Shadow multiplier (≈0 in the umbra, 1 in full sun) for a lit surface point, using a
-     * true 3-D ray-vs-sphere test. The point sits on the unit sphere at ({@code nx,ny,nz})
-     * in the receiver's view frame; {@code (lx,ly,lz)} is the unit Sun direction; {@code occ}
-     * lists occluders as {x, y, z, radius} in receiver-radius units. A point is shadowed
-     * when the ray it casts toward the Sun passes within an occluder's true sphere, so the
-     * umbra is a proper circle sized by the occluder's real radius ratio (e.g. the Moon is
-     * ~0.27 Earth radii), with a soft penumbra around it — not a screen-space band.
+     * Sun-visibility multiplier (≈0 in the umbra, 1 in full sun) for a lit surface point,
+     * modelling the Sun as a real <em>extended disc</em> rather than a point source — the
+     * physics that sizes an eclipse correctly. The point sits on the unit sphere at
+     * ({@code nx,ny,nz}) in the receiver's view frame; {@code (lx,ly,lz)} is the unit Sun
+     * direction; {@code occ} lists occluders as {x, y, z, radius} in receiver-radius units;
+     * {@code sunAlpha} is the Sun's angular radius (radians) as seen from the receiver.
+     *
+     * <p>As seen from the surface point, the occluder is a disc of angular radius
+     * {@code α_o = radius / distance} whose centre sits {@code θ = miss / distance} from the
+     * Sun's centre. The factor returned is {@code 1 − (fraction of the Sun's disc the
+     * occluder covers)}. This makes the geometry emergent and real:
+     * <ul>
+     *   <li><b>Total</b> (α_o ≥ sunAlpha, θ ≤ α_o − sunAlpha): Sun fully hidden → 0. The
+     *       full-shadow footprint is a near-point when α_o ≈ sunAlpha, so the Moon's umbra
+     *       on Earth is a thin track — not a disc a third of the planet wide.</li>
+     *   <li><b>Annular</b> (α_o &lt; sunAlpha, on-axis): a bright ring of Sun remains, so the
+     *       factor bottoms out at {@code 1 − (α_o/sunAlpha)²} instead of reaching 0.</li>
+     *   <li><b>Partial/penumbra</b>: the wide, soft region of fractional coverage.</li>
+     * </ul>
+     * The result depends only on relative geometry, so it is invariant under camera rotation.
      */
-    private static double eclipseFactor(double nx, double ny, double nz,
-                                        double lx, double ly, double lz,
-                                        double[] occ, int occN) {
+    static double eclipseFactor(double nx, double ny, double nz,
+                                double lx, double ly, double lz,
+                                double[] occ, int occN, double sunAlpha) {
         double factor = 1.0;
+        double rs = sunAlpha > 1e-9 ? sunAlpha : 1e-9;   // Sun angular radius (guard div-by-zero)
+        double rs2 = rs * rs;
         for (int k = 0; k < occN; k++) {
             double ox = occ[4 * k], oy = occ[4 * k + 1], oz = occ[4 * k + 2], orad = occ[4 * k + 3];
             // Vector from the surface point to the occluder centre.
@@ -3304,15 +4261,76 @@ public class SolarSystemSimulation extends JPanel
             if (along <= 0) continue;                     // occluder is not sunward -> no shadow
             double perp2 = wx * wx + wy * wy + wz * wz - along * along;
             if (perp2 < 0) perp2 = 0;
-            double perp = Math.sqrt(perp2);               // ray miss distance from occluder centre
-            double edge0 = orad * 0.80;                   // full umbra inside this radius
-            double edge1 = orad * 1.25 + 0.01;            // penumbra fades to 0 out here
-            if (perp >= edge1) continue;
-            double s = perp <= edge0 ? 1.0 : (edge1 - perp) / (edge1 - edge0);
-            s = s * s * (3 - 2 * s);                       // smoothstep penumbra
-            factor *= 1.0 - 0.90 * s;                      // ~90% darkening in the umbra
+            // Angular geometry as seen from this surface point.
+            double ro = orad / along;                     // occluder angular radius
+            double d  = Math.sqrt(perp2) / along;          // angular separation of the two disc centres
+            double blocked;                                // fraction of the Sun's disc hidden
+            if (d >= rs + ro) {
+                continue;                                  // discs disjoint -> no shadow
+            } else if (d <= Math.abs(rs - ro)) {
+                double rmin = Math.min(rs, ro);
+                blocked = (rmin * rmin) / rs2;             // one disc fully inside the other (total/annular core)
+            } else {
+                double ro2 = ro * ro, d2 = d * d;          // partial overlap: area of the circular lens
+                double a1 = Math.acos(Math.max(-1, Math.min(1, (d2 + rs2 - ro2) / (2 * d * rs))));
+                double a2 = Math.acos(Math.max(-1, Math.min(1, (d2 + ro2 - rs2) / (2 * d * ro))));
+                double tri = 0.5 * Math.sqrt(Math.max(0,
+                        (-d + rs + ro) * (d + rs - ro) * (d - rs + ro) * (d + rs + ro)));
+                double lens = rs2 * a1 + ro2 * a2 - tri;
+                blocked = lens / (Math.PI * rs2);
+            }
+            if (blocked < 0) blocked = 0; else if (blocked > 1) blocked = 1;   // guard FP cancellation
+            factor *= 1.0 - blocked;
         }
         return factor;
+    }
+
+    /**
+     * Perceptual darkening curve for a cast eclipse shadow. {@link #eclipseFactor} returns the
+     * true fraction of the Sun still visible (photometrically exact), but a partly-eclipsed
+     * patch of ground is still brightly lit — a 60%-covered Sun looks essentially normal from
+     * space, and only as totality approaches does the ground go dark. Rendering the raw fraction
+     * paints the whole penumbra (which spans roughly half of Earth) as a big grey blob. This
+     * curve keeps the penumbra bright and concentrates the visible shadow into the umbra and its
+     * immediate deep-partial surround — so the shadow reads as the thin track people recognise,
+     * not a continent-sized smudge. {@code visible} is 1 = full Sun, 0 = totality.
+     */
+    /**
+     * Reflect an eclipse occluder's position across the receiver's sub-solar meridian plane —
+     * the plane through the spin pole and the Sun direction (its normal is {@code pole × Sun}).
+     *
+     * <p>This corrects a coordinate-handedness mismatch, not the physics. The view transform
+     * {@code worldToView} is <em>improper</em> — its determinant is −1 (a reflection, introduced
+     * by the screen-y flip that makes +y point up). The day/night shading survives it because it
+     * depends only on dot products (which a reflection preserves), and the surface texture is
+     * un-mirrored for display by the spin datum; but an occluder's <em>position</em> carries the
+     * flipped chirality into the ray-traced shadow, so the umbra tracks the mirror image of its
+     * real ground path (sweeping east→west instead of west→east). Reflecting the occluder back
+     * across the sub-solar meridian restores the handedness. It negates only the east-west offset
+     * from the Sun meridian, leaving distance-toward-Sun and miss distance untouched, so the
+     * umbra's size and latitude are unchanged and only its longitude is put on the correct side.
+     * The shadow itself remains a pure 3-D ray-trace of the real lunar ephemeris.
+     *
+     * @param occ  occluder {x,y,z,radius}; x,y,z are reflected in place
+     * @param px,py,pz  receiver spin-pole unit vector (view frame)
+     * @param lx,ly,lz  unit Sun direction (view frame)
+     */
+    static void reflectAcrossSubSolarMeridian(double[] occ,
+            double px, double py, double pz, double lx, double ly, double lz) {
+        double nx = py*lz - pz*ly, ny = pz*lx - px*lz, nz = px*ly - py*lx;   // pole × Sun
+        double nl = Math.sqrt(nx*nx + ny*ny + nz*nz);
+        if (nl < 1e-9) return;                                                // pole ∥ Sun: nothing to reflect
+        nx/=nl; ny/=nl; nz/=nl;
+        double d = occ[0]*nx + occ[1]*ny + occ[2]*nz;                         // east-west offset from the meridian
+        occ[0] -= 2*d*nx; occ[1] -= 2*d*ny; occ[2] -= 2*d*nz;
+    }
+
+    static double perceptualEclipse(double visible) {
+        double o = 1.0 - visible;                            // 0 = full sun, 1 = total
+        // Only near-total obscuration darkens appreciably; the broad partial penumbra stays bright,
+        // so the visible shadow hugs the umbra track instead of spreading across the disc.
+        double o2 = o * o, o6 = o2 * o2 * o2;                // ^6
+        return 1.0 - o6;
     }
 
     /** Reusable raster for the atmospheric limb glow (sized to the largest halo drawn). */
@@ -3509,7 +4527,7 @@ public class SolarSystemSimulation extends JPanel
 
     private boolean drawSaturn(Graphics2D g2, double px, double py, double pr,
                                double spin, boolean emissive, boolean drawRing,
-                               double lightDx, double lightDy) {
+                               double lx0, double ly0, double lz0) {
         if (!loadTexture("saturn")) return false;
         int[] tex = texPixels.get("saturn");
         int tw = texSize.get("saturn")[0], th = texSize.get("saturn")[1];
@@ -3529,8 +4547,9 @@ public class SolarSystemSimulation extends JPanel
 
         double[] fr = bodyFrame(OBLIQUITY_DEG[5]);
         double pX = fr[0], pY = fr[1], pZ = fr[2];
-        double[] L = lightDirView(lightDx, lightDy);
-        double lx = L[0], ly = L[1], lz = L[2];
+        double ln = Math.sqrt(lx0 * lx0 + ly0 * ly0 + lz0 * lz0);
+        if (ln < 1e-9) ln = 1;
+        double lx = lx0 / ln, ly = ly0 / ln, lz = lz0 / ln;   // view-frame Sun direction (exact)
         double lDotPole = lx * pX + ly * pY + lz * pZ;
         final double amb = 0.10;
 
@@ -3546,7 +4565,7 @@ public class SolarSystemSimulation extends JPanel
             int sTexY = G.sTexY[p];
             if (sTexY >= 0) {
                 sHit = true; zS = G.snz[p];
-                double u = (G.sLon0[p] + spin) * INV_2PI; u -= Math.floor(u);
+                double u = -(G.sLon0[p] + spin) * INV_2PI; u -= Math.floor(u);   // correct east-west (un-mirror)
                 int tx = (int) (u * tw); if (tx >= tw) tx = tw - 1;
                 int rgb = tex[sTexY * tw + tx];
                 if (emissive) {
@@ -3669,7 +4688,11 @@ public class SolarSystemSimulation extends JPanel
         // appropriate to the current zoom: AU out at planetary scales, kilometres closer in,
         // metres when zoomed onto a surface. A second line always shows the light-travel time
         // across the bar (light-hours down to light-nanoseconds), so "ls" is covered too.
-        double pixelsPerMeter = METERS_TO_PIXELS * currentZoom;
+        // In the Earth Explorer the on-screen scale is set by geZoom (globe and tile views share the
+        // same ground scale by construction), so the same ruler reads out km/m across the surface.
+        double pixelsPerMeter = earthExplorerActive
+                ? (Math.min(getWidth(), getHeight()) * 0.5 * geZoom) / RADIUS_M[EARTH_INDEX]
+                : METERS_TO_PIXELS * currentZoom;
         double minPixels = 80.0; // Minimum pixels for the scale bar
         double maxPixels = 150.0; // Maximum pixels for the scale bar
 
@@ -3692,7 +4715,18 @@ public class SolarSystemSimulation extends JPanel
         }
 
         String distanceLabel = formatScaleCount(niceCount, unitName);
-        String timeLightLabel = formatLightTime(scaleMeters);
+        // Second line: light-travel time normally, or the surface coordinates in the explorer.
+        String timeLightLabel;
+        if (earthExplorerActive) {
+            timeLightLabel = String.format("%.4f°%s  %.4f°%s",
+                    Math.abs(geLat), geLat >= 0 ? "N" : "S",
+                    Math.abs(geLon), geLon >= 0 ? "E" : "W");
+        } else {
+            timeLightLabel = formatLightTime(scaleMeters);
+        }
+        String caption = earthExplorerActive
+                ? (geZoom > GE_GLOBE_MAX ? (tilesReachable ? "EARTH · ESRI" : "EARTH · OFFLINE") : "EARTH")
+                : "SCALE";
 
         // Modern panel: soft shadow, gradient fill, subtle accent border
         int panelWidth = 200;
@@ -3716,7 +4750,7 @@ public class SolarSystemSimulation extends JPanel
         // Small caption
         g2.setFont(oldFont.deriveFont(Font.BOLD, 9f));
         g2.setColor(new Color(120, 150, 200));
-        g2.drawString("SCALE", barStartX, scaleY + 4);
+        g2.drawString(caption, barStartX, scaleY + 4);
 
         // Accent scale bar with rounded caps and end ticks
         g2.setColor(new Color(120, 180, 255));
@@ -3734,12 +4768,14 @@ public class SolarSystemSimulation extends JPanel
         int auLabelWidth = fmB.stringWidth(distanceLabel);
         g2.drawString(distanceLabel, barStartX + (int) (scalePixels / 2) - auLabelWidth / 2, barY - 7);
 
-        // Light-time label below the bar
+        // Second line below the bar: light-time (centred) or coordinates (left-aligned) in the explorer.
         g2.setFont(oldFont.deriveFont(Font.PLAIN, 10f));
         g2.setColor(new Color(160, 180, 215));
         FontMetrics fmP = g2.getFontMetrics();
         int lightLabelWidth = fmP.stringWidth(timeLightLabel);
-        g2.drawString(timeLightLabel, barStartX + (int) (scalePixels / 2) - lightLabelWidth / 2, barY + 18);
+        int secondX = earthExplorerActive ? barStartX
+                : barStartX + (int) (scalePixels / 2) - lightLabelWidth / 2;
+        g2.drawString(timeLightLabel, secondX, barY + 18);
 
         g2.setFont(oldFont);
     }
@@ -3844,66 +4880,6 @@ public class SolarSystemSimulation extends JPanel
         g2.setFont(baseFont);
     }
 
-    /**
-     * Realistic directional shading for top-down view: linear gradient with half circle in shadow.
-     * Light source: Sun at barycenter.
-     * @param px, py - screen coordinates of planet center
-     */
-    private void drawRealisticShading(Graphics2D g2, double worldX, double worldY,
-                                      double radiusPx, double px, double py, int index) {
-        if (radiusPx < 2) return;
-
-        // Light direction: from body to Sun (Sun is at barycentric position)
-        double lightX = sunBarycenterX - worldX;
-        double lightY = sunBarycenterY - worldY;
-        double distToSun = Math.hypot(lightX, lightY);
-        if (distToSun == 0) return;
-        lightX /= distToSun;
-        lightY /= distToSun;
-
-        // Create ellipse matching the planet's position
-        Ellipse2D.Double fillEllipse =
-                new Ellipse2D.Double(px - radiusPx, py - radiusPx, 2*radiusPx, 2*radiusPx);
-
-        // Set clip to body shape BEFORE drawing gradient
-        Shape oldClip = g2.getClip();
-        g2.setClip(fillEllipse);
-
-        // Gradient endpoints: very close together for abrupt transition
-        // Lit point: just 0.3x radius toward sun (creates sharp edge)
-        // Dark point: just 0.3x radius away from sun
-        float litX = (float)(px + lightX * radiusPx * 1);
-        float litY = (float)(py + lightY * radiusPx * 1);
-        float darkX = (float)(px - lightX * radiusPx * 0.35);
-        float darkY = (float)(py - lightY * radiusPx * 0.35);
-
-        // Colors: normal planet color on lit side, black on shadow side
-        Color litColor;
-        if (index == -1) {
-            // For moons - light gray
-            litColor = Color.LIGHT_GRAY;
-        } else {
-            // For planets - use their normal color
-            litColor = COLORS[index];
-        }
-        Color shadowColor = Color.BLACK;
-
-        // Create linear gradient from lit to dark side
-        GradientPaint gp = new GradientPaint(
-                litX, litY, litColor,
-                darkX, darkY, shadowColor
-        );
-
-        g2.setPaint(gp);
-        g2.fill(fillEllipse);
-
-        // Restore clip
-        g2.setClip(oldClip);
-
-        // Reset paint to solid color for subsequent drawing
-        g2.setPaint(null);
-    }
-
     /** Re-calculates targetZoom according to the current zoomMode */
     private void updateAutoZoomTarget() {
         if (cameraFocusIndex < 0 || followingMoon) return;
@@ -3998,9 +4974,53 @@ public class SolarSystemSimulation extends JPanel
     }
 
     private void updateTimeScaleLabel() {
-        if (timeScaleLabel == null) return;
-        String prefix = simulationPaused ? "Paused" : "Time";
-        timeScaleLabel.setText(prefix + " " + formatTimeScale(timeScale));
+        if (timeScaleLabel != null) {
+            String prefix = simulationPaused ? "Paused" : "Time";
+            timeScaleLabel.setText(prefix + " " + formatTimeScale(timeScale));
+        }
+        updateTimeFieldsFromScale();
+    }
+
+    /** Index of the largest unit in {@link #TS_UNIT_SECONDS} whose value is still >= 1 (matches formatTimeScale). */
+    private static int bestTimeUnitIndex(double ts) {
+        if (!Double.isFinite(ts) || ts <= 0) return 0;
+        int idx = 0;
+        for (int i = 0; i < TS_UNIT_SECONDS.length; i++) {
+            if (ts >= TS_UNIT_SECONDS[i]) idx = i;
+        }
+        return idx;
+    }
+
+    /** Reflect the current timeScale into the editable number field + unit combo, without firing their listeners. */
+    private void updateTimeFieldsFromScale() {
+        if (timeScaleValueField == null || timeScaleUnitCombo == null) return;
+        suppressTimeFieldEvents = true;
+        try {
+            int idx = timeScaleUnitCombo.getSelectedIndex();
+            if (idx < 0) idx = bestTimeUnitIndex(timeScale);   // no user choice yet: pick a readable unit
+            double value = timeScale / TS_UNIT_SECONDS[idx];
+            double abs = Math.abs(value);
+            String fmt = abs < 1 ? "%.4f" : abs < 10 ? "%.3f" : abs < 1000 ? "%.2f" : "%.1f";
+            timeScaleUnitCombo.setSelectedIndex(idx);
+            timeScaleValueField.setText(String.format(fmt, value));
+        } finally {
+            suppressTimeFieldEvents = false;
+        }
+    }
+
+    /** Apply the user-typed number against the selected unit, clamping to the allowed range. */
+    private void applyTimeFieldInput() {
+        if (timeScaleValueField == null || timeScaleUnitCombo == null) return;
+        int idx = timeScaleUnitCombo.getSelectedIndex();
+        if (idx < 0) idx = 0;
+        double value;
+        try {
+            value = Double.parseDouble(timeScaleValueField.getText().trim());
+        } catch (NumberFormatException ex) {
+            updateTimeFieldsFromScale();   // unreadable entry: snap back to the current scale
+            return;
+        }
+        setTimeScaleAndSync(value * TS_UNIT_SECONDS[idx]);
     }
 
     /**
@@ -4067,73 +5087,29 @@ public class SolarSystemSimulation extends JPanel
         long now = System.nanoTime();
         double dtReal = (now - lastNanos) / 1e9;  // Real delta time (seconds)
         lastNanos = now;
+        advanceFrame(dtReal);
+    }
+
+    /** One simulation frame of {@code dtReal} real seconds (also driven directly for head-less renders). */
+    void advanceFrame(double dtReal) {
 
         // When paused, sim time (and thus orbits + spin) freezes; the camera and
-        // guided-tour animations still use real time below so they stay responsive.
+        // UI animations still use real time below so they stay responsive.
         double dtSim = simulationPaused ? 0.0 : dtReal * timeScale;
         simTimeSec += dtSim;
 
-        // Update planet mean anomalies (Keplerian motion)
-        for (int i = 0; i < NAMES.length; i++) {
-            double periodSec = PERIOD_Y[i] * 365.25 * DAY;
-            double n = 2 * Math.PI / periodSec;   // Mean motion
-            meanAnomaly[i] = (meanAnomaly[i] + n * dtSim) % (2 * Math.PI);
-        }
-
-        // Update moon mean anomalies
-        for (int i = 0; i < NAMES.length; i++) {
-            for (int m = 0; m < moonMean[i].length; m++) {
-                double periodSec = MOON_PERIOD_DAYS[i][m] * DAY;
-                double n = 2 * Math.PI / periodSec;
-                moonMean[i][m] = (moonMean[i][m] + n * dtSim) % (2 * Math.PI);
-            }
-        }
-
-        // Solve Kepler's equation for planet positions (now full 3-D from precessed elements)
-        for (int i = 0; i < NAMES.length; i++) {
-            double a = A_METERS[i];
-            double[] pos = planetXYZ(i);
-            planetX[i] = pos[0];
-            planetY[i] = pos[1];
-            planetZ[i] = pos[2];
-
-            // Compute distance and approximate speed (vis-viva)
-            planetDistM[i] = Math.sqrt(pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]);
-            double r = planetDistM[i];
-            double mu = G * (sunMass + PLANET_MASS[i]);
-            double v = Math.sqrt(Math.max(0.0, mu * (2.0 / r - 1.0 / a)));
-            planetSpeedKmS[i] = v / 1000.0;
-        }
-
-        // Advance any user-added comets / asteroids on their own Keplerian orbits.
-        for (SmallBody sb : smallBodies) sb.updatePosition(simTimeSec);
-
-        // Compute barycenter of the system (Sun + planets) from current Kepler positions
-        computeBarycenter();
+        // Every body's state for the new sim time: integrated planets / minor bodies, the
+        // theory-driven moons, and the Sun's barycentric offset (see updateEphemeris).
+        updateEphemeris();
 
         /* ----- CAMERA & AUTO-ZOOM ----- */
         if (followingMoon && cameraFocusIndex >= 0 && cameraFocusMoon >= 0) {
             /* ---------- MOON FOLLOWING ---------- */
             int p = cameraFocusIndex, m = cameraFocusMoon;
-            double a = MOON_A_M[p][m], e = MOON_ECC[p][m], b = a * Math.sqrt(1 - e * e);
-            double M = moonMean[p][m];
-            double E = M;
-            for (int it = 0; it < 40; it++) {
-                double f = E - e * Math.sin(E) - M;
-                double fp = 1 - e * Math.cos(E);
-                E -= f / fp;
-                if (Math.abs(f) < 1e-12) break;
-            }
-            double mx = a * (Math.cos(E) - e);
-            double my = b * Math.sin(E);
-            double arg = MOON_ARG_PERI[p][m];
-            double rxTemp = mx * Math.cos(arg) - my * Math.sin(arg);
-            // Apply 90° clockwise rotation to fix coordinate system
-            double rx = mx * Math.sin(arg) + my * Math.cos(arg);
-            double ry = -rxTemp;
+            double[] rel = moonRelPos(p, m);   // lunar theory for Earth's Moon, satellite theory otherwise
             // Use barycentric coordinates for camera target
-            double targetX = planetX[p] + sunBarycenterX + rx;
-            double targetY = planetY[p] + sunBarycenterY + ry;
+            double targetX = planetX[p] + sunBarycenterX + rel[0];
+            double targetY = planetY[p] + sunBarycenterY + rel[1];
 
             double dx = targetX - moonCamX;
             double dy = targetY - moonCamY;
@@ -4192,6 +5168,10 @@ public class SolarSystemSimulation extends JPanel
                 updateAutoZoomTarget();               // <-- NEW CALL
             }
 
+        } else if (lessonActive() && lessonAimGoal != null) {
+            /* ---------- LESSON FRAMING ---------- */
+            if (lessonSteer) steerLessonCamera(dtReal);
+            cameraIsApproaching = moonCameraIsApproaching = false;
         } else {
             /* ---------- NO FOLLOW – return to Sun ---------- */
             double speed = 8.0;
@@ -4220,50 +5200,62 @@ public class SolarSystemSimulation extends JPanel
             double lerp = 1 - Math.exp(-ZOOM_SPEED * dtReal);
             currentZoom += (targetZoom - currentZoom) * lerp;
         }
-
-        /* ----- GUIDED TOUR UPDATE ----- */
-        if (lessonMode && guidedTourActive) {
-            updateGuidedTour(dtReal);
+        if (earthExplorerActive) {
+            double lerp = 1 - Math.exp(-ZOOM_SPEED * dtReal);
+            geZoom += (geTargetZoom - geZoom) * lerp;
+            if (Math.abs(geTargetZoom - geZoom) < geTargetZoom * 1e-4) geZoom = geTargetZoom;  // settle → cache hits
+            if (geTransition < 1.0) {                       // fly-in fade of the atmosphere + HUD
+                geTransition = Math.min(1.0, geTransition + dtReal / 0.45);
+            }
         }
+
+        if (lessonStudio != null) lessonStudio.tick(dtReal);
 
         repaint();
     }
 
     /**
-     * Position of moon {@code m} of planet {@code i} relative to the planet centre
-     * (metres) as {@code {rx, ry, rz}}: {@code rx,ry} are the ecliptic-plane position
-     * (unchanged, so screen placement and orbit paths are identical), and {@code rz} is
-     * the out-of-plane component from the moon's orbital inclination — the piece that
-     * makes eclipse geometry correct (shadows at real latitudes, eclipses only near a
-     * node). Matches the inline solve used when drawing moons.
+     * Position of moon {@code m} of planet {@code i} relative to the planet's centre, in world
+     * axes (metres) — the real 3-D position, including the moon's tilt to the ecliptic (so
+     * shadows land at real latitudes and eclipses happen only near a node). Earth's Moon comes
+     * from the ELP-2000/82 lunar theory, every other moon from {@link SatelliteEphemeris}.
      */
-    private double[] moonRelPos(int i, int m) {
-        double a = MOON_A_M[i][m], e = MOON_ECC[i][m], b = a * Math.sqrt(1 - e * e);
-        double M = moonMean[i][m];
-        double E = M;
-        for (int it = 0; it < 40; it++) {
-            double f = E - e * Math.sin(E) - M;
-            double fp = 1 - e * Math.cos(E);
-            E -= f / fp;
-            if (Math.abs(f) < 1e-12) break;
-        }
-        double mx = a * (Math.cos(E) - e);
-        double my = b * Math.sin(E);
-        double arg = MOON_ARG_PERI[i][m];
-        double rxTemp = mx * Math.cos(arg) - my * Math.sin(arg);
-        double rx = mx * Math.sin(arg) + my * Math.cos(arg);   // 90° fix (matches draw loop)
-        double ry = -rxTemp;
-        double rz = 0.0;
-        double inclDeg = (i < MOON_INCL_DEG.length && m < MOON_INCL_DEG[i].length) ? MOON_INCL_DEG[i][m] : 0.0;
-        if (inclDeg != 0.0) {
-            double incl = Math.toRadians(inclDeg);
-            double node = Math.toRadians((i < MOON_NODE_DEG.length && m < MOON_NODE_DEG[i].length)
-                    ? MOON_NODE_DEG[i][m] : 0.0);
-            double rmag = Math.hypot(rx, ry);
-            double phi = Math.atan2(ry, rx);            // ecliptic longitude of the moon
-            rz = rmag * Math.sin(incl) * Math.sin(phi - node);   // height above the ecliptic
-        }
-        return new double[]{rx, ry, rz};
+    private double[] moonRelPos(int i, int m) { return moonOffsetWorld(i, m, simTimeSec); }
+
+    /** {@link #moonRelPos} at an arbitrary sim time (used to trace the orbit ring). */
+    private double[] moonOffsetWorld(int i, int m, double timeSec) {
+        if (i == EARTH_INDEX && m == 0) return earthMoonOffsetWorld(timeSec);
+        double[] k = SatelliteEphemeris.positionKm(i, m, Astro.ttSeconds(timeSec));
+        return eclToWorld(k[0] * 1000.0, k[1] * 1000.0, k[2] * 1000.0);
+    }
+
+    /** Mean orbital eccentricity of moon {@code m} of planet {@code i}. */
+    private static double moonEcc(int i, int m) {
+        return (i == EARTH_INDEX && m == 0) ? 0.0549 : SatelliteEphemeris.eccentricity(i, m);
+    }
+
+    /**
+     * Earth-Moon offset in the sim's world convention ({@code {ye, -xe, ze}}, metres) at the
+     * given sim time, from the geocentric ELP ephemeris. Added to Earth's world position to
+     * place the Moon body, its orbit ring and its eclipse shadow.
+     */
+    private double[] earthMoonOffsetWorld(double timeSec) {
+        double[] s = MoonEphemeris.geocentric(timeSec);
+        double lam = s[0], bet = s[1], dm = s[2];
+        double cb = Math.cos(bet);
+        double xe = dm * cb * Math.cos(lam);   // ecliptic-J2000: x -> vernal equinox
+        double ye = dm * cb * Math.sin(lam);
+        double ze = dm * Math.sin(bet);
+        return new double[]{ ye, -xe, ze };    // world = {ye, -xe, ze}, matching keplerXYZ
+    }
+
+    /**
+     * Geocentric ecliptic-J2000 position of the Moon (AU) at elapsed sim time, as
+     * {@code {x, y, z}} toward the vernal equinox / ecliptic north — the frame JPL Horizons
+     * reports geocentric vectors in. Static and pure, for the accuracy tests.
+     */
+    static double[] moonGeocentricEclipticAU(double simTimeSec) {
+        return MoonEphemeris.geocentricEclipticAU(simTimeSec);
     }
 
     /** Compute system barycenter and set sunBarycenterX/Y accordingly. */
@@ -4275,823 +5267,29 @@ public class SolarSystemSimulation extends JPanel
             sunBarycenterY = 0.0;
             return;
         }
-        double totalPx = 0.0, totalPy = 0.0;
-        for (int i = 0; i < NAMES.length; i++) {
-            double m = PLANET_MASS[i];
-            totalPx += m * planetX[i];
-            totalPy += m * planetY[i];
-        }
-        // Sun offset so that center of mass is at origin: M_sun * r_sun + sum m_i r_i = 0
-        sunBarycenterX = -totalPx / M_SUN;
-        sunBarycenterY = -totalPy / M_SUN;
-    }
-
-    /**
-     * Generic guided-lesson driver. Works for every lesson in the curriculum:
-     * a TOUR lesson runs its {@link TourAction} steps against the live 3-D scene,
-     * while a PANEL lesson pages through illustrated stellar-physics content.
-     * Progression is manual (press N); {@link #tourStep} is the step/page cursor.
-     */
-    private void updateGuidedTour(double dtReal) {
-        tourStepStartTime += dtReal;
-
-        // Fade in the current step's caption/page.
-        if (tourMessageAlpha < 1.0) {
-            tourMessageAlpha += TOUR_MESSAGE_FADE_SPEED * dtReal;
-            if (tourMessageAlpha > 1.0) tourMessageAlpha = 1.0;
-        }
-
-        Lesson L = currentLessonObj();
-
-        // Allow advancing once faded in. Panels settle quickly (no camera move);
-        // 3-D tours wait a beat longer for the camera to arrive.
-        double readyAfter = (L.kind == LessonKind.PANEL) ? 0.35 : 1.5;
-        if (tourMessageAlpha >= 1.0 && tourStepStartTime > readyAfter) {
-            tourStepReady = true;
-        }
-
-        int count = (L.kind == LessonKind.TOUR) ? L.steps.size() : L.pages.size();
-
-        // Advancing past the last step/page ends the lesson.
-        if (tourStep >= count) { endTour(); return; }
-
-        // TOUR lessons run their scene setup once, on the first frame of a step.
-        if (L.kind == LessonKind.TOUR && tourStepStartTime < dtReal * 2) {
-            tourMessage = L.steps.get(tourStep).run(this);
-        }
-    }
-
-    /** Cleanly stop any guided lesson and restore the scene to a neutral state. */
-    private void endTour() {
-        guidedTourActive = false;
-        tourStep = 0;
-        tourMessage = "";
-        tourMessageAlpha = 0.0;
-        tourStepReady = false;
-        showVelocityVectors = false;
-        showVelocityComparison = false;
-        restorePlanetVisibility();
-    }
-
-    /* =========================================================================
-       CURRICULUM  —  data-driven lesson ladder (beginner  ->  AST 221)
-       Tiers:  I Foundations · II Orbital Mechanics · III Planetary Science ·
-               IV Stellar Astrophysics.  Solar-system topics are taught as 3-D
-               guided TOURs; stellar-physics topics as illustrated PANEL lessons.
-       ========================================================================= */
-
-    enum LessonKind { TOUR, PANEL }
-
-    /** One step of a 3-D guided tour: mutates the scene and returns its caption. */
-    @FunctionalInterface interface TourAction { String run(SolarSystemSimulation p); }
-
-    /** One illustrated page of a stellar-physics PANEL lesson. */
-    static final class PanelPage {
-        final String heading; final String diagram; final String body;
-        PanelPage(String heading, String diagram, String body) {
-            this.heading = heading; this.diagram = diagram; this.body = body;
-        }
-    }
-
-    /** A lesson: either a TOUR (drives the 3-D scene) or a PANEL (illustrated pages). */
-    static final class Lesson {
-        final int number; final String tier; final String title; final String subtitle;
-        final String[] objectives; final LessonKind kind;
-        final java.util.List<TourAction> steps;   // TOUR only
-        final java.util.List<PanelPage> pages;    // PANEL only
-        private Lesson(int number, String tier, String title, String subtitle, String[] objectives,
-                       java.util.List<TourAction> steps, java.util.List<PanelPage> pages) {
-            this.number = number; this.tier = tier; this.title = title; this.subtitle = subtitle;
-            this.objectives = objectives;
-            this.kind = (steps != null) ? LessonKind.TOUR : LessonKind.PANEL;
-            this.steps = steps; this.pages = pages;
-        }
-        static Lesson tour(int n, String tier, String title, String sub, String[] obj,
-                           java.util.List<TourAction> steps) {
-            return new Lesson(n, tier, title, sub, obj, steps, null);
-        }
-        static Lesson panel(int n, String tier, String title, String sub, String[] obj,
-                            java.util.List<PanelPage> pages) {
-            return new Lesson(n, tier, title, sub, obj, null, pages);
-        }
-    }
-
-    /** Typed builder so the step lambdas get {@link TourAction} as their target type. */
-    private static java.util.List<TourAction> steps(TourAction... s) { return java.util.List.of(s); }
-    private static PanelPage page(String heading, String diagram, String body) {
-        return new PanelPage(heading, diagram, body);
-    }
-
-    /** Builds the full ordered curriculum once. */
-    private java.util.List<Lesson> buildCurriculum() {
-        java.util.List<Lesson> c = new java.util.ArrayList<>();
-
-        // ---------- TIER I — Foundations ----------
-        c.add(Lesson.tour(1, "I · Foundations", "The Solar System at a Glance",
-            "What orbits the Sun, and how it is arranged",
-            new String[]{
-                "Name the Sun, the eight planets, and the dwarf planets",
-                "Distinguish terrestrial worlds, giants, and small bodies",
-                "See how the whole system nests around one star"},
-            steps(
-                p -> { p.showPlanetOrbits = true; p.hideAllPlanetsExcept(-1); p.returnToSun();
-                       p.currentZoom = p.targetZoom = 1.2; return """
-                       Welcome — The Solar System at a Glance
-                       One star, eight planets, and a swarm of small worlds,
-                       all bound by the Sun's gravity.
-
-                       Press 'N' to continue."""; },
-                p -> { p.returnToSun(); p.currentZoom = p.targetZoom = 3.0; return """
-                       The Sun
-                       A middle-aged G-type star holding 99.86% of the
-                       system's mass. Everything else orbits it.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Mars", 0.6); return """
-                       The Terrestrial Planets
-                       Mercury, Venus, Earth, Mars — small, rocky, dense,
-                       close to the Sun.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Jupiter", 0.12); return """
-                       The Giant Planets
-                       Jupiter & Saturn (gas giants), Uranus & Neptune
-                       (ice giants) — huge, low-density, far out.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Pluto", 0.02); return """
-                       Dwarf Planets & Debris
-                       Ceres in the asteroid belt; Pluto, Haumea & Eris in
-                       the Kuiper belt beyond Neptune.
-
-                       Press 'N' to continue."""; },
-                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
-                       return """
-                       Recap
-                       Sun · terrestrials · giants · dwarfs & debris.
-                       Next we'll measure just how far apart they are.
-
-                       Press 'N' to finish."""; }
-            )));
-
-        c.add(Lesson.tour(2, "I · Foundations", "Scale & Distances",
-            "How vast the Solar System really is",
-            new String[]{
-                "Use the astronomical unit (AU) as a yardstick",
-                "Relate distance to light-travel time",
-                "Compare the crowded inner system with the vast outer system"},
-            steps(
-                p -> { p.showPlanetOrbits = true; p.hideAllPlanetsExcept(-1); p.returnToSun();
-                       p.currentZoom = p.targetZoom = 0.9; return """
-                       Scale & Distances
-                       1 AU = Earth–Sun distance = 149.6 million km.
-                       We'll walk outward and watch the scale explode.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Earth", 0.79); return """
-                       Earth — 1 AU
-                       Sunlight takes 8 minutes to reach us.
-                       This is our unit of distance.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Jupiter", 0.12); return """
-                       Jupiter — 5.2 AU
-                       Already 5× farther than Earth. Sunlight now
-                       takes about 43 minutes to arrive.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Neptune", 0.04); return """
-                       Neptune — 30 AU
-                       The outermost planet. Sunlight takes ~4 hours.
-                       The inner system would be a tiny dot here.
-
-                       Press 'N' to continue."""; },
-                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.0;
-                       return """
-                       Recap
-                       The inner planets huddle within ~1.5 AU; the outer
-                       system stretches 20× farther. Space is mostly empty.
-
-                       Press 'N' to finish."""; }
-            )));
-
-        // ---------- TIER II — Orbital Mechanics ----------
-        c.add(Lesson.tour(3, "II · Orbital Mechanics", "Orbits & Ellipses",
-            "Kepler's 1st Law and orbital eccentricity",
-            new String[]{
-                "Contrast circular and elliptical orbits",
-                "Read eccentricity, perihelion and aphelion",
-                "Recognise the Sun sits at one focus of the ellipse"},
-            steps(
-                p -> { p.showPlanetOrbits = true; p.showPerihelionAphelion = true; p.showKeplersLaw = true;
-                       p.hideAllPlanetsExcept(-1); p.returnToSun(); p.currentZoom = p.targetZoom = 2.0;
-                       return """
-                       Kepler's 1st Law
-                       Planets trace ellipses with the Sun at one focus.
-                       We'll compare orbits from round to stretched.
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Venus"));
-                       p.focusPlanetByNameWithZoom("Venus", 1.0); return """
-                       Venus — nearly a perfect circle
-                       Eccentricity e ≈ 0.007.
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Earth"));
-                       p.focusPlanetByNameWithZoom("Earth", 0.79); return """
-                       Earth — also quite circular
-                       e ≈ 0.017. Our seasons are NOT caused by this.
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Mars"));
-                       p.focusPlanetByNameWithZoom("Mars", 0.5); return """
-                       Mars — visibly elliptical
-                       e ≈ 0.093. The orbit looks stretched.
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Mercury"));
-                       p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
-                       Mercury — quite elliptical
-                       e ≈ 0.206. Red (P) = perihelion, blue (A) = aphelion.
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Pluto"));
-                       p.focusPlanetByNameWithZoom("Pluto", 0.02); return """
-                       Pluto — highly elliptical
-                       e ≈ 0.250. Its distance from the Sun varies hugely.
-
-                       Press 'N' to continue."""; },
-                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
-                       return """
-                       Recap
-                       Every orbit is an ellipse; only the eccentricity
-                       differs. Next: how speed changes along one.
-
-                       Press 'N' to finish."""; }
-            )));
-
-        c.add(Lesson.tour(4, "II · Orbital Mechanics", "Kepler's 2nd Law: Equal Areas",
-            "Why planets speed up near the Sun",
-            new String[]{
-                "State the equal-areas law",
-                "Link orbital speed to distance from the Sun",
-                "Connect it to conservation of angular momentum"},
-            steps(
-                p -> { p.showPlanetOrbits = true; p.showPerihelionAphelion = true;
-                       p.showVelocityVectors = true; p.showVelocityComparison = true;
-                       p.hideAllPlanetsExcept(-1); p.returnToSun(); p.currentZoom = p.targetZoom = 2.0;
-                       return """
-                       Kepler's 2nd Law — Equal Areas
-                       A line from Sun to planet sweeps equal areas in
-                       equal times. Arrows show each planet's velocity.
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Mercury"));
-                       p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
-                       Watch Mercury
-                       Its eccentric orbit makes the speed swing most.
-                       Note the arrow lengthening and shortening.
-
-                       Press 'N' to continue."""; },
-                p -> { return """
-                       At Perihelion (P) — fastest
-                       Closest to the Sun, the planet races along:
-                       up to ~59 km/s for Mercury.
-
-                       Press 'N' to continue."""; },
-                p -> { return """
-                       At Aphelion (A) — slowest
-                       Farthest out, it dawdles: ~39 km/s.
-                       Same orbit, very different speed.
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Earth"));
-                       p.focusPlanetByNameWithZoom("Earth", 0.79); return """
-                       Compare Earth
-                       Nearly circular → speed barely changes
-                       (~29.3 to 30.3 km/s).
-
-                       Press 'N' to continue."""; },
-                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
-                       return """
-                       Recap
-                       Equal areas ⇔ angular momentum L = m v r is
-                       conserved. Toggle vectors under Education → Overlays.
-
-                       Press 'N' to finish."""; }
-            )));
-
-        c.add(Lesson.tour(5, "II · Orbital Mechanics", "Kepler's 3rd Law: P² = a³",
-            "The harmony of the whole system",
-            new String[]{
-                "State P² = a³ (years, AU)",
-                "Verify the ratio is the same for every planet",
-                "Predict a period from a distance"},
-            steps(
-                p -> { p.showPlanetOrbits = true; p.showKeplersLaw = true; p.hideAllPlanetsExcept(-1);
-                       p.returnToSun(); p.currentZoom = p.targetZoom = 2.0; return """
-                       Kepler's 3rd Law
-                       Period² = semi-major axis³  (P in years, a in AU).
-                       The yellow line in the info panel shows P²/a³.
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Mercury"));
-                       p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
-                       Mercury
-                       a = 0.39 AU, P = 0.24 yr → P²/a³ ≈ 1.00
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Earth"));
-                       p.focusPlanetByNameWithZoom("Earth", 0.79); return """
-                       Earth
-                       a = 1 AU, P = 1 yr → P²/a³ = 1.0000 (by definition)
-
-                       Press 'N' to continue."""; },
-                p -> { p.hideAllPlanetsExcept(p.findPlanetIndex("Jupiter"));
-                       p.focusPlanetByNameWithZoom("Jupiter", 0.12); return """
-                       Jupiter
-                       a = 5.20 AU, P = 11.86 yr → P²/a³ ≈ 1.00
-
-                       Press 'N' to continue."""; },
-                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
-                       return """
-                       Recap & Challenge
-                       The ratio is constant — it encodes the Sun's mass.
-                       Try it: a planet at a = 4 AU has P = √(4³) = 8 yr.
-
-                       Press 'N' to finish."""; }
-            )));
-
-        c.add(Lesson.tour(6, "II · Orbital Mechanics", "Gravity & Newton",
-            "What actually holds an orbit together",
-            new String[]{
-                "Apply Newton's law of gravitation F = GMm/r²",
-                "See an orbit as constant free-fall around the Sun",
-                "Explain why closer planets orbit faster"},
-            steps(
-                p -> { p.showPlanetOrbits = true; p.hideAllPlanetsExcept(-1); p.returnToSun();
-                       p.currentZoom = p.targetZoom = 1.6; return """
-                       Newton's Gravity
-                       F = G·M·m / r²  — every mass pulls every other.
-                       Kepler described orbits; Newton explained them.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Earth", 0.79); return """
-                       An orbit is perpetual free-fall
-                       The Sun pulls the planet inward; its sideways
-                       motion keeps it 'falling around' rather than in.
-
-                       Press 'N' to continue."""; },
-                p -> { return """
-                       Turn off gravity (thought experiment)
-                       With no pull, a planet would fly off in a straight
-                       line along its velocity (tangent to the orbit).
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
-                       Closer ⇒ stronger pull ⇒ faster orbit
-                       Mercury feels a fierce pull and whips around the
-                       Sun in just 88 days.
-
-                       Press 'N' to continue."""; },
-                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
-                       return """
-                       Recap
-                       One law — inverse-square gravity — reproduces all
-                       three of Kepler's laws. The Sun's mass sets the tempo.
-
-                       Press 'N' to finish."""; }
-            )));
-
-        c.add(Lesson.tour(7, "II · Orbital Mechanics", "Energy & Angular Momentum",
-            "The conserved quantities behind the motion",
-            new String[]{
-                "Use the vis-viva equation for orbital speed",
-                "Trade kinetic and potential energy around an orbit",
-                "Tie angular-momentum conservation to Kepler's 2nd law"},
-            steps(
-                p -> { p.showPerihelionAphelion = true; p.showVelocityVectors = true;
-                       p.hideAllPlanetsExcept(p.findPlanetIndex("Mercury"));
-                       p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
-                       Vis-viva: the speed equation
-                       v² = G·M·(2/r − 1/a)
-                       Speed depends only on the current distance r.
-
-                       Press 'N' to continue."""; },
-                p -> { return """
-                       At perihelion
-                       r is smallest → v is largest.
-                       Kinetic energy high, potential energy low.
-
-                       Press 'N' to continue."""; },
-                p -> { return """
-                       At aphelion
-                       r is largest → v is smallest.
-                       Now PE is high, KE is low — but the TOTAL
-                       orbital energy stays constant.
-
-                       Press 'N' to continue."""; },
-                p -> { return """
-                       Angular momentum
-                       L = m·v·r is conserved, so v·r is constant.
-                       That is exactly Kepler's equal-areas law.
-
-                       Press 'N' to continue."""; },
-                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
-                       return """
-                       Recap
-                       Energy and angular momentum are both conserved;
-                       together they fix the size and shape of every orbit.
-
-                       Press 'N' to finish."""; }
-            )));
-
-        // ---------- TIER III — Planetary Science ----------
-        c.add(Lesson.tour(8, "III · Planetary Science", "Planetary Properties",
-            "Mass, radius, density and composition",
-            new String[]{
-                "Compare planet radii, masses and densities",
-                "Explain the terrestrial / giant divide",
-                "Link bulk density to composition"},
-            steps(
-                p -> { p.hideAllPlanetsExcept(-1); p.focusPlanetByNameWithZoom("Earth", 0.79); return """
-                       Reading a planet's stats
-                       Click a body to see mass, radius and density in
-                       the info panel. Start with Earth (our benchmark).
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Jupiter", 0.12); return """
-                       Jupiter — the gas giant
-                       11× Earth's radius, 318× its mass, yet only
-                       1.3 g/cm³ — mostly hydrogen and helium.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Mercury", 1.75); return """
-                       Mercury — dense and rocky
-                       Small but 5.4 g/cm³ — a large iron core under a
-                       thin rocky mantle.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Saturn", 0.12); return """
-                       Saturn — less dense than water
-                       0.69 g/cm³. If you had a big enough bathtub,
-                       Saturn would float.
-
-                       Press 'N' to continue."""; },
-                p -> { p.restorePlanetVisibility(); p.returnToSun(); p.currentZoom = p.targetZoom = 1.5;
-                       return """
-                       Recap
-                       Two families: small dense rock/metal worlds inside,
-                       large low-density gas/ice worlds outside. Why? Next tier.
-
-                       Press 'N' to finish."""; }
-            )));
-
-        c.add(Lesson.tour(9, "III · Planetary Science", "Moons, Tides & Eclipses",
-            "Satellites, resonances and shadow geometry",
-            new String[]{
-                "Describe the Earth–Moon system",
-                "Explain solar and lunar eclipse geometry",
-                "Recognise orbital resonance among Jupiter's moons"},
-            steps(
-                p -> { p.simulationPaused = false; p.focusPlanetByNameWithZoom("Earth", 0.5); return """
-                       Moons — worlds orbiting worlds
-                       The Moon circles Earth every 27.3 days, its orbit
-                       tilted ~5° to Earth's orbit around the Sun.
-
-                       Press 'N' to continue."""; },
-                p -> { p.showEclipse(true); return """
-                       Solar eclipse
-                       New Moon crosses exactly between Earth and Sun;
-                       its umbra falls on Earth. Rare because of that 5° tilt.
-
-                       Press 'N' to continue."""; },
-                p -> { p.showEclipse(false); return """
-                       Lunar eclipse
-                       Full Moon passes through Earth's shadow and
-                       dims to a coppery red.
-
-                       Press 'N' to continue."""; },
-                p -> { p.simulationPaused = false; p.focusPlanetByNameWithZoom("Jupiter", 0.5); return """
-                       Jupiter's Galilean moons
-                       Io, Europa, Ganymede, Callisto. The inner three
-                       lock in a 4:2:1 resonance — Io orbits 4× per Ganymede.
-
-                       Press 'N' to continue."""; },
-                p -> { p.focusPlanetByNameWithZoom("Saturn", 0.5); return """
-                       Saturn & Titan
-                       Titan is bigger than Mercury and wears a thick,
-                       hazy nitrogen atmosphere.
-
-                       Press 'N' to continue."""; },
-                p -> { p.simulationPaused = false; p.restorePlanetVisibility(); p.returnToSun();
-                       p.currentZoom = p.targetZoom = 1.5; return """
-                       Recap
-                       Moons obey the same gravity as planets; tides and
-                       resonances sculpt whole satellite systems.
-
-                       Press 'N' to finish."""; }
-            )));
-
-        // ---------- TIER III/IV bridge — illustrated PANEL lessons ----------
-        c.add(Lesson.panel(10, "III · Planetary Science", "How Planets Form",
-            "From a collapsing cloud to a planetary system",
-            new String[]{
-                "Sketch the protoplanetary-disk model",
-                "Explain the frost line's role",
-                "Connect formation to the terrestrial/giant divide"},
-            listPages(
-                page("A star is born with a disk", "DISK", """
-                     • A giant molecular cloud collapses under gravity.
-                     • Conservation of angular momentum flattens it into a
-                       spinning disk feeding a new star at the centre.
-                     • Leftover gas and dust in the disk build the planets."""),
-                page("The frost line divides the disk", "DISK", """
-                     • Close to the star it is hot — only rock and metal
-                       stay solid. Farther out, water/ammonia freeze.
-                     • That boundary is the FROST (snow) line, near ~3 AU.
-                     • Far side of the line has far more solid material."""),
-                page("Dust → planetesimals → planets", "ACCRETION", """
-                     • Dust grains stick, grow to km-sized planetesimals.
-                     • Gravity then runs away: the biggest bodies accrete
-                       the rest into protoplanets.
-                     • Inside the frost line: small rocky worlds.
-                     • Outside: cores grow fast enough to grab gas → giants."""),
-                page("Why the two families exist", "ACCRETION", """
-                     • Terrestrial planets: rock/metal, close, dense.
-                     • Giants: massive icy cores that captured H/He envelopes
-                       before the disk gas blew away.
-                     • Same process, two outcomes — set by the frost line.""")
-            )));
-
-        // ---------- TIER IV — Stellar Astrophysics (AST 221) ----------
-        c.add(Lesson.panel(11, "IV · Stellar Astrophysics", "The Sun as a Star",
-            "Anatomy and energy transport of an average star",
-            new String[]{
-                "Label the Sun's interior zones",
-                "Trace energy from core to photosphere",
-                "State hydrostatic equilibrium"},
-            listPages(
-                page("An ordinary G2V star", "SUN", """
-                     • The Sun is a main-sequence star: 1.99×10³⁰ kg,
-                       surface ~5772 K, luminosity 3.83×10²⁶ W.
-                     • It is a ball of plasma held together by gravity and
-                       held up by internal pressure."""),
-                page("The core — the furnace", "SUN", """
-                     • Inner ~25% of the radius. T ≈ 15 million K,
-                       density ~150 g/cm³.
-                     • Hydrogen fuses to helium here, releasing the energy
-                       that powers the entire star."""),
-                page("Radiative zone — the slow crawl", "SUN", """
-                     • Energy leaves the core as photons that random-walk
-                       outward, absorbed and re-emitted endlessly.
-                     • A single packet of energy can take ~100,000 years
-                       to cross this zone."""),
-                page("Convective zone & photosphere", "SUN", """
-                     • In the outer third, hot plasma boils upward in cells
-                       (granulation) and sinks when cooled.
-                     • The photosphere is the visible 'surface' — the layer
-                       from which sunlight finally escapes to space."""),
-                page("Hydrostatic equilibrium", "HYDRO", """
-                     • At every depth, outward pressure exactly balances the
-                       inward pull of gravity: dP/dr = −ρ g.
-                     • This balance is why the Sun neither collapses nor
-                       explodes — it is the central idea of stellar structure.""")
-            )));
-
-        c.add(Lesson.panel(12, "IV · Stellar Astrophysics", "Stellar Properties & the HR Diagram",
-            "Sorting the stars by luminosity and temperature",
-            new String[]{
-                "Define luminosity, temperature and spectral class",
-                "Read the Hertzsprung–Russell diagram",
-                "Apply L = 4πR²σT⁴ and the mass–luminosity relation"},
-            listPages(
-                page("Two master properties", "HR", """
-                     • A star's light is set mainly by its LUMINOSITY
-                       (total power) and its surface TEMPERATURE.
-                     • Temperature also fixes colour: hot stars look blue,
-                       cool stars red."""),
-                page("Spectral classes: O B A F G K M", "HR", """
-                     • Stars are binned by temperature into classes
-                       O(hot,blue) → M(cool,red). The Sun is class G.
-                     • 'Oh Be A Fine Girl/Guy, Kiss Me' — hottest to coolest."""),
-                page("The Hertzsprung–Russell diagram", "HR", """
-                     • Plot luminosity (up) vs temperature (hot on the LEFT).
-                     • Most stars fall on a diagonal MAIN SEQUENCE.
-                     • Giants sit upper-right (cool but bright); white
-                       dwarfs lower-left (hot but faint)."""),
-                page("Stefan–Boltzmann law", "HR", """
-                     • L = 4πR²σT⁴.
-                     • A cool star can still be luminous if it is huge
-                       (a red giant) — big R beats low T.
-                     • A hot star can be faint if it is tiny (a white dwarf)."""),
-                page("The mass–luminosity relation", "HR", """
-                     • On the main sequence, L ≈ M³·⁵ (roughly).
-                     • Massive stars are enormously more luminous — and burn
-                       their fuel so fast they live only millions of years,
-                       while low-mass stars last many billions.""")
-            )));
-
-        c.add(Lesson.panel(13, "IV · Stellar Astrophysics", "Nuclear Energy & Stellar Structure",
-            "What makes a star shine, and what holds it up",
-            new String[]{
-                "Explain fusion and the mass defect (E = mc²)",
-                "Follow the proton–proton chain and CNO cycle",
-                "List the equations of stellar structure"},
-            listPages(
-                page("Why stars shine: E = mc²", "PPCHAIN", """
-                     • Fusing light nuclei into heavier ones converts a tiny
-                       fraction of mass into energy.
-                     • Fusing 4 protons into 1 helium nucleus loses ~0.7% of
-                       the mass — released as radiation."""),
-                page("The proton–proton chain", "PPCHAIN", """
-                     • The Sun's main route (stars ≲ 1.3 M☉):
-                       p + p → deuterium (+ e⁺ + ν)
-                       d + p → helium-3 + γ
-                       ³He + ³He → ⁴He + 2p
-                     • Net: 4 p → ⁴He + energy + neutrinos."""),
-                page("The CNO cycle", "PPCHAIN", """
-                     • In hotter, more massive stars, carbon/nitrogen/oxygen
-                       act as catalysts to fuse hydrogen far faster.
-                     • Its steep temperature sensitivity (∝ T¹⁶ or more) makes
-                       massive stars burn ferociously bright."""),
-                page("Equations of stellar structure", "HYDRO", """
-                     • Four coupled relations describe a star:
-                       – Hydrostatic equilibrium: dP/dr = −ρ g
-                       – Mass continuity:        dM/dr = 4πr²ρ
-                       – Energy generation:      dL/dr = 4πr²ρ ε
-                       – Energy transport:       dT/dr (radiative or convective)"""),
-                page("Radiation vs convection", "SUN", """
-                     • Energy moves outward by radiation where the gas is
-                       transparent enough, and by convection where the
-                       temperature gradient gets too steep.
-                     • Which zone is which depends on the star's mass.""")
-            )));
-
-        c.add(Lesson.panel(14, "IV · Stellar Astrophysics", "Stellar Evolution & Endpoints",
-            "From birth on the main sequence to stellar corpses",
-            new String[]{
-                "Trace a star's path across the HR diagram",
-                "Contrast low-mass and high-mass fates",
-                "State the Chandrasekhar and neutron-star mass limits"},
-            listPages(
-                page("Life on the main sequence", "EVOLUTION", """
-                     • A star spends ~90% of its life fusing hydrogen in its
-                       core, sitting on the main sequence.
-                     • Its position there is set almost entirely by its mass."""),
-                page("Leaving the main sequence", "EVOLUTION", """
-                     • When core hydrogen runs out, the core contracts and
-                       heats; the envelope swells and cools.
-                     • The star climbs to the upper-right as a RED GIANT,
-                       now fusing helium (and heavier elements if massive)."""),
-                page("Low-mass fate: white dwarf", "ENDPOINTS", """
-                     • Stars up to ~8 M☉ shed their outer layers as a glowing
-                       PLANETARY NEBULA.
-                     • What remains is a WHITE DWARF: an Earth-sized ember
-                       held up by electron degeneracy pressure."""),
-                page("High-mass fate: supernova", "ENDPOINTS", """
-                     • Massive stars build an iron core, which cannot fuse
-                       and collapses catastrophically.
-                     • The rebound is a core-collapse SUPERNOVA, forging heavy
-                       elements and seeding space with them."""),
-                page("The mass limits", "ENDPOINTS", """
-                     • White dwarf ≤ 1.4 M☉ (the Chandrasekhar limit).
-                     • Above that a NEUTRON STAR forms — until ~2–3 M☉
-                       (the TOV limit).
-                     • Beyond it, nothing halts gravity: a BLACK HOLE.""")
-            )));
-
-        return c;
-    }
-
-    /** Convenience: build an immutable page list (kept separate for readability). */
-    private static java.util.List<PanelPage> listPages(PanelPage... pages) {
-        return java.util.List.of(pages);
-    }
-
-    /**
-     * Advances to the next tour step
-     */
-    private void advanceTourStep() {
-        tourStep++;
-        tourStepStartTime = 0;
-        tourMessageAlpha = 0.0;
-        tourStepReady = false;
-    }
-
-    /**
-     * Find the index of a planet by name
-     */
-    private int findPlanetIndex(String name) {
-        for (int i = 0; i < NAMES.length; i++) {
-            if (NAMES[i].equals(name)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    /**
-     * Focuses camera on a planet by name with custom zoom level
-     */
-    private void focusPlanetByNameWithZoom(String name, double zoom) {
-        for (int i = 0; i < NAMES.length; i++) {
-            if (NAMES[i].equals(name)) {
-                selectedPlanet = i;
-                selectedMoon = -1;
-                cameraFocusMoon = -1;
-                autoZoomEnabled = false; // Disable auto-zoom to use our custom zoom
-                focusPlanetImmediate(i);
-                targetZoom = zoom;
-                currentZoom = zoom;
-                return;
-            }
-        }
-    }
-
-    /**
-     * Hide all planets except the specified one (or show all if index is -1)
-     */
-    private void hideAllPlanetsExcept(int planetIndex) {
-        // Save current visibility state on first call
-        if (savedPlanetVisibility == null) {
-            savedPlanetVisibility = new boolean[planetVisible.length];
-            System.arraycopy(planetVisible, 0, savedPlanetVisibility, 0, planetVisible.length);
-        }
-
-        if (planetIndex == -1) {
-            // Show all planets
-            Arrays.fill(planetVisible, true);
-        } else {
-            // Hide all except the specified planet
-            for (int i = 0; i < planetVisible.length; i++) {
-                planetVisible[i] = (i == planetIndex);
-            }
-        }
-    }
-
-    /**
-     * Restore planet visibility to saved state
-     */
-    private void restorePlanetVisibility() {
-        if (savedPlanetVisibility != null) {
-            System.arraycopy(savedPlanetVisibility, 0, planetVisible, 0, planetVisible.length);
-            savedPlanetVisibility = null;
-        }
-    }
-
-    /**
-     * Stage a geometrically real eclipse for moon {@code m} of planet {@code i}. Because
-     * the moon's orbit is inclined, an eclipse only happens when the moon is near a node at
-     * syzygy; this nudges the node ~a few degrees off the Sun's current longitude (a valid
-     * node orientation) and then finds the orbital phase where the moon lines up, so the
-     * umbra lands on the visible disc (solar) or the moon sits in the planet's shadow (lunar).
-     * Returns true if a configuration was found. Uses simulated positions as they are now.
-     */
-    private boolean stageEclipse(int i, int m, boolean solar) {
-        if (m >= MOON_A_M[i].length) return false;
-        // Sun direction from the planet, in the view frame (ecliptic is the screen plane).
-        double phiSun = Math.atan2(-planetY[i], -planetX[i]);
-        double sxw = -planetX[i], syw = -planetY[i];
-        double sl = Math.hypot(sxw, syw);
-        if (sl < 1e-9) return false;
-        double lx = sxw / sl, ly = -syw / sl, lz = 0.0;          // world -> view (y negated)
-        // Orient the node a few degrees off the Sun so the aligned moon sits slightly out of
-        // plane -> the umbra lands at a mid latitude (solar) / deep in the umbra (lunar).
-        if (i < MOON_NODE_DEG.length && m < MOON_NODE_DEG[i].length && MOON_INCL_DEG[i][m] != 0.0) {
-            double off = solar ? 8.0 : 3.0;
-            MOON_NODE_DEG[i][m] = Math.toDegrees(phiSun) - off;
-        }
-        double invR = 1.0 / RADIUS_M[i];
-        double sign = solar ? 1.0 : -1.0;                        // sunward vs anti-sunward
-        double saved = moonMean[i][m];
-        double best = -1e9, bestMean = saved;
-        for (int s = 0; s < 5760; s++) {
-            double ang = 2 * Math.PI * s / 5760.0;
-            moonMean[i][m] = ang;
-            double[] rel = moonRelPos(i, m);
-            double mx = rel[0] * invR, my = -rel[1] * invR, mz = rel[2] * invR;
-            double along = mx * lx + my * ly + mz * lz;          // + = sunward
-            if (sign * along <= 0) continue;                      // wrong side for this eclipse
-            double perp2 = mx * mx + my * my + mz * mz - along * along;
-            if (perp2 > 1.0) continue;                            // shadow axis misses the receiver
-            // Solar: prefer the umbra as face-on as possible (high |mz| = higher latitude, more
-            // circular). Lunar: prefer the moon deepest in the umbra (smallest miss distance).
-            double score = solar ? Math.abs(mz) : -perp2;
-            if (score > best) { best = score; bestMean = ang; }
-        }
-        moonMean[i][m] = bestMean;
-        return best > -1e8;
+        // The Sun's real offset from the Solar-System barycentre, from the integrated system.
+        sunBarycenterX = sunBaryWX;
+        sunBarycenterY = sunBaryWY;
     }
 
     /**
      * Stage and jump to a real Earth eclipse: pauses the sim, positions the Moon, and
      * frames Earth (solar) or the Moon (lunar). Live-app counterpart of the headless shots.
      */
+    /**
+     * Advance the sim clock to the next real Earth eclipse of the requested kind (the Moon is
+     * on its true ephemeris, so eclipses land on their actual calendar dates — no faking).
+     */
+    private void jumpToEclipse(boolean solar) {
+        double t = nextEarthEclipse(solar, simTimeSec, +1);
+        if (!Double.isNaN(t)) goToDate(java.time.LocalDateTime.ofInstant(
+                J2000_INSTANT.plusSeconds((long) t), java.time.ZoneOffset.UTC));
+    }
+
     void showEclipse(boolean solar) {
         simulationPaused = true;
+        jumpToEclipse(solar);
         updateTimeScaleLabel();
-        if (!stageEclipse(2, 0, solar)) return;
         autoZoomEnabled = false;
         cameraIsApproaching = moonCameraIsApproaching = false;
         int screen = Math.max(1, Math.min(getWidth(), getHeight()));
@@ -5110,25 +5308,74 @@ public class SolarSystemSimulation extends JPanel
             moonCamX = planetX[2] + sunBarycenterX + rel[0];
             moonCamY = planetY[2] + sunBarycenterY + rel[1];
             camX = moonCamX; camY = moonCamY;
-            currentZoom = (0.30 * screen) / (RADIUS_M[2] * MOON_SIZE_RATIO[2][0] * METERS_TO_PIXELS);
+            currentZoom = (0.30 * screen) / (MOON_RADIUS_M[2][0] * METERS_TO_PIXELS);
         }
         targetZoom = currentZoom;
         repaint();
     }
 
-    /**
-     * Returns camera to Sun overview
-     */
-    private void returnToSun() {
-        followingPlanet = followingMoon = false;
-        cameraFocusIndex = cameraFocusMoon = -1;
-        selectedPlanet = selectedMoon = -1;
-        cameraIsApproaching = moonCameraIsApproaching = false;
-        currentZoom = 1.0;
-        targetZoom = 1.0;
-        camX = 0;
-        camY = 0;
+    /** Sun's geocentric ecliptic-J2000 longitude (radians) at sim time {@code t}. */
+    private static double sunGeoLon(double t) {
+        double[] e = planetEclipticAU(EARTH_INDEX, t);        // Earth heliocentric ecliptic
+        return wrapAngle(Math.atan2(e[1], e[0]) + Math.PI);   // Sun is 180° opposite
     }
+
+    /** Signed Moon-Sun ecliptic longitude difference in [-π,π]; 0 at new moon, ±π at full. */
+    private static double syzygyPhase(double t, boolean solar) {
+        double d = MoonEphemeris.geocentric(t)[0] - sunGeoLon(t) - (solar ? 0.0 : Math.PI);
+        return wrapAngle(d);
+    }
+
+    /**
+     * Sim time (s from J2000) of the next real Earth eclipse of the requested kind, scanning
+     * from {@code fromSec} in direction {@code dir} (+1 forward). A solar eclipse is a new moon
+     * and a lunar eclipse a full moon occurring while the Moon is close enough to a node for
+     * its shadow cone to reach (|latitude| under the ecliptic-limit thresholds below). Returns
+     * {@code NaN} if none is found within a few years.
+     */
+    static double nextEarthEclipse(boolean solar, double fromSec, int dir) {
+        // A solar eclipse (somewhere on Earth) is possible for |β| up to ~1.58° at conjunction;
+        // any lunar eclipse (incl. penumbral) up to ~1.55° at opposition. Use limits just inside
+        // those so every real event is caught without spurious near-misses.
+        double latLimit = Math.toRadians(solar ? 1.50 : 1.45);
+        double step = 6.0 * 3600.0 * Math.signum(dir == 0 ? 1 : dir);
+        double t0 = fromSec + step;                 // start just off the current instant
+        double p0 = syzygyPhase(t0, solar);
+        long maxSteps = (long) Math.ceil((5.0 * 365.25 * DAY) / Math.abs(step));
+        for (long k = 1; k <= maxSteps; k++) {
+            double t1 = fromSec + (k + 1) * step;
+            double p1 = syzygyPhase(t1, solar);
+            // Syzygy = phase crosses zero; ignore the ±π wrap discontinuity.
+            boolean cross = (p0 <= 0 && p1 > 0) || (p0 >= 0 && p1 < 0);
+            if (cross && Math.abs(p1 - p0) < Math.PI) {
+                double tS = refineSyzygy(Math.min(t0, t1), Math.max(t0, t1), solar);
+                if (Math.abs(MoonEphemeris.geocentric(tS)[1]) < latLimit) return tS;
+            }
+            t0 = t1; p0 = p1;
+        }
+        return Double.NaN;
+    }
+
+    /** Bisection root of {@link #syzygyPhase} between two straddling times. */
+    private static double refineSyzygy(double ta, double tb, boolean solar) {
+        double pa = syzygyPhase(ta, solar);
+        for (int it = 0; it < 40; it++) {
+            double tm = 0.5 * (ta + tb);
+            double pm = syzygyPhase(tm, solar);
+            if (pa <= 0 && pm >= 0 || pa >= 0 && pm <= 0) { tb = tm; } else { ta = tm; pa = pm; }
+            if (tb - ta < 1.0) break;
+        }
+        return 0.5 * (ta + tb);
+    }
+
+    /** Wrap an angle (radians) to [-π, π]. */
+    private static double wrapAngle(double a) {
+        a %= 2 * Math.PI;
+        if (a > Math.PI) a -= 2 * Math.PI;
+        if (a < -Math.PI) a += 2 * Math.PI;
+        return a;
+    }
+
 
     /**
      * Custom checkbox menu item that doesn't close the menu
@@ -5219,13 +5466,14 @@ public class SolarSystemSimulation extends JPanel
         focusPlanetHeadless(2, W, H, 0.60);
         writeShot(dir + "/shot_earth_atmo.png", W, H);
 
-        // B) Solar eclipse: Moon's umbra falls on Earth's day side (circular shadow).
-        stageEclipse(2, 0, true);
+        // B) Solar eclipse: jump to the next real solar eclipse; Moon's umbra falls on Earth.
+        jumpToEclipse(true);
         focusPlanetHeadless(2, W, H, 0.85);
         writeShot(dir + "/shot_solar_eclipse.png", W, H);
 
-        // C) Lunar eclipse: Moon sits in Earth's shadow cone.
-        stageEclipse(2, 0, false);
+
+        // C) Lunar eclipse: jump to the next real lunar eclipse; Moon in Earth's shadow cone.
+        jumpToEclipse(false);
         focusMoonHeadless(2, 0, W, H, 0.45);
         writeShot(dir + "/shot_lunar_eclipse.png", W, H);
 
@@ -5239,10 +5487,10 @@ public class SolarSystemSimulation extends JPanel
 
         // F) Earth night side: spin so city-rich longitudes fall into shadow, to
         //    showcase the emissive night lights + clouds over the terminator.
-        simTimeSec = 9.0 * 3600.0;
+        goToSimTime(9.0 * 3600.0);
         focusPlanetHeadless(2, W, H, 0.70);
         writeShot(dir + "/shot_earth_night.png", W, H);
-        simTimeSec = 0.0;
+        goToSimTime(0.0);
 
         // G) Mars: shows off the GPU normal-map hook (real surface relief near the
         //    terminator). Only visibly different when the GPU path is on AND a
@@ -5264,52 +5512,31 @@ public class SolarSystemSimulation extends JPanel
         writeShot(dir + "/shot_tilt_pluto.png", W, H);
         setViewPitch(0.0);
         showLabels = false;
+
+        // J–N) Sky from Earth: the planetarium on real dates.
+        renderSkyShot(dir + "/shot_sky_eclipse_dallas.png", W, H, "Dallas, USA", 32.7767, -96.7970,
+                java.time.LocalDateTime.of(2024, 4, 8, 18, 41), "Sun", 2.0);            // total solar eclipse
+        renderSkyShot(dir + "/shot_sky_orion_greenwich.png", W, H, "Greenwich, UK", 51.4779, -0.0015,
+                java.time.LocalDateTime.of(2025, 1, 20, 21, 0), null, 110);             // winter evening, looking south
+        renderSkyShot(dir + "/shot_sky_jupiter_moons.png", W, H, "Greenwich, UK", 51.4779, -0.0015,
+                java.time.LocalDateTime.of(2025, 1, 20, 21, 0), "Jupiter", 0.18);       // Galilean moons
+        renderSkyShot(dir + "/shot_sky_moon.png", W, H, "Greenwich, UK", 51.4779, -0.0015,
+                java.time.LocalDateTime.of(2025, 3, 3, 19, 0), "Moon", 1.2);            // waxing crescent
+        renderSkyShot(dir + "/shot_sky_twilight.png", W, H, "Greenwich, UK", 51.4779, -0.0015,
+                java.time.LocalDateTime.of(2025, 3, 3, 18, 20), null, 120);             // just after sunset, looking west
+        skyViewActive = false;
     }
 
-    /**
-     * Headless: drive the whole curriculum and render every tour step and panel
-     * page to PNGs. Doubles as an end-to-end smoke test of the lesson system —
-     * every step lambda is actually executed. Enabled with -Dsss.lessonshot=&lt;dir&gt;.
-     */
-    private void renderLessonShots(String dir) {
-        final int W = 1600, H = 1000;
-        try { new File(dir).mkdirs(); } catch (Exception ignored) { }
-        setSize(W, H);
-        shadingEnabled = true; showAtmosphere = true; showRings = true; showLabels = false;
-        computeBarycenter();
-        lessonMode = true; guidedTourActive = true; tourMessageAlpha = 1.0; tourStepReady = true;
-        int n = 0;
-        for (Lesson L : curriculum()) {
-            currentLesson = L.number;
-            // Neutralise any state the previous lesson left behind.
-            restorePlanetVisibility();
-            showKeplersLaw = showPerihelionAphelion = showVelocityVectors = showVelocityComparison = false;
-            simulationPaused = false;
-            if (L.kind == LessonKind.TOUR) {
-                for (int s = 0; s < L.steps.size(); s++) {
-                    tourStep = s;
-                    tourMessage = L.steps.get(s).run(this);   // run the real step setup
-                    writeShot(String.format("%s/lesson_%02d_%s_step%02d.png",
-                            dir, L.number, slug(L.title), s), W, H);
-                    n++;
-                }
-                restorePlanetVisibility();
-            } else {
-                for (int pg = 0; pg < L.pages.size(); pg++) {
-                    tourStep = pg;
-                    writeShot(String.format("%s/lesson_%02d_%s_page%02d.png",
-                            dir, L.number, slug(L.title), pg), W, H);
-                    n++;
-                }
-            }
-        }
-        guidedTourActive = false; lessonMode = false;
-        System.out.println("  rendered " + n + " lesson shots");
-    }
-
-    /** Filesystem-safe lowercase slug for a lesson title. */
-    private static String slug(String s) {
-        return s.toLowerCase().replaceAll("[^a-z0-9]+", "_").replaceAll("^_|_$", "");
+    /** One planetarium frame: place, UTC instant, target to centre on (null = due south/west), field of view. */
+    private void renderSkyShot(String path, int w, int h, String place, double lat, double lon,
+                               java.time.LocalDateTime utc, String target, double fovDeg) {
+        goToDate(utc);
+        SkyView sv = skyView();
+        sv.setLocation(place, lat, lon, false);
+        sv.setFov(fovDeg);
+        if (target == null || !sv.lookAt(target)) sv.look(path.contains("twilight") ? 270 : 180, 28);
+        skyViewActive = true;
+        writeShot(path, w, h);
     }
 
     /** Centre on the Sun and zoom so a half-extent of {@code spanMeters} spans {@code frac} of the view. */
@@ -5326,6 +5553,7 @@ public class SolarSystemSimulation extends JPanel
         selectedPlanet = -1; selectedMoon = -1; showOnlySelected = false;
         camX = planetX[i] + sunBarycenterX;
         camY = planetY[i] + sunBarycenterY;
+        camZ = planetZ[i];                       // centre on the body's height above the ecliptic too
         double targetPr = frac * Math.min(w, h) / 2.0;
         currentZoom = targetPr / (RADIUS_M[i] * METERS_TO_PIXELS);
     }
@@ -5337,7 +5565,8 @@ public class SolarSystemSimulation extends JPanel
         double[] rel = moonRelPos(i, m);
         camX = planetX[i] + sunBarycenterX + rel[0];
         camY = planetY[i] + sunBarycenterY + rel[1];
-        double moonR = RADIUS_M[i] * MOON_SIZE_RATIO[i][m];
+        camZ = planetZ[i] + rel[2];
+        double moonR = MOON_RADIUS_M[i][m];
         double targetPr = frac * Math.min(w, h) / 2.0;
         currentZoom = targetPr / (moonR * METERS_TO_PIXELS);
     }
@@ -5368,7 +5597,20 @@ public class SolarSystemSimulation extends JPanel
         }
         String lessonDir = System.getProperty("sss.lessonshot");
         if (lessonDir != null) {
-            new SolarSystemSimulation().renderLessonShots(lessonDir);
+            try { FlatDarkLaf.setup(); } catch (Throwable ignored) { }   // match the real UI
+            SolarSystemSimulation sim = new SolarSystemSimulation();
+            sim.computeBarycenter();
+            JPanel root = new JPanel(new BorderLayout());
+            sim.lessonStudio = new LessonStudio(sim, sim.new LessonHost(), sim::onLessonActiveChanged);
+            root.add(sim, BorderLayout.CENTER);
+            root.add(sim.lessonStudio, BorderLayout.EAST);
+            JFrame f = new JFrame();
+            f.setUndecorated(true);
+            f.setContentPane(root);
+            f.setSize(1600, 960);
+            f.addNotify();                                     // realise (never shown) so layout is complete
+            sim.lessonStudio.renderShots(lessonDir, root, sim::advanceFrame);
+            f.dispose();
             System.out.println("Lesson shots complete: " + lessonDir);
             System.exit(0);
         }
@@ -5468,7 +5710,7 @@ public class SolarSystemSimulation extends JPanel
         JMenu objectsMenu = new JMenu("Objects");
         StayOpenCheckBoxMenuItem cometsItem = new StayOpenCheckBoxMenuItem("Comets  (with tails)", false);
         cometsItem.addActionListener(_ -> { panel.showComets = cometsItem.isSelected(); panel.repaint(); });
-        StayOpenCheckBoxMenuItem asteroidsItem = new StayOpenCheckBoxMenuItem("Asteroids & near-Earth objects", true);
+        StayOpenCheckBoxMenuItem asteroidsItem = new StayOpenCheckBoxMenuItem("Asteroids & near-Earth objects", false);
         asteroidsItem.addActionListener(_ -> { panel.showAsteroids = asteroidsItem.isSelected(); panel.repaint(); });
         StayOpenCheckBoxMenuItem distantItem = new StayOpenCheckBoxMenuItem("Distant objects (centaurs / TNOs)", false);
         distantItem.addActionListener(_ -> { panel.showDistantBodies = distantItem.isSelected(); panel.repaint(); });
@@ -5558,6 +5800,26 @@ public class SolarSystemSimulation extends JPanel
         viewMenu.addSeparator();
         viewMenu.add(selectedOnlyItem);
         viewMenu.add(baryItem);
+        viewMenu.addSeparator();
+        StayOpenCheckBoxMenuItem starsItem = new StayOpenCheckBoxMenuItem("Real star field (Yale Bright Star Catalogue)", true);
+        starsItem.addActionListener(_ -> {
+            panel.showRealStars = starsItem.isSelected();
+            panel.repaint();
+        });
+        StayOpenCheckBoxMenuItem constItem = new StayOpenCheckBoxMenuItem("Constellation lines", false);
+        constItem.addActionListener(_ -> {
+            panel.showConstellations = constItem.isSelected();
+            panel.repaint();
+        });
+        viewMenu.add(starsItem);
+        viewMenu.add(constItem);
+        viewMenu.addSeparator();
+        JMenuItem skyItem = new JMenuItem("Sky from Earth…  (K)");
+        skyItem.addActionListener(_ -> panel.enterSkyView());
+        JMenuItem locationItem = new JMenuItem("Observer location…");
+        locationItem.addActionListener(_ -> panel.skyView().showLocationDialog());
+        viewMenu.add(skyItem);
+        viewMenu.add(locationItem);
 
         // Add planet visibility submenu
         viewMenu.addSeparator();
@@ -5655,7 +5917,18 @@ public class SolarSystemSimulation extends JPanel
                         - M: Cycle selected planet (shows its stats)
                         - U: Toggle Sun info panel
                         - H: Hide/show all UI (menu, search, sidebar)
-                        - N: Next step in guided tour (when active)
+                        - K: Sky from Earth (planetarium) on / off
+
+                        Sky from Earth:
+                        - Drag: look around   - Wheel / + -: zoom
+                        - Click: select an object (rise / transit / set)
+                        - L: observer location   - T: jump to now
+                        - C: constellation lines   - N: names
+                        - G: alt-az grid   - Q: equatorial grid
+                        - E: ecliptic   - F: ground   - A: atmosphere
+                        - Esc / K: back to the solar system
+                        (In Earth Explorer, V looks up at the sky
+                        from the point under the map centre.)
 
                         Shortcuts work from anywhere in the window,
                         except while typing in the search box.
@@ -5670,10 +5943,15 @@ public class SolarSystemSimulation extends JPanel
         aboutItem.addActionListener(_ -> JOptionPane.showMessageDialog(
                 frame,
                 "Solar System Simulation\n" +
-                        "Interactive 2-D Keplerian model with moons and auto-zoom.",
+                        "Real-date 3-D model: planets, comets and asteroids integrated under mutual gravity\n" +
+                        "(symplectic Wisdom–Holman, JPL Horizons initial conditions); moons on fitted JPL theories.",
                 "About",
                 JOptionPane.INFORMATION_MESSAGE));
+        JMenuItem aiChatItem = new JMenuItem("Ask AI Assistant...");
+        aiChatItem.addActionListener(_ -> showAiChat(frame, panel));
         helpMenu.add(controlsItem);
+        helpMenu.addSeparator();
+        helpMenu.add(aiChatItem);
         helpMenu.addSeparator();
         helpMenu.add(aboutItem);
 
@@ -5681,104 +5959,23 @@ public class SolarSystemSimulation extends JPanel
         menuBar.add(objectsMenu);
         menuBar.add(viewMenu);
 
-        // Education menu for lessons
+        // Education menu: lessons (run inside this window), plus the orbit overlays for the live sim
+        panel.lessonStudio = new LessonStudio(panel, panel.new LessonHost(), panel::onLessonActiveChanged);
+        panel.lessonStudio.setVisible(false);
         JMenu educationMenu = new JMenu("Education");
-        StayOpenCheckBoxMenuItem lessonModeItem = new StayOpenCheckBoxMenuItem("Enable Lesson Mode", false);
-        lessonModeItem.addActionListener(_ -> {
-            panel.lessonMode = lessonModeItem.isSelected();
-            // Stop tour if lesson mode is disabled
-            if (!panel.lessonMode) {
-                panel.guidedTourActive = false;
-                panel.tourStep = 0;
-                panel.tourMessage = "";
-                panel.restorePlanetVisibility(); // Restore visibility
-            }
-            panel.repaint();
-        });
-        educationMenu.add(lessonModeItem);
-
-        // Guided Tour toggle button
-        JMenuItem guidedTourItem = new JMenuItem("Start Guided Tour");
-        guidedTourItem.addActionListener(_ -> {
-            if (!panel.lessonMode) {
-                JOptionPane.showMessageDialog(frame,
-                    "Please enable Lesson Mode first!",
-                    "Lesson Mode Required",
-                    JOptionPane.INFORMATION_MESSAGE);
-                return;
-            }
-
-            // Always check current state and toggle opposite
-            if (panel.guidedTourActive) {
-                // Currently active - STOP the tour
-                panel.guidedTourActive = false;
-                panel.tourStep = 0;
-                panel.tourMessage = "";
-                panel.tourMessageAlpha = 0.0;
-                panel.tourStepReady = false;
-                panel.restorePlanetVisibility(); // Restore visibility when stopping
-                guidedTourItem.setText("Start Guided Tour");
-            } else {
-                // Currently inactive - START the tour
-                panel.guidedTourActive = true;
-                panel.tourStep = 0;
-                panel.tourStepStartTime = 0;
-                panel.tourMessageAlpha = 0.0;
-                panel.tourMessage = "";
-                panel.tourStepReady = false;
-                panel.savedPlanetVisibility = null; // Reset saved state
-                guidedTourItem.setText("Stop Guided Tour");
-
-                // Show info about controls
-                JOptionPane.showMessageDialog(frame,
-                        """
-                                Guided Tour Started!
-                                
-                                Press 'N' to advance to the next step.
-                                The tour will automatically adjust zoom and visibility.""",
-                    "Guided Tour Controls",
-                    JOptionPane.INFORMATION_MESSAGE);
-            }
-            panel.repaint();
-        });
-        educationMenu.add(guidedTourItem);
-        educationMenu.addSeparator();
-
-        // Lesson selector — the full curriculum, grouped by tier
-        JMenu lessonMenu = new JMenu("Select Lesson");
-        ButtonGroup lessonGroup = new ButtonGroup();
-        String prevTier = null;
-        JMenu tierMenu = null;
-        for (Lesson lsn : panel.curriculum()) {
-            if (!lsn.tier.equals(prevTier)) {
-                tierMenu = new JMenu("Tier " + lsn.tier);
-                lessonMenu.add(tierMenu);
-                prevTier = lsn.tier;
-            }
-            final int lessonNum = lsn.number;
-            String label = lsn.number + ".  " + lsn.title
-                    + (lsn.kind == LessonKind.PANEL ? "   (reading)" : "");
-            JRadioButtonMenuItem lessonItem = new JRadioButtonMenuItem(label, lsn.number == 1);
-            lessonGroup.add(lessonItem);
-            lessonItem.addActionListener(_ -> {
-                panel.currentLesson = lessonNum;
-                // If a tour/panel is mid-run, restart it cleanly on the new lesson.
-                if (panel.guidedTourActive) {
-                    panel.tourStep = 0;
-                    panel.tourStepStartTime = 0;
-                    panel.tourMessageAlpha = 0.0;
-                    panel.tourMessage = "";
-                    panel.tourStepReady = false;
-                    panel.restorePlanetVisibility();
-                }
-                panel.repaint();
-            });
-            tierMenu.add(lessonItem);
+        JMenuItem studioItem = new JMenuItem("Lessons...");
+        studioItem.addActionListener(_ -> panel.lessonStudio.showPicker());
+        educationMenu.add(studioItem);
+        String[] lessonLabels = LessonStudio.menuLabels();
+        for (int li = 0; li < lessonLabels.length; li++) {
+            final int lessonIndex = li;
+            JMenuItem it = new JMenuItem("    " + lessonLabels[li]);
+            it.addActionListener(_ -> panel.lessonStudio.startLesson(lessonIndex));
+            educationMenu.add(it);
         }
-        educationMenu.add(lessonMenu);
         educationMenu.addSeparator();
 
-        // Lesson overlays — extra annotations, usable inside any lesson
+        // Orbit overlays — annotations on the live simulation
         JMenu overlaysMenu = new JMenu("Overlays");
         StayOpenCheckBoxMenuItem keplersLawItem = new StayOpenCheckBoxMenuItem("Kepler's 3rd Law (P²/a³)", false);
         keplersLawItem.addActionListener(_ -> {
@@ -5806,10 +6003,6 @@ public class SolarSystemSimulation extends JPanel
         overlaysMenu.add(velocityComparisonItem);
         educationMenu.add(overlaysMenu);
 
-        JMenuItem lessonGuideItem = new JMenuItem("Lesson Guide...");
-        lessonGuideItem.addActionListener(_ -> panel.showLessonGuide(frame));
-        educationMenu.addSeparator();
-        educationMenu.add(lessonGuideItem);
 
         menuBar.add(educationMenu);
         menuBar.add(helpMenu);
@@ -6089,15 +6282,46 @@ public class SolarSystemSimulation extends JPanel
         timeControlsPanel.add(presetGrid, timeGbc);
 
         panel.timeScaleLabel = new JLabel();
-        panel.updateTimeScaleLabel();
         timeGbc = new GridBagConstraints();
         timeGbc.gridx = 0; timeGbc.gridy = 2;
         timeGbc.gridwidth = 2;
         timeGbc.insets = new Insets(4, 0, 0, 0);
         timeGbc.anchor = GridBagConstraints.WEST;
         timeControlsPanel.add(panel.timeScaleLabel, timeGbc);
+
+        // Editable time-scale row: free-form number + unit dropdown, so the speed can be typed
+        // exactly (e.g. "2.5 day/s") instead of only nudged with the slider or presets.
+        JPanel scaleEditRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        scaleEditRow.setOpaque(false);
+        scaleEditRow.add(new JLabel("Set speed:"));
+        panel.timeScaleValueField = new JTextField(7);
+        panel.timeScaleUnitCombo = new JComboBox<>(TS_UNIT_NAMES);
+        panel.timeScaleUnitCombo.setSelectedIndex(bestTimeUnitIndex(panel.timeScale));
+        scaleEditRow.add(panel.timeScaleValueField);
+        scaleEditRow.add(panel.timeScaleUnitCombo);
+
+        // Commit the typed number on Enter or when focus leaves the field.
+        panel.timeScaleValueField.addActionListener(_ -> panel.applyTimeFieldInput());
+        panel.timeScaleValueField.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override public void focusLost(java.awt.event.FocusEvent e) { panel.applyTimeFieldInput(); }
+        });
+        // Changing the unit re-applies the typed number against the newly chosen unit.
+        panel.timeScaleUnitCombo.addActionListener(_ -> {
+            if (panel.suppressTimeFieldEvents) return;
+            panel.applyTimeFieldInput();
+        });
+
         timeGbc = new GridBagConstraints();
         timeGbc.gridx = 0; timeGbc.gridy = 3;
+        timeGbc.gridwidth = 2;
+        timeGbc.insets = new Insets(4, 0, 0, 0);
+        timeGbc.anchor = GridBagConstraints.WEST;
+        timeControlsPanel.add(scaleEditRow, timeGbc);
+
+        panel.updateTimeScaleLabel();   // now that the field + combo exist, populate them too
+
+        timeGbc = new GridBagConstraints();
+        timeGbc.gridx = 0; timeGbc.gridy = 4;
         timeGbc.gridwidth = 2;
         timeGbc.weighty = 1.0;
         timeControlsPanel.add(Box.createVerticalGlue(), timeGbc);
@@ -6112,6 +6336,7 @@ public class SolarSystemSimulation extends JPanel
 
         content.add(leftNav, BorderLayout.WEST);
         content.add(panel, BorderLayout.CENTER);
+        content.add(panel.lessonStudio, BorderLayout.EAST);
 
         frame.setContentPane(content);
 
@@ -6121,6 +6346,22 @@ public class SolarSystemSimulation extends JPanel
         frame.setTitle("Solar System Simulation");
         // Give the canvas keyboard focus so shortcuts work immediately.
         SwingUtilities.invokeLater(panel::requestFocusInWindow);
+        // -Dsss.lesson=N starts lesson N (1-based) at start-up; 0 = just open the lesson list.
+        String lessonProp = System.getProperty("sss.lesson");
+        if (lessonProp != null) {
+            try {
+                int n = Integer.parseInt(lessonProp.trim());
+                SwingUtilities.invokeLater(() -> {
+                    if (n > 0) panel.lessonStudio.startLesson(n - 1); else panel.lessonStudio.showPicker();
+                });
+                String snap = System.getProperty("sss.lessonsnap");      // debug: path[,step]
+                if (snap != null) {
+                    String[] sp = snap.split(",");
+                    LessonStudio.snapshotLater(panel.lessonStudio, content, sp[0],
+                            sp.length > 1 ? Integer.parseInt(sp[1].trim()) : 0, 2500);
+                }
+            } catch (NumberFormatException ignored) { }
+        }
      }
 
     // Simple search function: focus camera on a planet or moon by name
@@ -6228,25 +6469,10 @@ public class SolarSystemSimulation extends JPanel
     private void focusMoonImmediate(int planetIndex, int moonIndex) {
         if (planetIndex < 0 || planetIndex >= NAMES.length) return;
         if (moonIndex < 0 || moonIndex >= MOON_A_M[planetIndex].length) return;
-        double a = MOON_A_M[planetIndex][moonIndex];
-        double e = MOON_ECC[planetIndex][moonIndex];
-        double b = a * Math.sqrt(1 - e * e);
-        double M = moonMean[planetIndex][moonIndex];
-        double E = M;
-        for (int it = 0; it < 40; it++) {
-            double f = E - e * Math.sin(E) - M;
-            double fp = 1 - e * Math.cos(E);
-            E -= f / fp;
-            if (Math.abs(f) < 1e-12) break;
-        }
-        double mx = a * (Math.cos(E) - e);
-        double my = b * Math.sin(E);
-        double arg = MOON_ARG_PERI[planetIndex][moonIndex];
-        double rx = mx * Math.cos(arg) - my * Math.sin(arg);
-        double ry = mx * Math.sin(arg) + my * Math.cos(arg);
+        double[] rel = moonRelPos(planetIndex, moonIndex);   // lunar theory for Earth's Moon, satellite theory otherwise
         // Use barycentric coordinates
-        double targetX = planetX[planetIndex] + sunBarycenterX + rx;
-        double targetY = planetY[planetIndex] + sunBarycenterY + ry;
+        double targetX = planetX[planetIndex] + sunBarycenterX + rel[0];
+        double targetY = planetY[planetIndex] + sunBarycenterY + rel[1];
         moonCamX = targetX;
         moonCamY = targetY;
         camX = moonCamX;
@@ -6351,7 +6577,8 @@ public class SolarSystemSimulation extends JPanel
             // Planet position
             double worldX = planetX[i] + sunBarycenterX;
             double worldY = planetY[i] + sunBarycenterY;
-            double px = projX(worldX, worldY);
+            if (!inFront(worldX, worldY, planetZ[i])) continue;
+            double px = projX(worldX, worldY, planetZ[i]);
             double py = projY(worldX, worldY, planetZ[i]);
 
             // Calculate velocity direction (perpendicular to radius vector)
@@ -6372,7 +6599,7 @@ public class SolarSystemSimulation extends JPanel
             double vLengthWorld = speed * 0.00015 / METERS_TO_PIXELS;
             double tipWX = worldX + vx * vLengthWorld;
             double tipWY = worldY + vy * vLengthWorld;
-            double endX = projX(tipWX, tipWY);
+            double endX = projX(tipWX, tipWY, planetZ[i]);
             double endY = projY(tipWX, tipWY, planetZ[i]);
 
             // Dynamic arrow sizing based on UI size
@@ -6446,67 +6673,6 @@ public class SolarSystemSimulation extends JPanel
         }
     }
 
-    /**
-     * Display a lesson guide dialog for the current lesson.
-     */
-    private void showLessonGuide(Window owner) {
-        Lesson L = currentLessonObj();
-        StringBuilder sb = new StringBuilder();
-        sb.append("Lesson ").append(L.number).append(" of ").append(curriculum().size())
-          .append("     Tier ").append(L.tier).append("\n");
-        sb.append(L.title).append("\n");
-        sb.append("=".repeat(Math.min(60, Math.max(20, L.title.length())))).append("\n\n");
-        sb.append(L.subtitle).append("\n\n");
-
-        sb.append("Learning objectives:\n");
-        if (L.objectives != null)
-            for (String o : L.objectives) sb.append("   - ").append(o).append("\n");
-        sb.append("\n");
-
-        if (L.kind == LessonKind.TOUR) {
-            sb.append("Format:  interactive 3-D guided tour (")
-              .append(L.steps.size()).append(" steps)\n\n");
-            sb.append("How to run it:\n");
-            sb.append("   1. Education -> Enable Lesson Mode\n");
-            sb.append("   2. Education -> Start Guided Tour\n");
-            sb.append("   3. Press 'N' to advance through each step\n\n");
-            sb.append("The tour moves the camera, sets planet visibility and turns on\n");
-            sb.append("the relevant overlays for you. You can also toggle those yourself\n");
-            sb.append("under Education -> Overlays.\n");
-        } else {
-            sb.append("Format:  illustrated reading panel (")
-              .append(L.pages.size()).append(" pages)\n\n");
-            sb.append("These topics happen inside a star, not out in the solar-system\n");
-            sb.append("scene, so they are taught with diagrams drawn in the app.\n\n");
-            sb.append("How to run it:\n");
-            sb.append("   1. Education -> Enable Lesson Mode\n");
-            sb.append("   2. Education -> Start Guided Tour\n");
-            sb.append("   3. Press 'N' to turn each page\n\n");
-            sb.append("Pages in this lesson:\n");
-            for (int i = 0; i < L.pages.size(); i++)
-                sb.append("   ").append(i + 1).append(". ").append(L.pages.get(i).heading).append("\n");
-        }
-
-        sb.append("\nWhere this sits on the ladder (beginner -> AST 221):\n");
-        sb.append("   I Foundations -> II Orbital Mechanics ->\n");
-        sb.append("   III Planetary Science -> IV Stellar Astrophysics\n");
-
-        JTextArea textArea = new JTextArea(sb.toString());
-        textArea.setEditable(false);
-        textArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        textArea.setCaretPosition(0);
-
-        JScrollPane scrollPane = new JScrollPane(textArea);
-        scrollPane.setPreferredSize(new Dimension(660, 520));
-
-        JOptionPane.showMessageDialog(
-            owner,
-            scrollPane,
-            "Lesson " + L.number + " Guide  -  " + L.title,
-            JOptionPane.INFORMATION_MESSAGE
-        );
-    }
-
     private static final class TreeBody {
         final String type;
         final int planetIndex;
@@ -6536,6 +6702,582 @@ public class SolarSystemSimulation extends JPanel
                 setIcon(UIManager.getIcon("FileView.hardDriveIcon"));
             }
             return c;
+        }
+    }
+
+    // =====================================================================
+    //  AI Assistant
+    //
+    //  A chatbot for astronomy questions (and anything else). It uses
+    //  Google Gemini's free tier (https://aistudio.google.com/apikey),
+    //  which costs nothing — no billing account required — but does need a
+    //  free API key. The key is entered once in the chat window ("API
+    //  key..." button) and remembered in ~/.astronomy-suite/ai.properties.
+    //
+    //  Overrides (all optional):
+    //    -Dsss.ai.key=...    (or env GEMINI_API_KEY / SSS_AI_KEY)  the key
+    //    -Dsss.ai.model=...  (or env SSS_AI_MODEL)   default "gemini-2.5-flash"
+    //    -Dsss.ai.base=...   (or env SSS_AI_BASE)    Gemini REST base URL
+    // =====================================================================
+    static final class AiChat {
+        static final String KEY_HELP_URL = "https://aistudio.google.com/apikey";
+        private static final String BASE = prop("sss.ai.base", "SSS_AI_BASE",
+                "https://generativelanguage.googleapis.com/v1beta/models/");
+        private static final String MODEL = prop("sss.ai.model", "SSS_AI_MODEL",
+                "gemini-3.6-flash");
+        private static final Path CONFIG =
+                Path.of(System.getProperty("user.home", "."), ".astronomy-suite", "ai.properties");
+        /** Key set at runtime via the UI (overrides the config file, in memory). */
+        private static volatile String runtimeKey;
+
+        private static final String SYSTEM_PROMPT =
+                "You are the built-in AI assistant for \"Astronomy Suite\", an "
+              + "interactive solar-system simulator and astronomy learning app. "
+              + "You are a specialist in THIS app: answer questions about how to use "
+              + "it, what its features do, and the astronomy it teaches. Below you are "
+              + "given (1) a reference of the app's features and controls, and (2) a "
+              + "live snapshot of the simulation's current state. When the user asks "
+              + "about the current state (selected planet, date, speed, what they are "
+              + "looking at, etc.), answer from the LIVE SIMULATION STATE and be exact. "
+              + "When asked how to do something, cite the specific key or menu. Trust "
+              + "the reference and live state over any prior assumptions. If the live "
+              + "state does not contain something, say so rather than guessing. You may "
+              + "also answer general astronomy or other questions. Keep answers concise "
+              + "and use plain text (no markdown tables).";
+
+        /** Static, accurate reference for the app so the model can answer precisely. */
+        private static final String APP_FACTS =
+                "=== ASTRONOMY SUITE - FEATURE & CONTROL REFERENCE ===\n"
+              + "What it is: a Java Swing + OpenGL interactive model of the solar system "
+              + "with real orbits (a symplectic N-body integration of the planets, dwarf planets, comets and asteroids under mutual gravity from JPL Horizons initial conditions; moons from theories fitted to JPL satellite ephemerides), textured planets, moons, rings, eclipse "
+              + "shadows, real comets/minor bodies, a real-date planetarium, and a 3-D "
+              + "Lesson Studio of interactive astronomy lessons.\n"
+              + "SKY FROM EARTH (key K, or View > Sky from Earth...): a planetarium of the real sky from a chosen place "
+              + "on Earth (View > Observer location..., or V inside Earth Explorer) at the sim date/time: Yale Bright Star "
+              + "Catalogue stars, constellation lines and names, the Milky Way, the Sun, the Moon (phases, libration), planets "
+              + "and their moons, comets and asteroids, with light-time, aberration, precession/nutation, topocentric parallax "
+              + "and refraction; daylight/twilight sky colour; a solar eclipse darkens the sky and shows the corona. Click an "
+              + "object for magnitude, alt/az, RA/Dec, distance, size, phase and rise/transit/set times (UTC). Keys there: "
+              + "drag/arrows look, wheel/+/- zoom, L location, T now, C lines, N names, G alt-az grid, Q equatorial grid, "
+              + "E ecliptic, F ground, A atmosphere, Esc/K exit. The 3-D view's background is the same real star field "
+              + "(View > Real star field / Constellation lines).\n"
+              + "Bodies modeled (planets/dwarf planets, in order): Mercury, Venus, Earth, "
+              + "Mars, Jupiter, Saturn, Uranus, Neptune, Pluto, Ceres, Haumea, Eris. Many "
+              + "have real moons; Saturn has rings. Optional comets, asteroids/NEOs, and "
+              + "distant centaurs/TNOs can be shown.\n"
+              + "KEYBOARD CONTROLS:\n"
+              + "- Mouse wheel: zoom in/out.\n"
+              + "- Ctrl + mouse wheel: change time speed (doubles/halves it).\n"
+              + "- Click a planet: follow/unfollow it. Click a moon (while following a "
+              + "planet): follow/unfollow that moon.\n"
+              + "- Z: toggle auto-zoom. X: cycle zoom mode (Planet / Orbit / Manual).\n"
+              + "- O: toggle planet orbits. R: toggle Saturn rings. L: toggle labels.\n"
+              + "- B: show only the selected planet. S: toggle shading. A: atmospheric glow.\n"
+              + "- E: toggle eclipse shadows. C: Earth clouds. I: Earth night lights.\n"
+              + "- Space or P: pause/resume. M: cycle selected planet (shows its stats).\n"
+              + "- U: toggle Sun info panel. H: hide/show all UI.\n"
+              + "Shortcuts work anywhere except while typing in the search box.\n"
+              + "TIME: a slider and Ctrl+wheel set the time speed (seconds up to years per "
+              + "real second). Pausing freezes the clock but you can still move the camera "
+              + "and scrub dates.\n"
+              + "MENUS: Simulation, Objects (comets/asteroids/distant bodies/labels), View "
+              + "(orbits, rings, labels, shading, glow, eclipses, clouds, night lights, GPU "
+              + "shader, show-only-selected, barycentric Sun-wobble frame), Planets (toggle "
+              + "each), Belts & Lines (asteroid belt, Kuiper belt, frost lines), UI Size, "
+              + "Education, and Help.\n"
+              + "PLANETARIUM: jump the whole simulation to any real calendar date/time; the "
+              + "current simulated date is shown and used for all positions.\n"
+              + "LESSONS: Education > Lessons... opens a lesson list docked on the right of the main window; lessons run on the live simulation itself: each step shows only the bodies it needs (e.g. just Mercury for perihelion, only the Sun for flux), sets the clock and date, flies the camera there and draws its annotations (foci, perihelion/aphelion, equal-area wedges, Gaussian bubble, light packets, integration patches) into the scene; the object sidebar and search bar step aside, and leaving (Esc or the Lessons button) restores the simulation exactly as it was. Beginner: 'Orbits That Stretch' (eccentricity, perihelion, aphelion, Kepler's 2nd law). Intermediate: 'Luminosity, Flux & Intensity' (Gaussian bubble, inverse-square law, surface integral 4 pi r^2, specific intensity, F = integral of I cos(theta) dOmega). Arrow keys or N page through steps. Overlays (Education > Overlays) for the live sim: Kepler's 3rd law, perihelion/aphelion markers, velocity vectors, velocity labels.\n"
+              + "AI ASSISTANT: opened from Help > Ask AI Assistant (this chat). It uses the "
+              + "free Google Gemini tier; the API key is set via the 'API key...' button.\n";
+
+        private final HttpClient http = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(15)).build();
+        /** Conversation so far (role, content), excluding the system prompt. */
+        private final java.util.List<String[]> history = new ArrayList<>();
+        /** Supplies a fresh live-state snapshot for each request (may be null). */
+        private final java.util.function.Supplier<String> contextSupplier;
+
+        AiChat() { this(null); }
+        AiChat(java.util.function.Supplier<String> contextSupplier) {
+            this.contextSupplier = contextSupplier;
+        }
+
+        private static String prop(String sysKey, String envKey, String fallback) {
+            String v = System.getProperty(sysKey);
+            if (v == null || v.isBlank()) v = System.getenv(envKey);
+            return (v == null || v.isBlank()) ? fallback : v;
+        }
+
+        /** Current API key from (in order): -D/env, runtime UI value, config file. */
+        static String apiKey() {
+            String v = System.getProperty("sss.ai.key");
+            if (v == null || v.isBlank()) v = System.getenv("GEMINI_API_KEY");
+            if (v == null || v.isBlank()) v = System.getenv("SSS_AI_KEY");
+            if (v == null || v.isBlank()) v = runtimeKey;
+            if (v == null || v.isBlank()) v = loadKeyFromConfig();
+            return v == null ? "" : v.trim();
+        }
+
+        static boolean hasKey() { return !apiKey().isBlank(); }
+
+        private static String loadKeyFromConfig() {
+            try {
+                if (!Files.exists(CONFIG)) return null;
+                Properties p = new Properties();
+                try (var in = Files.newInputStream(CONFIG)) { p.load(in); }
+                return p.getProperty("gemini.key");
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        /** Persist the key (best effort) and use it for this session. */
+        static void saveKey(String key) {
+            runtimeKey = (key == null) ? "" : key.trim();
+            try {
+                Files.createDirectories(CONFIG.getParent());
+                Properties p = new Properties();
+                p.setProperty("gemini.key", runtimeKey);
+                try (var out = Files.newOutputStream(CONFIG)) {
+                    p.store(out, "Astronomy Suite AI assistant settings");
+                }
+            } catch (Exception ignored) {
+                // If we can't write the file, the key still works for this session.
+            }
+        }
+
+        /** Send a user message with the running history; return the reply text. */
+        String ask(String userMessage) throws Exception {
+            String key = apiKey();
+            if (key.isBlank()) {
+                throw new RuntimeException("No API key set. Click \"API key...\" to add "
+                        + "your free Google Gemini key.");
+            }
+            history.add(new String[]{"user", userMessage});
+            String url = BASE + URLEncoder.encode(MODEL, StandardCharsets.UTF_8)
+                    + ":generateContent?key=" + URLEncoder.encode(key, StandardCharsets.UTF_8);
+            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofSeconds(60))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(buildRequestJson(),
+                            StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp;
+            try {
+                resp = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            } catch (Exception e) {
+                history.remove(history.size() - 1); // roll back so a retry is clean
+                throw e;
+            }
+
+            String reply;
+            try {
+                reply = extractReply(resp.body());
+            } catch (RuntimeException parseError) {
+                history.remove(history.size() - 1);
+                if (resp.statusCode() / 100 != 2) {
+                    throw new RuntimeException("Gemini returned HTTP " + resp.statusCode()
+                            + ". " + parseError.getMessage());
+                }
+                throw parseError;
+            }
+            history.add(new String[]{"assistant", reply});
+            return reply;
+        }
+
+        void reset() { history.clear(); }
+
+        /** Gemini generateContent request body. */
+        private String buildRequestJson() {
+            StringBuilder sys = new StringBuilder(2048);
+            sys.append(SYSTEM_PROMPT).append("\n\n").append(APP_FACTS);
+            if (contextSupplier != null) {
+                String live = null;
+                try {
+                    live = contextSupplier.get();
+                } catch (Exception ignored) { }
+                if (live != null && !live.isBlank()) {
+                    sys.append("\n=== LIVE SIMULATION STATE (right now) ===\n").append(live);
+                }
+            }
+            StringBuilder sb = new StringBuilder(sys.length() + 256);
+            sb.append("{\"system_instruction\":{\"parts\":[{\"text\":\"")
+              .append(esc(sys.toString())).append("\"}]},")
+              .append("\"contents\":[");
+            boolean first = true;
+            for (String[] m : history) {
+                if (!first) sb.append(',');
+                first = false;
+                String role = "assistant".equals(m[0]) ? "model" : "user";
+                sb.append("{\"role\":\"").append(role).append("\",\"parts\":[{\"text\":\"")
+                  .append(esc(m[1])).append("\"}]}");
+            }
+            sb.append("]}");
+            return sb.toString();
+        }
+
+        /** Pull the assistant text out of a Gemini JSON response, or throw with the error. */
+        private static String extractReply(String body) {
+            Object root = Json.parse(body);
+            if (root instanceof Map<?, ?> m) {
+                Object err = m.get("error");
+                if (err instanceof Map<?, ?> em && em.get("message") != null) {
+                    throw new RuntimeException(String.valueOf(em.get("message")));
+                }
+                if (m.get("candidates") instanceof java.util.List<?> cands && !cands.isEmpty()
+                        && cands.get(0) instanceof Map<?, ?> c0) {
+                    if (c0.get("content") instanceof Map<?, ?> cm
+                            && cm.get("parts") instanceof java.util.List<?> parts) {
+                        StringBuilder text = new StringBuilder();
+                        for (Object part : parts) {
+                            if (part instanceof Map<?, ?> pm && pm.get("text") instanceof String t) {
+                                text.append(t);
+                            }
+                        }
+                        if (!text.isEmpty()) return text.toString().trim();
+                    }
+                    Object finish = c0.get("finishReason");
+                    if (finish != null && !"STOP".equals(finish)) {
+                        throw new RuntimeException("The response was stopped (" + finish
+                                + "). Try rephrasing your question.");
+                    }
+                }
+            }
+            throw new RuntimeException("Unexpected response: " + shorten(body));
+        }
+
+        private static String esc(String s) {
+            StringBuilder b = new StringBuilder(s.length() + 16);
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                switch (c) {
+                    case '"'  -> b.append("\\\"");
+                    case '\\' -> b.append("\\\\");
+                    case '\n' -> b.append("\\n");
+                    case '\r' -> b.append("\\r");
+                    case '\t' -> b.append("\\t");
+                    default   -> {
+                        if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
+                        else b.append(c);
+                    }
+                }
+            }
+            return b.toString();
+        }
+
+        private static String shorten(String s) {
+            if (s == null) return "";
+            s = s.strip();
+            return s.length() > 300 ? s.substring(0, 300) + "…" : s;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    //  Minimal, dependency-free JSON parser (enough for Gemini responses).
+    //  Returns Map<String,Object> / List<Object> / String / Double /
+    //  Boolean / null. Not a validator — assumes well-formed input.
+    // ---------------------------------------------------------------------
+    static final class Json {
+        private final String s;
+        private int i;
+        private Json(String s) { this.s = s; }
+
+        static Object parse(String s) {
+            if (s == null) throw new RuntimeException("empty response");
+            Json j = new Json(s);
+            j.ws();
+            return j.value();
+        }
+
+        private Object value() {
+            ws();
+            if (i >= s.length()) throw new RuntimeException("unexpected end of JSON");
+            char c = s.charAt(i);
+            return switch (c) {
+                case '{' -> object();
+                case '[' -> array();
+                case '"' -> string();
+                case 't', 'f' -> bool();
+                case 'n' -> nul();
+                default -> number();
+            };
+        }
+
+        private Map<String, Object> object() {
+            Map<String, Object> m = new LinkedHashMap<>();
+            i++; // {
+            ws();
+            if (peek() == '}') { i++; return m; }
+            while (true) {
+                ws();
+                String k = string();
+                ws();
+                i++; // :
+                m.put(k, value());
+                ws();
+                char c = s.charAt(i++);
+                if (c == '}') break;
+                // otherwise c == ','
+            }
+            return m;
+        }
+
+        private java.util.List<Object> array() {
+            java.util.List<Object> a = new ArrayList<>();
+            i++; // [
+            ws();
+            if (peek() == ']') { i++; return a; }
+            while (true) {
+                a.add(value());
+                ws();
+                char c = s.charAt(i++);
+                if (c == ']') break;
+                // otherwise c == ','
+            }
+            return a;
+        }
+
+        private String string() {
+            StringBuilder b = new StringBuilder();
+            i++; // opening quote
+            while (true) {
+                char c = s.charAt(i++);
+                if (c == '"') break;
+                if (c == '\\') {
+                    char e = s.charAt(i++);
+                    switch (e) {
+                        case '"' -> b.append('"');
+                        case '\\' -> b.append('\\');
+                        case '/' -> b.append('/');
+                        case 'n' -> b.append('\n');
+                        case 't' -> b.append('\t');
+                        case 'r' -> b.append('\r');
+                        case 'b' -> b.append('\b');
+                        case 'f' -> b.append('\f');
+                        case 'u' -> {
+                            b.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+                            i += 4;
+                        }
+                        default -> b.append(e);
+                    }
+                } else {
+                    b.append(c);
+                }
+            }
+            return b.toString();
+        }
+
+        private Object number() {
+            int start = i;
+            while (i < s.length() && "+-0123456789.eE".indexOf(s.charAt(i)) >= 0) i++;
+            return Double.parseDouble(s.substring(start, i));
+        }
+
+        private Object bool() {
+            if (s.charAt(i) == 't') { i += 4; return Boolean.TRUE; }
+            i += 5;
+            return Boolean.FALSE;
+        }
+
+        private Object nul() { i += 4; return null; }
+
+        private char peek() { return i < s.length() ? s.charAt(i) : '\0'; }
+
+        private void ws() {
+            while (i < s.length() && Character.isWhitespace(s.charAt(i))) i++;
+        }
+    }
+
+    /** Single reused chat window. */
+    private static JDialog aiChatDialog;
+
+    /** Open (or re-focus) the AI assistant chat window. */
+    static void showAiChat(JFrame parent, SolarSystemSimulation panel) {
+        if (aiChatDialog != null) {
+            aiChatDialog.setVisible(true);
+            aiChatDialog.toFront();
+            aiChatDialog.requestFocus();
+            return;
+        }
+
+        final JDialog dialog = new JDialog(parent, "AI Assistant", false);
+        aiChatDialog = dialog;
+        final AiChat bot = new AiChat(panel == null ? null : panel::aiContextSnapshot);
+
+        // ---- transcript ----
+        final JTextPane transcript = new JTextPane();
+        transcript.setEditable(false);
+        transcript.setMargin(new Insets(8, 10, 8, 10));
+        final StyledDocument doc = transcript.getStyledDocument();
+
+        final Style userStyle = doc.addStyle("user", null);
+        StyleConstants.setBold(userStyle, true);
+        StyleConstants.setForeground(userStyle, new Color(0x4F, 0xA3, 0xFF));
+        final Style aiStyle = doc.addStyle("ai", null);
+        StyleConstants.setBold(aiStyle, true);
+        StyleConstants.setForeground(aiStyle, new Color(0x67, 0xC9, 0x8B));
+        final Style bodyStyle = doc.addStyle("body", null);
+        final Style infoStyle = doc.addStyle("info", null);
+        StyleConstants.setItalic(infoStyle, true);
+        StyleConstants.setForeground(infoStyle, Color.GRAY);
+
+        JScrollPane scroll = new JScrollPane(transcript);
+        scroll.setPreferredSize(new Dimension(580, 440));
+
+        // ---- input row ----
+        final JTextField input = new JTextField();
+        final JButton send = new JButton("Send");
+        final JButton clear = new JButton("Clear");
+        final JButton keyBtn = new JButton("API key...");
+        JPanel buttons = new JPanel(new GridLayout(1, 3, 6, 0));
+        buttons.add(send);
+        buttons.add(clear);
+        buttons.add(keyBtn);
+        JPanel bottom = new JPanel(new BorderLayout(6, 0));
+        bottom.setBorder(BorderFactory.createEmptyBorder(6, 8, 8, 8));
+        bottom.add(new JLabel("Ask: "), BorderLayout.WEST);
+        bottom.add(input, BorderLayout.CENTER);
+        bottom.add(buttons, BorderLayout.EAST);
+
+        JPanel content = new JPanel(new BorderLayout());
+        content.add(scroll, BorderLayout.CENTER);
+        content.add(bottom, BorderLayout.SOUTH);
+
+        // ---- helpers (run on the EDT) ----
+        Runnable scrollToEnd = () -> transcript.setCaretPosition(doc.getLength());
+        java.util.function.BiConsumer<String, Style> append = (text, style) -> {
+            try {
+                doc.insertString(doc.getLength(), text, style);
+            } catch (BadLocationException ignored) { }
+        };
+
+        append.accept("AI Assistant\n", aiStyle);
+        append.accept("Ask me about this app, astronomy, or the solar system. I can "
+                + "see the live simulation — try \"what planet is selected?\", "
+                + "\"what date is it?\", \"how fast is time running?\", or \"how do I "
+                + "follow a moon?\".\n", infoStyle);
+        if (!AiChat.hasKey()) {
+            append.accept("First-time setup: this uses Google Gemini's free tier. "
+                    + "Click \"API key...\" to paste a free key (takes ~30 seconds).\n",
+                    infoStyle);
+        }
+        append.accept("\n", infoStyle);
+
+        // ---- API key prompt ----
+        keyBtn.addActionListener(_ -> promptForApiKey(dialog));
+
+        // ---- send logic ----
+        Runnable sendAction = () -> {
+            final String question = input.getText().trim();
+            if (question.isEmpty()) return;
+            if (!AiChat.hasKey()) {
+                append.accept("No API key set yet. Opening the key setup window...\n\n",
+                        infoStyle);
+                scrollToEnd.run();
+                promptForApiKey(dialog);
+                if (!AiChat.hasKey()) return;
+            }
+            input.setText("");
+            input.setEnabled(false);
+            send.setEnabled(false);
+
+            append.accept("You: ", userStyle);
+            append.accept(question + "\n", bodyStyle);
+            int thinkingAt = doc.getLength();
+            append.accept("AI is thinking…\n", infoStyle);
+            scrollToEnd.run();
+
+            final int thinkingStart = thinkingAt;
+            new SwingWorker<String, Void>() {
+                @Override protected String doInBackground() throws Exception {
+                    return bot.ask(question);
+                }
+                @Override protected void done() {
+                    // remove the "thinking" line
+                    try {
+                        doc.remove(thinkingStart, doc.getLength() - thinkingStart);
+                    } catch (BadLocationException ignored) { }
+                    try {
+                        String reply = get();
+                        append.accept("AI: ", aiStyle);
+                        append.accept(reply + "\n\n", bodyStyle);
+                    } catch (Exception ex) {
+                        Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                        String msg = cause.getMessage();
+                        append.accept("Error: " + (msg == null ? cause.toString() : msg)
+                                + "\n\n", infoStyle);
+                    }
+                    input.setEnabled(true);
+                    send.setEnabled(true);
+                    input.requestFocusInWindow();
+                    scrollToEnd.run();
+                }
+            }.execute();
+        };
+
+        send.addActionListener(_ -> sendAction.run());
+        input.addActionListener(_ -> sendAction.run());
+        clear.addActionListener(_ -> {
+            bot.reset();
+            try {
+                doc.remove(0, doc.getLength());
+            } catch (BadLocationException ignored) { }
+            append.accept("AI Assistant\n", aiStyle);
+            append.accept("Conversation cleared. Ask me anything.\n\n", infoStyle);
+            input.requestFocusInWindow();
+        });
+
+        dialog.setContentPane(content);
+        dialog.pack();
+        dialog.setLocationRelativeTo(parent);
+        dialog.setVisible(true);
+        input.requestFocusInWindow();
+    }
+
+    /** Ask the user for a free Gemini API key and remember it. */
+    private static void promptForApiKey(Component parent) {
+        JPanel p = new JPanel(new BorderLayout(0, 8));
+        JLabel info = new JLabel("<html><body style='width:340px'>"
+                + "The AI assistant uses <b>Google Gemini's free tier</b> "
+                + "(no cost, no billing account needed).<br><br>"
+                + "1. Click <b>Get a free key</b> below and sign in with a Google account.<br>"
+                + "2. Create an API key and copy it.<br>"
+                + "3. Paste it here.<br><br>"
+                + "The key is stored locally in your home folder and only sent to Google."
+                + "</body></html>");
+        JButton open = new JButton("Get a free key (opens browser)");
+        open.addActionListener(_ -> {
+            try {
+                if (Desktop.isDesktopSupported()
+                        && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                    Desktop.getDesktop().browse(URI.create(AiChat.KEY_HELP_URL));
+                } else {
+                    JOptionPane.showMessageDialog(parent,
+                            "Open this URL in your browser:\n" + AiChat.KEY_HELP_URL,
+                            "Get a free key", JOptionPane.INFORMATION_MESSAGE);
+                }
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(parent,
+                        "Open this URL in your browser:\n" + AiChat.KEY_HELP_URL,
+                        "Get a free key", JOptionPane.INFORMATION_MESSAGE);
+            }
+        });
+        JPanel field = new JPanel(new BorderLayout(6, 0));
+        JTextField keyField = new JTextField(AiChat.apiKey(), 28);
+        field.add(new JLabel("Key: "), BorderLayout.WEST);
+        field.add(keyField, BorderLayout.CENTER);
+
+        JPanel north = new JPanel(new BorderLayout(0, 8));
+        north.add(info, BorderLayout.NORTH);
+        north.add(open, BorderLayout.SOUTH);
+        p.add(north, BorderLayout.NORTH);
+        p.add(field, BorderLayout.SOUTH);
+
+        int result = JOptionPane.showConfirmDialog(parent, p, "AI Assistant - API key",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (result == JOptionPane.OK_OPTION) {
+            AiChat.saveKey(keyField.getText().trim());
         }
     }
 }
