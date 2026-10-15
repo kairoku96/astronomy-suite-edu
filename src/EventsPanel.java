@@ -18,6 +18,8 @@ final class EventsPanel extends JPanel {
         void jumpTo(double sim);
         /** Open the Sky-from-Earth view looking at the named object. */
         void showInSky(String target);
+        /** Show a solar eclipse's path and shadow on the Earth Explorer globe. */
+        void showOnGlobe(double sim);
     }
 
     private final Host host;
@@ -109,7 +111,21 @@ final class EventsPanel extends JPanel {
         });
         btn.add(jump);
         btn.add(sky);
-        bottom.add(btn, BorderLayout.SOUTH);
+        // Solar eclipses also get their path on the ground.
+        JButton globe = new JButton("Path of the shadow on the globe");
+        globe.setVisible(false);
+        globe.addActionListener(_ -> {
+            EventFinder.Found f = list.getSelectedValue();
+            if (f != null) host.showOnGlobe(f.sim());
+        });
+        list.addListSelectionListener(_ -> {
+            EventFinder.Found f = list.getSelectedValue();
+            globe.setVisible(f != null && f.title().equals("Solar eclipse"));
+        });
+        JPanel btns = new JPanel(new BorderLayout(0, 6));
+        btns.add(btn, BorderLayout.NORTH);
+        btns.add(globe, BorderLayout.SOUTH);
+        bottom.add(btns, BorderLayout.SOUTH);
         add(bottom, BorderLayout.SOUTH);
     }
 

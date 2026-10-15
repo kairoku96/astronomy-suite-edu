@@ -29,9 +29,13 @@ import java.util.TreeMap;
  * perihelion advance <em>and</em> the right mean motion; the simpler Nobili–Roxburgh potential
  * gets the advance but shifts the mean motion (it put Mercury ~100″ off Horizons by 2050).
  *
- * <p>Accuracy vs JPL Horizons, 1950–2100: Venus–Pluto ≲ 0.5″, Mars ≲ 0.25″, Mercury ≲ 15″
- * (the Wisdom–Holman step error, ∝ step²), comets/asteroids ~1″ (Bennu ~9″: its thermal
- * Yarkovsky drift isn't modelled).
+ * <p>States are read out through a <em>symplectic corrector</em> (Wisdom, Holman &amp; Toussaint
+ * 1996; see {@link #correct}), which removes the map's O(εh²) step error — Mercury's was 15″
+ * by 2100, ∝ step². Minor bodies feel the Earth and the Moon separately (it matters at
+ * Earth flybys) and, where measured, the Yarkovsky push.
+ *
+ * <p>Accuracy vs JPL Horizons, 1950–2100: Mercury–Pluto ≲ 0.03″ (Neptune 0.14″),
+ * Ceres/Eros/Bennu ≲ 0.25″, Halley 0.6″ (its outgassing isn't modelled).
  *
  * <h3>Between steps</h3>
  * States live on a fixed grid of {@link #STEP_DAYS}. A query between grid points k and k+1
@@ -110,6 +114,17 @@ final class NBodyEphemeris {
         { 6.195077806808445E+01,  6.387632758113101E+01, -1.858921559765201E+01, -2.267794159920438E-03,  9.021230448037089E-04,  1.246151421265307E-04},
     };
 
+    /**
+     * Transverse non-gravitational parameter A2 (AU/day²) per test particle, for the thermal
+     * Yarkovsky drift (see {@link #yarkovsky}). Bennu's is set from its measured semimajor-axis
+     * drift, da/dt = −284.6 ± 0.2 m/yr (Farnocchia et al. 2021, OSIRIS-REx tracking), through
+     * the orbit-averaged Gauss equation on its orbit (a = 1.126 AU, e = 0.204):
+     * A2 = −4.557×10⁻¹⁴, matching JPL's fitted −4.5…−4.6×10⁻¹⁴. Comets' outgassing forces are
+     * not modelled.
+     */
+    private static final double[] A2 = new double[TEST.length];
+    static { A2[java.util.Arrays.asList(TEST).indexOf("101955 Bennu")] = -4.557e-14; }
+
     static final int N_MASSIVE = MASSIVE.length;
     static final int N_BODIES = MASSIVE.length + TEST.length;
     /** GM of each body (AU³/day²); zero for test particles. */
@@ -121,8 +136,10 @@ final class NBodyEphemeris {
         GM_TOTAL = s;
     }
 
-    private static final NBodyEphemeris SHARED = new NBodyEphemeris();
-    static NBodyEphemeris shared() { return SHARED; }
+    // Holder idiom: built on first use, after every static of this class (the corrector's
+    // coefficients, the Moon cache) is initialised.
+    private static final class Shared { static final NBodyEphemeris INSTANCE = new NBodyEphemeris(); }
+    static NBodyEphemeris shared() { return Shared.INSTANCE; }
 
     /** Index of a body by name (planet names map to their system barycentre), or −1. */
     static int indexOf(String name) {
@@ -159,6 +176,9 @@ final class NBodyEphemeris {
                 cur[6 * i + 3 + c] = s[3 + c] + sunV[c];
             }
         }
+        // The map integrates "mapped" coordinates; start from the ones whose corrected image
+        // is the real J2000 state.
+        correct(cur, 0, true);
         curStep = 0;
         checkpoints.put(0L, cur.clone());
     }
@@ -212,8 +232,11 @@ final class NBodyEphemeris {
     private void loadPair(long k) {
         if (k == pairStep) return;
         double[] s = stateAt(k);
-        toHeliocentric(s, pairA);
+        double[] c = s.clone();
+        correct(c, k * STEP_DAYS, false);
+        toHeliocentric(c, pairA);
         step(s, k * STEP_DAYS, STEP_DAYS);  // s is our own copy, safe to advance
+        correct(s, (k + 1) * STEP_DAYS, false);
         toHeliocentric(s, pairB);
         pairStep = k;
     }
@@ -274,6 +297,64 @@ final class NBodyEphemeris {
         kick(s, 0.5 * h, t + h);
     }
 
+    // ------------------------------------------------------------------ symplectic corrector
+
+    /*
+     * The map above is the Strang splitting e^{hB/2} e^{hA} e^{hB/2} of the Kepler flow A and
+     * the perturbation B (interaction kick + Sun-momentum jump, ~ε ≈ planet/Sun mass ratio).
+     * To first order in ε its logarithm is hA + h·φ(h·ad_A)B with φ(x) = (x/2)coth(x/2)
+     * = 1 + x²/12 − x⁴/720 + …, so a step follows the true flow only to O(εh²): Mercury
+     * drifts ~15″ per century at h = ½ day (measured ∝ h²). Wisdom, Holman & Toussaint (1996):
+     * the error is removed by a near-identity change of variables C = e^{G},
+     * G = h·(φ(x) − 1)/x · B, because C·map·C⁻¹ is then the true flow to O(ε²). The series
+     * (φ(x) − 1)/x = x/12 − x³/720 + x⁵/30240 − x⁷/1209600 + … is odd, so it is built from
+     * pairs of conjugated kicks X(±αh, ±βh) = drift(a)·kick(b)·drift(−a), whose generator is
+     * b·e^{a·ad_A}B: a pair gives 2βh·sinh(αx)B. With α = 1…4 the four β below match the
+     * series through x⁷ (residual O(εh⁹)). The integration itself is untouched: the grid
+     * carries mapped coordinates, and C is applied only to read a state out.
+     */
+    private static final double[] CORR_A = {1, 2, 3, 4};
+    private static final double[] CORR_B = new double[CORR_A.length];
+    static {
+        double[] series = {1.0 / 12, -1.0 / 720, 1.0 / 30240, -1.0 / 1209600};
+        int n = CORR_A.length;
+        double[][] m = new double[n][n + 1];
+        for (int k = 0; k < n; k++) {
+            double fact = 1;
+            for (int f = 2; f <= 2 * k + 1; f++) fact *= f;
+            for (int i = 0; i < n; i++) m[k][i] = 2 * Math.pow(CORR_A[i], 2 * k + 1) / fact;
+            m[k][n] = series[k];
+        }
+        for (int p = 0; p < n; p++)                        // Gauss–Jordan (well conditioned)
+            for (int r = 0; r < n; r++) {
+                if (r == p) continue;
+                double f = m[r][p] / m[p][p];
+                for (int c = p; c <= n; c++) m[r][c] -= f * m[p][c];
+            }
+        for (int i = 0; i < n; i++) CORR_B[i] = m[i][n] / m[i][i];
+    }
+
+    /**
+     * Apply the corrector C (mapped → real coordinates), or its inverse, to the canonical
+     * state {@code s} at TDB day {@code t}, in place.
+     */
+    static void correct(double[] s, double t, boolean inverse) {
+        double h = STEP_DAYS;
+        int n = CORR_A.length;
+        // C = Π X(α_i, β_i)·X(−α_i, −β_i); C⁻¹ runs the factors in reverse with β negated.
+        for (int q = 0; q < 2 * n; q++) {
+            int idx = inverse ? 2 * n - 1 - q : q;
+            int i = idx / 2;
+            double sign = (idx % 2 == 0) ? 1 : -1;
+            double a = sign * CORR_A[i] * h, b = sign * CORR_B[i] * h * (inverse ? 1 : -1);
+            for (int j = 0; j < N_BODIES; j++) drift(GM_SUN, s, 6 * j, a);
+            jump(s, 0.5 * b);
+            kick(s, b, t);
+            jump(s, 0.5 * b);
+            for (int j = 0; j < N_BODIES; j++) drift(GM_SUN, s, 6 * j, -a);
+        }
+    }
+
     /** Index of the Earth–Moon barycentre among the massive bodies. */
     private static final int EMB = 2;
     /** GM(Moon) / GM(Earth + Moon), DE440. */
@@ -298,6 +379,13 @@ final class NBodyEphemeris {
             for (int j = 0; j < N_MASSIVE; j++) {
                 if (j == i) continue;
                 int oj = 6 * j;
+                if (j == EMB && i >= N_MASSIVE) {
+                    // A minor body passing the Earth feels the Earth and the Moon separately
+                    // (Bennu's 2005 and 2011 flybys pass within ~15 lunar distances).
+                    earthMoonPull(s[oj] - xi, s[oj + 1] - yi, s[oj + 2] - zi, t, g);
+                    ax += g[0]; ay += g[1]; az += g[2];
+                    continue;
+                }
                 double dx = s[oj] - xi, dy = s[oj + 1] - yi, dz = s[oj + 2] - zi;
                 double r2 = dx * dx + dy * dy + dz * dz;
                 double f = GM[j] / (r2 * Math.sqrt(r2));
@@ -314,6 +402,12 @@ final class NBodyEphemeris {
             ax += g[0]; ay += g[1]; az += g[2];
             if (i == EMB) {
                 emBTide(xi, yi, zi, t, g);
+                ax += g[0]; ay += g[1]; az += g[2];
+            }
+            if (i >= N_MASSIVE && A2[i - N_MASSIVE] != 0) {
+                // Yarkovsky: along the transverse direction ĥ × r̂ of the mid-kick velocity.
+                double mx = vx + 0.5 * h * ax, my = vy + 0.5 * h * ay, mz = vz + 0.5 * h * az;
+                yarkovsky(A2[i - N_MASSIVE], xi, yi, zi, mx, my, mz, g);
                 ax += g[0]; ay += g[1]; az += g[2];
             }
             s[oi + 3] += h * ax; s[oi + 4] += h * ay; s[oi + 5] += h * az;
@@ -340,13 +434,31 @@ final class NBodyEphemeris {
         out[2] = -GM_SUN * (ke * ez + km * mz - kb * z);
     }
 
+    /**
+     * Pull of the Earth and the Moon, as two point masses, on a body whose offset to the
+     * Earth–Moon barycentre is (dx, dy, dz), at TDB day {@code t}.
+     */
+    private static void earthMoonPull(double dx, double dy, double dz, double t, double[] out) {
+        double[] r = moonVector(t);
+        double fM = MOON_FRACTION, fE = 1 - fM;
+        double ex = dx - fM * r[0], ey = dy - fM * r[1], ez = dz - fM * r[2];   // to Earth
+        double mx = dx + fE * r[0], my = dy + fE * r[1], mz = dz + fE * r[2];   // to Moon
+        double re2 = ex * ex + ey * ey + ez * ez, rm2 = mx * mx + my * my + mz * mz;
+        double ke = fE * GM[EMB] / (re2 * Math.sqrt(re2)), km = fM * GM[EMB] / (rm2 * Math.sqrt(rm2));
+        out[0] = ke * ex + km * mx; out[1] = ke * ey + km * my; out[2] = ke * ez + km * mz;
+    }
+
     // One-entry cache: a step's closing kick and the next step's opening kick share a time.
     private static double moonT = Double.NaN;
     private static double[] moonR;
 
-    /** Geocentric Moon (AU, ecliptic J2000) at TDB day {@code t}. */
+    /**
+     * Geocentric Moon (AU, ecliptic J2000) at TDB day {@code t}. The tide and the Earth–Moon
+     * split are ~10⁻⁷ effects, so the lunar series is cut at 0.1″-amplitude terms (≈ 2″, a few
+     * km at the Moon; 4 µs instead of the full theory's 0.3 ms per integration step).
+     */
     private static synchronized double[] moonVector(double t) {
-        if (t != moonT) { moonR = MoonEphemeris.geocentricEclipticAUatTT(t * 86400.0); moonT = t; }
+        if (t != moonT) { moonR = MoonEphemeris.geocentricEclipticAUatTT(t * 86400.0, 0.1); moonT = t; }
         return moonR;
     }
 
@@ -361,6 +473,19 @@ final class NBodyEphemeris {
         double a = 4 * GM_SUN / r - (vx * vx + vy * vy + vz * vz);
         double b = 4 * (x * vx + y * vy + z * vz);
         out[0] = k * (a * x + b * vx); out[1] = k * (a * y + b * vy); out[2] = k * (a * z + b * vz);
+    }
+
+    /**
+     * Marsden-style transverse non-gravitational acceleration A2·(1 AU/r)² along ĥ × r̂ (the
+     * in-plane direction perpendicular to the Sun line, prograde for A2 &gt; 0) — the form
+     * JPL fits for the Yarkovsky effect.
+     */
+    private static void yarkovsky(double a2, double x, double y, double z, double vx, double vy, double vz, double[] out) {
+        double hx = y * vz - z * vy, hy = z * vx - x * vz, hz = x * vy - y * vx;
+        double tx = hy * z - hz * y, ty = hz * x - hx * z, tz = hx * y - hy * x;   // h × r
+        double r2 = x * x + y * y + z * z;
+        double k = a2 / (r2 * Math.sqrt(tx * tx + ty * ty + tz * tz));
+        out[0] = k * tx; out[1] = k * ty; out[2] = k * tz;
     }
 
     /** Sun-momentum "jump": every position shifts by h·P/M☉. */

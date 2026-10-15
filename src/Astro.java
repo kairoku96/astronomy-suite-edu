@@ -3,8 +3,9 @@
  *
  * <p>The sim clock ({@code simTimeSec}) counts seconds of <b>UTC</b> since the J2000.0
  * instant (2000-01-01 12:00). Dynamics (the N-body integrator, the satellite theory, the
- * lunar theory) run on <b>TT/TDB</b>, so they take {@link #ttSeconds(double)}. Earth
- * rotation (sidereal time) runs on UT. The frames are:
+ * lunar theory) run on <b>TT/TDB</b>, so they take {@link #ttSeconds(double)} (exact from
+ * leap seconds since 1972). Earth rotation (sidereal time) runs on UT, taken as UTC (they
+ * differ by under 0.9 s). The frames are:
  * <ul>
  *   <li>ecliptic J2000 (x → vernal equinox, z → ecliptic north) — the frame every ephemeris
  *       here reports, and that JPL Horizons uses for its ecliptic vectors;</li>
@@ -69,9 +70,53 @@ final class Astro {
         return -20 + 32 * u * u;
     }
 
+    /*
+     * UTC → TT. Since 1972 this is exact: TT − UTC = 32.184 s + TAI − UTC, the accumulated leap
+     * seconds (IERS Bulletin C). Before 1972 UTC did not tick in SI seconds; the clock is read
+     * as UT and the ΔT polynomials above apply (they meet the table within 0.07 s). After the
+     * last instant the table is known to hold, ΔT follows the polynomials' predicted rise from
+     * there on, joined continuously, rather than the polynomial's own value: it was fitted in
+     * 2006 and now overshoots by ~5 s, which moves the Moon ~5 km and an eclipse shadow with it.
+     */
+    private static final double TT_TAI = 32.184;
+    /** UTC dates from which TAI − UTC took the next whole second: 10 s on 1972-01-01, …, 37 s on 2017-01-01. */
+    private static final int[][] LEAP_DATES = {
+        {1972, 1}, {1972, 7}, {1973, 1}, {1974, 1}, {1975, 1}, {1976, 1}, {1977, 1}, {1978, 1},
+        {1979, 1}, {1980, 1}, {1981, 7}, {1982, 7}, {1983, 7}, {1985, 7}, {1988, 1}, {1990, 1},
+        {1991, 1}, {1992, 7}, {1993, 7}, {1994, 7}, {1996, 1}, {1997, 7}, {1999, 1}, {2006, 1},
+        {2009, 1}, {2012, 7}, {2015, 7}, {2017, 1} };
+    /** Sim seconds (UTC since J2000) of each leap date. */
+    private static final double[] LEAP_AT = new double[LEAP_DATES.length];
+    /** No leap second announced through this date (IERS Bulletin C 72); extrapolate after. */
+    private static final double KNOWN_UNTIL_YEAR = 2027.0;
+    static {
+        double j2000 = java.time.LocalDateTime.of(2000, 1, 1, 12, 0).toEpochSecond(java.time.ZoneOffset.UTC);
+        for (int i = 0; i < LEAP_DATES.length; i++)
+            LEAP_AT[i] = java.time.LocalDate.of(LEAP_DATES[i][0], LEAP_DATES[i][1], 1)
+                    .atStartOfDay().toEpochSecond(java.time.ZoneOffset.UTC) - j2000;
+    }
+
+    /** TT − UTC (seconds) at a UTC sim time: leap seconds since 1972, ΔT outside the table. */
+    static double ttMinusUtc(double simTimeSec) {
+        if (simTimeSec < LEAP_AT[0]) return deltaTSeconds(decimalYear(simTimeSec));
+        double y = decimalYear(simTimeSec);
+        if (y > KNOWN_UNTIL_YEAR)
+            return TT_TAI + 9 + LEAP_AT.length + deltaTSeconds(y) - deltaTSeconds(KNOWN_UNTIL_YEAR);
+        int n = 0;
+        while (n < LEAP_AT.length && simTimeSec >= LEAP_AT[n]) n++;
+        return TT_TAI + 9 + n;                          // TAI − UTC = 10 s from 1972-01-01
+    }
+
     /** TT (≈ TDB, to 2 ms) seconds since J2000.0 for a UTC sim time. */
     static double ttSeconds(double simTimeSec) {
-        return simTimeSec + deltaTSeconds(decimalYear(simTimeSec));
+        return simTimeSec + ttMinusUtc(simTimeSec);
+    }
+
+    /** UTC sim seconds for a TT (or TDB) instant: the inverse of {@link #ttSeconds}. */
+    static double utcSeconds(double ttSec) {
+        double u = ttSec - ttMinusUtc(ttSec);
+        for (int i = 0; i < 3; i++) u = ttSec - ttMinusUtc(u);
+        return u;
     }
 
     // ------------------------------------------------------------------ frames

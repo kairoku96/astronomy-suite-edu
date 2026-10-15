@@ -57,6 +57,11 @@ final class AppWindow {
         });
         JMenuItem solarEclipseItem = new JMenuItem("Show solar eclipse (Earth)");
         solarEclipseItem.addActionListener(_ -> panel.showEclipse(true));
+        JMenuItem eclipsePathItem = new JMenuItem("Next solar eclipse on the globe");
+        eclipsePathItem.addActionListener(_ -> {
+            double t = SolarSystemSimulation.nextEarthEclipse(true, panel.simTimeSec, +1);
+            if (!Double.isNaN(t)) panel.showSolarEclipseOnGlobe(t);
+        });
         JMenuItem lunarEclipseItem = new JMenuItem("Show lunar eclipse (Earth)");
         lunarEclipseItem.addActionListener(_ -> panel.showEclipse(false));
         // Real-date scrubbing (planetarium): jump the whole system to a calendar date.
@@ -80,6 +85,7 @@ final class AppWindow {
         simMenu.add(epochItem);
         simMenu.addSeparator();
         simMenu.add(solarEclipseItem);
+        simMenu.add(eclipsePathItem);
         simMenu.add(lunarEclipseItem);
         JMenuItem eventsItem = new JMenuItem("Next events (conjunctions, transits, occultations…)…");
         eventsItem.addActionListener(_ -> { panel.showDockPanel(panel.eventsPanel); panel.eventsPanel.search(); });
@@ -770,6 +776,7 @@ final class AppWindow {
                 panel.enterSkyView();
                 if (target != null && !target.equals("Earth")) panel.skyView().lookAt(target);
             }
+            public void showOnGlobe(double sim) { panel.showSolarEclipseOnGlobe(sim); }
         }, () -> panel.showDockPanel(null));
         panel.transferPlanner.setVisible(false);
         panel.eventsPanel.setVisible(false);

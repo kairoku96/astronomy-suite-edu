@@ -29,6 +29,19 @@ class IntegratorTest {
         for (int i = 0; i < s.length; i++) assertEquals(s0[i], s[i], 1e-9, "component " + i);
     }
 
+    @Test
+    void correctorInvertsExactly() {
+        // The read-out corrector and its inverse (used once, on the J2000 seed) must undo
+        // each other, or the integration would start from the wrong mapped state.
+        double[] s = initial(), s0 = s.clone();
+        NBodyEphemeris.correct(s, 0, true);
+        double moved = 0;
+        for (int i = 0; i < s.length; i++) moved = Math.max(moved, Math.abs(s[i] - s0[i]));
+        assertTrue(moved > 1e-12, "corrector did nothing");
+        NBodyEphemeris.correct(s, 0, false);
+        for (int i = 0; i < s.length; i++) assertEquals(s0[i], s[i], 1e-13, "component " + i);
+    }
+
     /** Newtonian energy of the massive bodies (heliocentric states → barycentric). */
     private static double energy(double[] h) {
         int n = NBodyEphemeris.N_MASSIVE;

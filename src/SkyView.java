@@ -21,7 +21,7 @@ import javax.swing.*;
  * <p>Every position goes through the full reduction an observatory would use:
  * <ol>
  *   <li>geometric positions — planets, dwarf planets, comets and asteroids from the N-body
- *       integration, the Moon from ELP-2000/82, planetary moons from their fitted theories,
+ *       integration, the Moon from ELP/MPP02, planetary moons from their fitted theories,
  *       stars from the Yale Bright Star Catalogue with proper motion;</li>
  *   <li>light-time (we see Jupiter where it was ~40 minutes ago) and annual aberration
  *       (Earth's 30 km/s orbital velocity tilts incoming light by up to 20″);</li>
@@ -141,7 +141,7 @@ final class SkyView {
         sun.dir = aberrate(gs);
         sun.mag = -26.74 + 5 * Math.log10(sun.distAU);
         objs.add(sun);
-        // The Moon (geocentric ELP-2000/82 → topocentric).
+        // The Moon (geocentric ELP/MPP02 → topocentric).
         double[] mg = MoonEphemeris.geocentricEclipticAU(t);
         Obj moon = new Obj();
         moon.name = "Moon"; moon.kind = "Moon"; moon.radiusKm = 1737.4; moon.rgb = 0xD8D4CC;

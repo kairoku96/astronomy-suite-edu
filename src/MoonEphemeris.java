@@ -1,144 +1,211 @@
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.zip.GZIPInputStream;
+
 /**
- * Geocentric lunar position from the ELP-2000/82 theory, truncated to the terms in
- * Meeus, <i>Astronomical Algorithms</i> (2nd ed.) chapter 47. It carries the real periodic
- * inequalities (equation of the centre, evection, variation, annual equation, …) plus the
- * correctly regressing node and precessing perigee that live in the mean arguments, so
- * new/full moons and node crossings — and therefore eclipse dates and geometry — line up
- * with the real sky. Accuracy is ~10&Prime; in longitude and ~4&Prime; in latitude over
- * 2000&ndash;2050, i.e. Moon positions good to well under an arc-minute and eclipse instants
- * good to a minute or two.
+ * Geocentric lunar position from the full <b>ELP/MPP02</b> theory (J. Chapront &amp;
+ * G. Francou, A&amp;A 404, 735, 2003): the ELP-2000/82 lunar theory with the planetary
+ * perturbations recomputed from the MPP02 solution and its constants fitted to lunar laser
+ * ranging. All 35 901 terms are read from {@code assets/moon/elpmpp02.bin.gz} (written by
+ * {@code tools.FetchElpMpp02}). Each is A·t^k·sin(φ₀ + φ₁t + … + φ₄t⁴), t in Julian
+ * centuries of TDB since J2000; the main problem gives longitude and latitude (″) and
+ * distance (km) on the mean ecliptic and equinox of date, and Laskar's P, Q polynomials
+ * rotate the result to the <b>mean ecliptic and equinox of J2000</b>, the frame of the
+ * N-body planetary ephemeris ({@link NBodyEphemeris}). Against JPL Horizons this is a
+ * fraction of an arcsecond over 1950–2100 ({@code MoonEphemerisTest}); the truncated
+ * Meeus series it replaces was 10–22″ off, which put solar-eclipse paths 20–40 km off.
  *
- * <p>Coordinates are returned in the sim's frame: geocentric ecliptic, referred to the
- * <b>mean equinox of J2000.0</b> (the accumulated general precession in longitude is
- * removed) — the frame of the N-body planetary ephemeris ({@link NBodyEphemeris}), so
- * Sun&ndash;Moon syzygy comparisons are self-consistent. {@link #bodyToEcliptic} adds the
- * Moon's IAU orientation (pole, prime meridian and librations).
+ * <p>Full evaluation is ~36 000 sines (~0.3 ms). The everyday API interpolates the full theory
+ * from Chebyshev series over cached 8-day segments (within 0.3 m of it, at nanoseconds a
+ * call); {@link #geocentricEclipticAUatTT(double, double)} evaluates directly
+ * with an amplitude cut-off, for a caller that needs the Moon at many scattered instants and
+ * less precisely (the N-body integrator's Earth–Moon tide); terms are stored by increasing
+ * amplitude, so a cut just skips the tail.
+ *
+ * <p>{@link #bodyToEcliptic} adds the Moon's IAU orientation (pole, prime meridian and
+ * librations).
  */
 final class MoonEphemeris {
     private MoonEphemeris() {}
 
     private static final double DEG = Math.PI / 180.0;
+    private static final double ARCSEC = Math.PI / 648000.0;
+    private static final double AU_KM = 149_597_870.7;
 
-    /** Table 47.A — periodic terms for longitude (Σl) and distance (Σr). Columns: D, M, M', F, Σl(1e-6°), Σr(1e-3 km). */
-    private static final int[][] TA = {
-        {0, 0, 1, 0,  6288774, -20905355}, {2, 0,-1, 0,  1274027, -3699111},
-        {2, 0, 0, 0,   658314, -2955968},  {0, 0, 2, 0,   213618,  -569925},
-        {0, 1, 0, 0,  -185116,    48888},  {0, 0, 0, 2,  -114332,    -3149},
-        {2, 0,-2, 0,    58793,   246158},  {2,-1,-1, 0,    57066,  -152138},
-        {2, 0, 1, 0,    53322,  -170733},  {2,-1, 0, 0,    45758,  -204586},
-        {0, 1,-1, 0,   -40923,  -129620},  {1, 0, 0, 0,   -34720,   108743},
-        {0, 1, 1, 0,   -30383,   104755},  {2, 0, 0,-2,    15327,    10321},
-        {0, 0, 1, 2,   -12528,        0},  {0, 0, 1,-2,    10980,    79661},
-        {4, 0,-1, 0,    10675,   -34782},  {0, 0, 3, 0,    10034,   -23210},
-        {4, 0,-2, 0,     8548,   -21636},  {2, 1,-1, 0,    -7888,    24208},
-        {2, 1, 0, 0,    -6766,    30824},  {1, 0,-1, 0,    -5163,    -8379},
-        {2,-1, 1, 0,     4987,   -16675},  {2, 0, 2, 0,     4036,   -12831},
-        {2, 0, 0, 2,     3994,   -10445},  {4, 0, 0, 0,     3861,   -11650},
-        {2, 0,-3, 0,     3665,    14403},  {0, 1,-2, 0,    -2689,    -7003},
-        {2, 0,-1, 2,    -2602,        0},  {2,-1,-2, 0,     2390,    10056},
-        {1, 0, 1, 0,    -2348,     6322},  {2,-2, 0, 0,     2236,    -9884},
-        {0, 1, 2, 0,    -2120,     5751},  {0, 2, 0, 0,    -2069,        0},
-        {2,-2,-1, 0,     2048,    -4950},  {2, 0, 1,-2,    -1773,     4130},
-        {2, 0, 0,-4,    -1595,        0},  {4,-1,-1, 0,     1215,    -3958},
-        {0, 0, 2, 2,    -1110,        0},  {3, 0,-1, 0,     -892,     3258},
-        {2, 1, 1, 0,     -810,     2616},  {4,-1,-2, 0,      759,    -1897},
-        {0, 2,-1, 0,     -713,    -2117},  {2, 2,-1, 0,     -700,     2354},
-        {2, 1,-2, 0,      691,        0},  {2,-1, 0,-2,      596,        0},
-        {4, 0, 1, 0,      549,    -1423},  {0, 0, 4, 0,      537,    -1117},
-        {4,-1, 0, 0,      520,    -1571},  {1, 0,-2, 0,     -487,    -1739},
-        {2, 1, 0,-2,     -399,        0},  {0, 0, 2,-2,     -381,    -4421},
-        {1, 1, 0, 0,      351,        0},  {3, 0,-2, 0,     -340,        0},
-        {4, 0,-3, 0,      330,        0},  {2,-1, 2, 0,      327,        0},
-        {0, 2, 1, 0,     -323,     1165},  {1, 1,-1, 0,      299,        0},
-        {2, 0, 3, 0,      294,        0},  {2, 0,-1,-2,        0,     8752},
-    };
+    // ------------------------------------------------------------------ the series
 
-    /** Table 47.B — periodic terms for latitude (Σb). Columns: D, M, M', F, Σb(1e-6°). */
-    private static final int[][] TB = {
-        {0, 0, 0, 1, 5128122}, {0, 0, 1, 1,  280602}, {0, 0, 1,-1,  277693},
-        {2, 0, 0,-1,  173237}, {2, 0,-1, 1,   55413}, {2, 0,-1,-1,   46271},
-        {2, 0, 0, 1,   32573}, {0, 0, 2, 1,   17198}, {2, 0, 1,-1,    9266},
-        {0, 0, 2,-1,    8822}, {2,-1, 0,-1,    8216}, {2, 0,-2,-1,    4324},
-        {2, 0, 1, 1,    4200}, {2, 1, 0,-1,   -3359}, {2,-1,-1, 1,    2463},
-        {2,-1, 0, 1,    2211}, {2,-1,-1,-1,    2065}, {0, 1,-1,-1,   -1870},
-        {4, 0,-1,-1,    1828}, {0, 1, 0, 1,   -1794}, {0, 0, 0, 3,   -1749},
-        {0, 1,-1, 1,   -1565}, {1, 0, 0, 1,   -1491}, {0, 1, 1, 1,   -1475},
-        {0, 1, 1,-1,   -1410}, {0, 1, 0,-1,   -1344}, {1, 0, 0,-1,   -1335},
-        {0, 0, 3, 1,    1107}, {4, 0, 0,-1,    1021}, {4, 0,-1, 1,     833},
-        {0, 0, 1,-3,     777}, {4, 0,-2, 1,     671}, {2, 0, 0,-3,     607},
-        {2, 0, 2,-1,     596}, {2,-1, 1,-1,     491}, {2, 0,-2, 1,    -451},
-        {0, 0, 3,-1,     439}, {2, 0, 2, 1,     422}, {2, 0,-3,-1,     421},
-        {2, 1,-1, 1,    -366}, {2, 1, 0, 1,    -351}, {4, 0, 0, 1,     331},
-        {2,-1, 1, 1,     315}, {2,-2, 0,-1,     302}, {0, 0, 1, 3,    -283},
-        {2, 1, 1,-1,    -229}, {1, 1, 0,-1,     223}, {1, 1, 0, 1,     223},
-        {0, 1,-2,-1,    -220}, {2, 1,-1,-1,    -220}, {1, 0, 1, 1,    -185},
-        {2,-1,-2,-1,     181}, {0, 1, 2, 1,    -177}, {4, 0,-2,-1,     176},
-        {4,-1,-1,-1,     166}, {1, 0, 1,-1,    -164}, {4, 0, 1,-1,     132},
-        {1, 0,-1,-1,    -119}, {4,-1, 0,-1,     115}, {2,-2, 0, 1,     107},
-    };
+    /** Constants of the ICOR = 0 (lunar-laser-ranging) fit: the Moon's mean longitude W1 (rad, powers of t). */
+    private static final double[] W1 = {
+        3.81034392032190893929e+00, 8.39968473020743294910e+03, -3.31919929752746043178e-05,
+        3.20170955004737532337e-08, -1.53637455543611967059e-10 };
+    /** Laskar's precession quantities P and Q (powers of t, starting at t¹). */
+    private static final double[] P = { 1.0180391e-05, 4.7020439e-07, -5.417367e-10, -2.507948e-12, 4.63486e-15 };
+    private static final double[] Q = { -1.13469002e-04, 1.2372674e-07, 1.2654170e-09, -1.371808e-12, -3.20334e-15 };
+    /** Distance scale: the semi-major axis of DE405 over the theory's own. */
+    private static final double DIST_SCALE = 384747.9613701725 / 384747.980674318;
+
+    /** One series: coordinate (0 λ, 1 β, 2 r), power of t (−1 main problem), terms (6 doubles each). */
+    private record Series(int coord, int power, double[] terms) {}
+
+    private static Series[] series;
+
+    private static synchronized Series[] series() {
+        if (series != null) return series;
+        Path f = Path.of("assets/moon/elpmpp02.bin.gz");
+        try (DataInputStream in = new DataInputStream(new BufferedInputStream(
+                new GZIPInputStream(Files.newInputStream(f)), 1 << 16))) {
+            byte[] magic = new byte[8];
+            in.readFully(magic);
+            if (!new String(magic, java.nio.charset.StandardCharsets.US_ASCII).equals("ELPMPP02"))
+                throw new IOException(f + " is not an ELP/MPP02 series file");
+            Series[] s = new Series[in.readInt()];
+            for (int k = 0; k < s.length; k++) {
+                int coord = in.readByte(), power = in.readByte(), n = in.readInt();
+                double[] d = new double[6 * n];
+                for (int i = 0; i < d.length; i++) d[i] = in.readDouble();
+                s[k] = new Series(coord, power, d);
+            }
+            return series = s;
+        } catch (IOException e) {
+            throw new UncheckedIOException("ELP/MPP02 lunar series missing: run tools.FetchElpMpp02", e);
+        }
+    }
+
+    /** First term (index) of a series whose |amplitude| reaches {@code tol}: binary search, terms ascending. */
+    private static int firstAbove(double[] d, double tol) {
+        int lo = 0, hi = d.length / 6;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (Math.abs(d[6 * mid]) < tol) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+
+    /**
+     * Geocentric ecliptic-J2000 position (km) at {@code tdbSec} (TDB ≈ TT seconds since J2000),
+     * summing only terms with |amplitude| ≥ {@code tol} (″ for λ, β; km for r; 0 = all).
+     */
+    private static double[] elp(double tdbSec, double tol) {
+        double t = tdbSec / (86400.0 * 36525.0);
+        double t2 = t * t, t3 = t2 * t, t4 = t3 * t;
+        double[] sum = new double[3];
+        for (Series s : series()) {
+            double[] d = s.terms;
+            double tk = s.power <= 0 ? 1 : s.power == 1 ? t : s.power == 2 ? t2 : t3;
+            double acc = 0;
+            for (int i = 6 * firstAbove(d, tol); i < d.length; i += 6)
+                acc += d[i] * Math.sin(d[i + 1] + d[i + 2] * t + d[i + 3] * t2 + d[i + 4] * t3 + d[i + 5] * t4);
+            sum[s.coord] += tk * acc;
+        }
+        // Spherical coordinates on the ecliptic and equinox of date.
+        double lam = sum[0] * ARCSEC + W1[0] + W1[1] * t + W1[2] * t2 + W1[3] * t3 + W1[4] * t4;
+        double bet = sum[1] * ARCSEC;
+        double r = sum[2] * DIST_SCALE;
+        double cb = Math.cos(bet);
+        double x1 = r * cb * Math.cos(lam), x2 = r * cb * Math.sin(lam), x3 = r * Math.sin(bet);
+        // Laskar's rotation to the fixed ecliptic and equinox of J2000.
+        double pw = (P[0] + t * (P[1] + t * (P[2] + t * (P[3] + t * P[4])))) * t;
+        double qw = (Q[0] + t * (Q[1] + t * (Q[2] + t * (Q[3] + t * Q[4])))) * t;
+        double ra = 2 * Math.sqrt(1 - pw * pw - qw * qw);
+        double pwqw = 2 * pw * qw, pw2 = 1 - 2 * pw * pw, qw2 = 1 - 2 * qw * qw;
+        return new double[]{
+            pw2 * x1 + pwqw * x2 + pw * ra * x3,
+            pwqw * x1 + qw2 * x2 - qw * ra * x3,
+            -pw * ra * x1 + qw * ra * x2 + (pw2 + qw2 - 1) * x3 };
+    }
+
+    // One-entry cache per precision: many callers ask about the same instant in a row.
+    private static double cacheT = Double.NaN, cacheTol = Double.NaN;
+    private static double[] cacheKm;
+
+    /** {@link #elp} with the last result cached (thread-safe). */
+    private static synchronized double[] positionKm(double ttSec, double tol) {
+        if (ttSec != cacheT || tol != cacheTol) {
+            cacheKm = elp(ttSec, tol);
+            cacheT = ttSec; cacheTol = tol;
+        }
+        return cacheKm;
+    }
+
+    /*
+     * The full theory costs ~0.3 ms, and some callers ask thousands of times (an eclipse path,
+     * an event search). The Moon's geocentric motion is smooth over 8 days (≈ 0.9 rad of its
+     * orbit), so the everyday API evaluates the full theory at 13 Chebyshev nodes per 8-day
+     * segment and interpolates: within 0.3 m of direct evaluation (the series' short-period
+     * terms set that), 1/300 of the theory's own error, at nanoseconds a call. Segments are
+     * cached (least recently used dropped first).
+     */
+    private static final double SEG_SEC = 8 * 86400.0;
+    private static final int CHEB_N = 13;
+    private static final java.util.LinkedHashMap<Long, double[]> segments =
+            new java.util.LinkedHashMap<>(64, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(java.util.Map.Entry<Long, double[]> e) { return size() > 512; }
+            };
+
+    /** Chebyshev coefficients (3 × CHEB_N) of segment k, [k·8 d, (k+1)·8 d) of TT. */
+    private static double[] segment(long k) {
+        double[] c = segments.get(k);
+        if (c != null) return c;
+        double[][] f = new double[CHEB_N][];
+        for (int j = 0; j < CHEB_N; j++) {
+            double x = Math.cos(Math.PI * (j + 0.5) / CHEB_N);          // node in [−1, 1]
+            f[j] = elp((k + 0.5 + 0.5 * x) * SEG_SEC, 0);
+        }
+        c = new double[3 * CHEB_N];
+        for (int n = 0; n < CHEB_N; n++)
+            for (int j = 0; j < CHEB_N; j++) {
+                double w = Math.cos(Math.PI * n * (j + 0.5) / CHEB_N) * (n == 0 ? 1.0 : 2.0) / CHEB_N;
+                for (int a = 0; a < 3; a++) c[3 * n + a] += w * f[j][a];
+            }
+        segments.put(k, c);
+        return c;
+    }
+
+    /** The full theory at {@code ttSec} (km), through the Chebyshev segment cache. */
+    private static synchronized double[] interpolatedKm(double ttSec) {
+        long k = (long) Math.floor(ttSec / SEG_SEC);
+        double[] c = segment(k);
+        double x = 2 * (ttSec / SEG_SEC - k) - 1;
+        // Clenshaw recurrence for Σ c_n T_n(x), all three coordinates at once.
+        double[] b1 = new double[3], b2 = new double[3], out = new double[3];
+        for (int n = CHEB_N - 1; n >= 1; n--)
+            for (int a = 0; a < 3; a++) {
+                double b0 = 2 * x * b1[a] - b2[a] + c[3 * n + a];
+                b2[a] = b1[a]; b1[a] = b0;
+            }
+        for (int a = 0; a < 3; a++) out[a] = x * b1[a] - b2[a] + c[a];
+        return out;
+    }
+
+    // ------------------------------------------------------------------ public API
 
     /**
      * Geocentric position of the Moon at the given sim time (seconds of UTC since the
      * J2000.0 epoch instant, 2000-01-01 12:00). Returns {@code {lambda, beta, dist}}:
-     * ecliptic longitude and latitude (radians, mean equinox of J2000) and the Earth-centre
-     * to Moon-centre distance in metres.
+     * ecliptic longitude and latitude (radians, mean ecliptic and equinox of J2000) and the
+     * Earth-centre to Moon-centre distance in metres.
      */
     static double[] geocentric(double simTimeSec) {
-        return geocentricTT(Astro.ttSeconds(simTimeSec));   // TT = UTC + ΔT
+        return geocentricTT(Astro.ttSeconds(simTimeSec));
     }
 
     /** {@link #geocentric} for a time given directly as TT seconds since J2000.0. */
     static double[] geocentricTT(double ttSec) {
-        // Mean arguments use Julian centuries of TT since J2000.
-        double T = ttSec / (86400.0 * 36525.0);
-
-        // Mean arguments (degrees), reduced to [0,360).
-        double Lp = poly(T, 218.3164477, 481267.88123421, -0.0015786, 1.0/538841.0, -1.0/65194000.0);
-        double D  = poly(T, 297.8501921, 445267.1114034, -0.0018819, 1.0/545868.0, -1.0/113065000.0);
-        double M  = poly(T, 357.5291092,  35999.0502909, -0.0001536, 1.0/24490000.0, 0.0);
-        double Mp = poly(T, 134.9633964, 477198.8675055,  0.0087414, 1.0/69699.0, -1.0/14712000.0);
-        double F  = poly(T,  93.2720950, 483202.0175233, -0.0036539, -1.0/3526000.0, 1.0/863310000.0);
-        double A1 = wrap(119.75 + 131.849 * T);
-        double A2 = wrap(53.09 + 479264.290 * T);
-        double A3 = wrap(313.45 + 481266.484 * T);
-        double E  = 1.0 - 0.002516 * T - 0.0000074 * T * T;   // eccentricity correction of Earth's orbit
-
-        double Dr = D * DEG, Mr = M * DEG, Mpr = Mp * DEG, Fr = F * DEG;
-
-        double sumL = 0.0, sumR = 0.0, sumB = 0.0;
-        for (int[] t : TA) {
-            double arg = t[0] * Dr + t[1] * Mr + t[2] * Mpr + t[3] * Fr;
-            double ecc = eFactor(t[1], E);
-            sumL += t[4] * ecc * Math.sin(arg);
-            sumR += t[5] * ecc * Math.cos(arg);
-        }
-        for (int[] t : TB) {
-            double arg = t[0] * Dr + t[1] * Mr + t[2] * Mpr + t[3] * Fr;
-            sumB += t[4] * eFactor(t[1], E) * Math.sin(arg);
-        }
-
-        // Additive terms (planetary perturbations of Venus/Jupiter and Earth's flattening).
-        double LpR = Lp * DEG;
-        sumL += 3958.0 * Math.sin(A1 * DEG) + 1962.0 * Math.sin(LpR - Fr) + 318.0 * Math.sin(A2 * DEG);
-        sumB += -2235.0 * Math.sin(LpR) + 382.0 * Math.sin(A3 * DEG)
-              + 175.0 * Math.sin((A1 - F) * DEG) + 175.0 * Math.sin((A1 + F) * DEG)
-              + 127.0 * Math.sin(LpR - Mpr) - 115.0 * Math.sin(LpR + Mpr);
-
-        double lambdaDate = Lp + sumL / 1_000_000.0;   // longitude, mean equinox of date (deg)
-        double beta = sumB / 1_000_000.0;              // latitude (deg)
-        double distKm = 385000.56 + sumR / 1000.0;     // Earth-Moon centre distance (km)
-
-        // Remove accumulated general precession in longitude to reach the J2000 equinox.
-        double precDeg = (5029.0966 * T + 1.11161 * T * T) / 3600.0;
-        double lambdaJ2000 = wrap(lambdaDate - precDeg);
-
-        return new double[]{ lambdaJ2000 * DEG, beta * DEG, distKm * 1000.0 };
+        double[] p = interpolatedKm(ttSec);
+        double r = Math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        double lam = Math.atan2(p[1], p[0]);
+        if (lam < 0) lam += 2 * Math.PI;
+        return new double[]{ lam, Math.asin(p[2] / r), r * 1000.0 };
     }
 
     /**
      * Geocentric ecliptic-J2000 rectangular position of the Moon in AU, as {@code {x, y, z}}
      * with x toward the vernal equinox and z toward ecliptic north — the frame JPL Horizons
-     * reports geocentric vectors in. Used by the accuracy tests.
+     * reports geocentric vectors in.
      */
     static double[] geocentricEclipticAU(double simTimeSec) {
         return geocentricEclipticAUatTT(Astro.ttSeconds(simTimeSec));
@@ -146,30 +213,19 @@ final class MoonEphemeris {
 
     /** {@link #geocentricEclipticAU} for a time given as TT seconds since J2000.0. */
     static double[] geocentricEclipticAUatTT(double ttSec) {
-        double[] s = geocentricTT(ttSec);
-        double lam = s[0], bet = s[1], dm = s[2];
-        double cb = Math.cos(bet);
-        double AU = 1.495978707e11;
-        return new double[]{ dm * cb * Math.cos(lam) / AU, dm * cb * Math.sin(lam) / AU, dm * Math.sin(bet) / AU };
+        double[] p = interpolatedKm(ttSec);
+        return new double[]{ p[0] / AU_KM, p[1] / AU_KM, p[2] / AU_KM };
     }
 
-    /** Term multiplier: E for a term linear in the Sun's anomaly M, E² for a quadratic one. */
-    private static double eFactor(int mCoeff, double E) {
-        int a = Math.abs(mCoeff);
-        return a == 1 ? E : a == 2 ? E * E : 1.0;
+    /**
+     * {@link #geocentricEclipticAU} at TT seconds, evaluated directly (no segment cache) and
+     * keeping only terms with amplitude ≥ {@code tol} (″ for the angles, km for the distance;
+     * 0 = the full theory). Truncation error, 1900–2100: 0.01″ at 1e-4, 0.3″ at 0.01, 2.5″ at 0.1.
+     */
+    static double[] geocentricEclipticAUatTT(double ttSec, double tol) {
+        double[] p = positionKm(ttSec, tol);
+        return new double[]{ p[0] / AU_KM, p[1] / AU_KM, p[2] / AU_KM };
     }
-
-    private static double poly(double T, double a0, double a1, double a2, double a3, double a4) {
-        return wrap(a0 + T * (a1 + T * (a2 + T * (a3 + T * a4))));
-    }
-
-    private static double wrap(double deg) {
-        double r = deg % 360.0;
-        return r < 0 ? r + 360.0 : r;
-    }
-
-    /** TT − UT1 in seconds (see {@link Astro#deltaTSeconds}). */
-    static double deltaTSeconds(double year) { return Astro.deltaTSeconds(year); }
 
     // ------------------------------------------------------------------ orientation
 

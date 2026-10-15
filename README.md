@@ -13,7 +13,8 @@ The app is a Swing program with a GPU sphere shader (`GLSphereRenderer`) for
 textured planets. The planets, dwarf planets, comets and asteroids move under their
 **mutual gravity**, integrated by a symplectic Wisdom–Holman map from JPL Horizons
 initial conditions; every moon is on its real orbit; and the whole scene sits in front
-of the **real star field** (Yale Bright Star Catalogue + Milky Way). It hosts the
+of the **real star field** (Yale Bright Star Catalogue + Milky Way). The Moon follows the
+full **ELP/MPP02** lunar theory, within 0.05″ of JPL's DE441. It hosts the
 **Lesson Studio**, a real-date **planetarium**, a **Sky from Earth** view of the sky
 from any place on Earth, and a catalog of real comets and minor bodies. The 3-D view
 tilts off top-down to reveal orbital inclination and out-of-plane motion.
@@ -23,7 +24,9 @@ Juno from JPL's trajectories, and the Moon missions from Apollo 8 to Artemis II 
 back in 3-D with a mission timeline. There is a **Lambert transfer planner** with porkchop
 plots, a **sky-events finder** (conjunctions, oppositions, elongations, transits,
 occultations, meteor showers, eclipses), and a **light-time** view that shows where things
-appear from Earth.
+appear from Earth. **Solar eclipses** are drawn on the Earth Explorer globe: the path of
+totality with its limits, the moving shadow, and the local circumstances anywhere. The paths
+are within about 1 km of NASA's.
 
 ## Requirements
 
@@ -149,6 +152,16 @@ ecliptic-J2000 state vectors at J2000.0.
 - **Planet centres** — each planet's centre sits off its system barycentre by its
   moons' reflex: Earth by up to ~4700 km, Pluto by ~2100 km — so Pluto and Charon
   visibly orbit a point in the space between them.
+- **Symplectic corrector** — states are read out through the Wisdom–Holman–Toussaint
+  corrector (pairs of conjugated kicks matched to the map's error series through h⁷), which
+  removes the step error without touching the integration: Mercury went from 15″ to 0.02″
+  by 2100, Earth from 0.6″ to 0.03″.
+- **Minor bodies near the Earth** feel the Earth and the Moon as separate masses, not their
+  barycentre. Bennu's 2005 and 2011 flybys amplified that difference to 1200 km by 2020;
+  split, it is 180 km.
+- **Yarkovsky** — Bennu carries the transverse thermal acceleration A2·(1 AU/r)², with
+  A2 = −4.56×10⁻¹⁴ AU/day² set from its measured drift da/dt = −284.6 m/yr
+  (Farnocchia et al. 2021).
 - **Orbit rings** are the *osculating* ellipses of the bodies' current states — the
   orbit each body is on right now; they slowly turn and breathe as the planets
   perturb one another.
@@ -158,12 +171,11 @@ ecliptic-J2000 state vectors at J2000.0.
   blended, so motion is smooth and identical at any time-warp.
 
 `./gradlew test` checks it against Horizons at 1950, 2010, 2050 and 2100
-(**`AccuracyTest`**): Venus–Pluto and Mars within 0.25″, Earth's centre within
-0.6″, Mercury within 15″ (the Wisdom–Holman step error); Halley at its 1986
-perihelion 0.6″, Ceres and Eros 0.1″, Bennu 1.4″ (its thermal Yarkovsky drift isn't
-modelled). **`IntegratorTest`** checks reversibility, bounded energy, that a
-position depends only on the time (not on how the clock got there), and continuity
-across grid steps.
+(**`AccuracyTest`**): every planet within 0.03″ (Neptune 0.14″ by 2100), Earth's
+centre included; Halley at its 1986 perihelion 0.6″ (outgassing isn't modelled), Ceres
+0.14″, Eros 0.05″, Bennu 0.23″. **`IntegratorTest`** checks reversibility, that the
+corrector inverts exactly, bounded energy, that a position depends only on the time (not
+on how the clock got there), and continuity across grid steps.
 
 ## Planetarium: jump to a real date
 
@@ -172,28 +184,48 @@ across grid steps.
 the HUD shows the current simulated date. `Jump to today` and `Reset to J2000
 epoch` are there too. Dates are typed and shown in **your computer's time zone**
 (the HUD shows UTC too); add `UTC`, an offset like `+09:00` or a zone like
-`Asia/Tokyo` to enter a time elsewhere. `simTimeSec = 0` is the J2000.0 epoch (the
-sim clock is UTC; the dynamics run on TT via the NASA/Espenak–Meeus ΔT polynomials).
+`Asia/Tokyo` to enter a time elsewhere. `simTimeSec = 0` is the J2000.0 epoch.
+
+**Time scales.** The sim clock is UTC, while the dynamics run on TT (`Astro.ttSeconds`):
+
+- **Since 1972:** TT is exactly UTC + 32.184 s + the leap seconds.
+- **Before 1972:** TT is UT + ΔT, from the NASA/Espenak–Meeus polynomials (they meet the
+  leap-second table within 0.07 s).
+- **After the table:** ΔT follows the polynomials' predicted rise, joined on without a jump.
+  The polynomial alone now overshoots the true value by ~5 s, which would move the Moon,
+  and an eclipse shadow, ~5 km.
+
+Earth's rotation uses UTC as UT1, which is under 0.9 s off.
 
 ## Real Moon and eclipses
 
 The Moon is **not** a two-body Kepler ellipse (that model gets eclipse dates wrong
-by months, because it has no epoch phase and a frozen node). Instead
-`MoonEphemeris` evaluates the ELP-2000/82 lunar theory truncated to the terms in
-Meeus chapter 47 — the equation of the centre, evection, variation, annual
-equation and ~120 further periodic terms, on top of mean arguments that carry the
-real 18.6-year node regression and 8.85-year perigee precession. Positions are
-reduced to the J2000 ecliptic (precession and ΔT applied) so Sun–Moon geometry is
-self-consistent with the planets. Accuracy is ~10″ in longitude and ~4″ in
-latitude over 2000–2050. "Show eclipse" jumps the clock to the **next real
-eclipse** (new/full moon near a node), not a staged one.
+by months, because it has no epoch phase and a frozen node). `MoonEphemeris` evaluates the
+full **ELP/MPP02** lunar theory (Chapront & Francou 2003). It is the ELP-2000/82 theory with
+the planetary perturbations recomputed and the constants fitted to lunar laser ranging:
+35 901 periodic terms, read from `assets/moon/elpmpp02.bin.gz`. The positions come out on
+the mean ecliptic and equinox of J2000 (Laskar's precession), the frame of the planets.
+
+- **Speed.** The full theory is ~0.3 ms per evaluation. The sim evaluates it at Chebyshev
+  nodes over 8-day segments and interpolates (within 0.3 m of direct evaluation).
+- **The integrator's tide.** The N-body integrator's Earth–Moon tide is a 10⁻⁷ effect, so it
+  uses the series cut at 0.1″ terms: 2″, 4 µs.
 
 `./gradlew test` machine-checks this:
 
-- **`EclipseAccuracyTest`** — every solar eclipse of 2023–2024 is found on its true
-  NASA-catalog date, within 45 min of greatest eclipse (typically 5–15 min, the
-  offset between longitude conjunction and greatest eclipse); known lunar eclipses
-  likewise; and the Moon reproduces Meeus's worked example 47.a (λ, β, Δ).
+- **`MoonEphemerisTest`**:
+  - **The authors' reference positions.** Reproduced to 0.1 mm, which checks the series
+    file and the evaluation end to end.
+  - **JPL Horizons (DE441).** Within **0.043″ (80 m)** at eleven epochs, 1950–2100. The
+    Meeus truncation of ELP-2000/82 it replaces was 10–22″ off.
+  - **The interpolation.** It is checked against direct evaluation.
+- **`EclipseAccuracyTest`**: every solar eclipse of 2023–2024 is found on its true
+  NASA-catalog date, within 45 min of greatest eclipse (typically 5–15 min, the offset
+  between longitude conjunction and greatest eclipse), and known lunar eclipses likewise.
+
+"Show eclipse" jumps the clock to the **next real eclipse** (new/full moon near a node), not
+a staged one.
+
 - **`MoonDataTest`** — every moon's tabulated semi-major axis and period are
   mutually consistent with the parent's mass under Kepler's third law (worst 0.7%);
   this caught bad data for Dione, Umbriel, Ariel and Charon.
@@ -273,7 +305,9 @@ can keep zooming into, all the way to **street level**.
 
 - **Far out** it's a globe hanging in the solar system: the full-resolution local
   Earth map, orthographically ray-cast and lit by the Sun with a **date-accurate
-  day/night terminator**, city lights on the night side, and drifting clouds.
+  day/night terminator**, city lights on the night side, and drifting clouds. The
+  terminator comes from the apparent Sun of the ephemeris (precession, nutation, sidereal
+  time), so the equation of time and the true declination are in it.
 - **From ~3000 km across**, the globe cross-fades into **streamed satellite
   imagery** (Esri World Imagery, Web-Mercator tiles) so you can dive down to
   buildings and streets — the globe view and the flat map are one continuous zoom.
@@ -281,6 +315,9 @@ can keep zooming into, all the way to **street level**.
   and takes a cool cast, tracking the real Sun) and carries **Google-Maps-style
   labels** — place names, country boundaries and roads/street names overlaid on
   the imagery.
+
+- During a **solar eclipse** the Moon's shadow darkens the globe and the map, with the path
+  of totality drawn over them (see [Solar eclipses on the globe](#solar-eclipses-on-the-globe)).
 
 Controls: **drag** to pan, **scroll** to zoom, **arrow keys** to move,
 **`+`/`-`** to zoom, **`L`** toggle map labels, **`S`/`C`/`I`** toggle
@@ -295,6 +332,49 @@ Notes:
   (© Esri, Maxar, Earthstar Geographics) and is cached on disk under the system
   temp dir. Without a connection the globe still works; deep zoom falls back to
   the last imagery it could load.
+
+## Solar eclipses on the globe
+
+![The 2024 total solar eclipse on the Earth Explorer globe at 18:41 UTC](docs/img/eclipse_globe.png)
+
+**Simulation → Next solar eclipse on the globe** (or select a solar eclipse in **Next events**
+and press **Path of the shadow on the globe**) jumps to greatest eclipse and opens the Earth
+Explorer over it. Any solar eclipse within an hour of the sim time is drawn the same way while
+you are in the explorer, so you can also scrub or run the clock through one.
+
+- **The path** of totality or annularity: the band between its northern and southern limits,
+  the central line with its time every 10 minutes (UTC), and the limits of the partial phase.
+- **The shadow** is in the lighting. Each point gets the fraction of the Sun's light the
+  Moon leaves it, with the Sun limb-darkened (I(μ) = 1 − 0.6(1 − μ)), so the penumbra deepens
+  toward the umbra, and the umbra's footprint is outlined.
+- **Local circumstances** at the map centre: the partial phase, the time and obscuration of
+  maximum, and how long totality or annularity lasts there.
+
+`SolarEclipse` works from what an observer sees, not from Besselian elements. At each
+instant the apparent Sun (aberrated) and the light-time-corrected Moon are put in the
+Earth-fixed frame (precession, nutation, sidereal time). From a point on the WGS-84
+ellipsoid, the Sun's and Moon's angular radii and the separation of their centres decide
+whether it sees a partial, total or annular eclipse. The central line is where the Sun–Moon
+line meets the ellipsoid. A limit is where the shadow's edge reaches a place and then
+recedes: a point on the footprint's outline where the margin stops growing (∂g/∂t = 0).
+The Moon's radius follows NASA's convention (k = 0.2722810 for the umbra, 0.2725076 for the
+penumbra), and the Sun's is 959.63″ at 1 AU.
+
+**`EclipsePathTest`** checks the 2017-08-21 and 2024-04-08 eclipses against NASA's path tables:
+
+- **Durations.** Totality on the central line is within 1 s (3 s at sunrise).
+- **Greatest eclipse.** Within 36 s and 24 km, and γ within 0.002.
+- **The path on the ground.** Within 0.3 km in 2017 and 1.3 km in 2024.
+- **Timing.** Within 1–3 km of NASA's shadow at a given UT, and greatest eclipse within 4 s.
+
+What is left is mostly NASA's, not ours. Their tables assume ΔT = 68.4 s (2017) and 70.6 s
+(2024), while the true TT − UTC was 69.184 s, about 1 km along the track. The 2017 tables
+come from JPL DE405, which agrees to 0.3 km. The 2024 ones come from the older
+VSOP87/ELP2000-85, which agrees to about 1 km. With the Meeus-truncated Moon used before,
+the path was 25 km and 45 s off.
+
+The explorer's day/night terminator now uses the same apparent Sun. It used to follow a
+sine-law declination with no equation of time, which put it up to 4° off.
 
 ## The real star field
 
@@ -385,7 +465,7 @@ golden-section searches on the interpolant.
 
 **Apollo, reconstructed.** JPL has no ephemerides for the Apollo command modules, so
 `ApolloReconstruction` flies them again. It integrates the craft through the sim's own
-Earth (+ J2), Moon (ELP-2000/82) and Sun with an adaptive Dormand–Prince 5(4), and targets
+Earth (+ J2), Moon (the lunar theory) and Sun with an adaptive Dormand–Prince 5(4), and targets
 the events NASA documented (Orloff, *Apollo by the Numbers*, NASA SP-2000-4029):
 
 1. **Translunar coast.** The state at pericynthion (documented time and altitude) is solved
@@ -451,7 +531,8 @@ that every solution, propagated exactly, lands on its target. It also checks the
 - eclipses.
 
 Clicking an event jumps the clock there; **See it from Earth** opens the Sky-from-Earth view
-on it.
+on it. For a solar eclipse, **Path of the shadow on the globe** opens it in the Earth Explorer
+(see [Solar eclipses on the globe](#solar-eclipses-on-the-globe)).
 
 Geocentric positions are light-time corrected. A transit is an inferior conjunction whose
 minimum separation is smaller than the two discs' radii summed. An occultation is a
@@ -509,8 +590,12 @@ depth τ (from the ring map's opacity), lit at μ₀ = sin(Sun elevation) and se
   [d3-celestial](https://github.com/ofrohn/d3-celestial) © 2015 Olaf Frohn,
   BSD-3-Clause (`assets/sky/LICENSE-d3-celestial.txt`); the Milky Way contours are
   rasterised into `assets/sky/milkyway.png`.
-- Lunar theory: ELP-2000/82 as truncated in Meeus, *Astronomical Algorithms*, ch. 47;
+- Lunar theory: ELP/MPP02 (J. Chapront & G. Francou 2003, IMCCE / Observatoire de Paris),
+  the series as packed by T. Jang's MIT-licensed port (`tools.FetchElpMpp02`);
   rotation models (planets and the Moon): IAU WGCCRE.
+- Solar-eclipse paths for the tests: NASA's path tables by F. Espenak
+  (eclipse.gsfc.nasa.gov), 2017-08-21 and 2024-04-08.
+- Bennu's Yarkovsky drift: D. Farnocchia et al., *Icarus* 369, 114594 (2021).
 - Spacecraft trajectories: **JPL Horizons** (Voyager 1/2, Cassini, New Horizons, Juno,
   Chandrayaan-3, Artemis I and II). Apollo flight data: R. W. Orloff, *Apollo by the
   Numbers*, NASA SP-2000-4029 (the scanned table reads Apollo 13's TLI speed as 35,938.4
@@ -529,10 +614,11 @@ src/ApolloReconstruction.java    Apollo 8/11/13/17 rebuilt by integration + targ
 src/Lambert.java                 Lambert's problem (universal variables)
 src/TransferPlanner.java         transfer planner panel, porkchop plot, 3-D transfer arc
 src/EventFinder.java             conjunctions, oppositions, elongations, transits, occultations…
+src/SolarEclipse.java            solar eclipses on the ground: shadow, path, limits, local circumstances
 src/EventsPanel.java             the "Next events" panel
 src/NBodyEphemeris.java          symplectic N-body integrator (Wisdom–Holman, GR, Horizons ICs)
 src/SatelliteEphemeris.java      planetary moons: theory fitted to JPL satellite ephemerides
-src/MoonEphemeris.java           Earth's Moon: ELP-2000/82 (Meeus ch. 47)
+src/MoonEphemeris.java           Earth's Moon: the full ELP/MPP02 lunar theory
 src/Astro.java                   time scales (ΔT), precession, nutation, sidereal time
 src/StarCatalog.java             Yale Bright Star Catalogue, constellations, Milky Way map
 src/SkyView.java                 Sky from Earth: the planetarium view
@@ -540,8 +626,10 @@ src/LessonStudio.java            lessons: docked panel, 3-D stage, software 3-D 
 src/GLSphereRenderer.java        GPU sphere shader for textured planets
 src/tools/ScreenGrab.java        screenshot helper
 src/tools/FetchMissions.java     downloads + compresses spacecraft tracks from JPL Horizons
+src/tools/FetchElpMpp02.java     downloads + packs the ELP/MPP02 lunar series
 assets/textures/                 planet / moon / sun texture maps
 assets/sky/                      star catalogue, constellation data, Milky Way map
+assets/moon/                     the ELP/MPP02 lunar series (35 901 terms)
 assets/missions/                 spacecraft tracks (*.trk.gz)
 libs/                            bundled FlatLaf look-and-feel
 build.gradle / settings.gradle   Gradle build (./gradlew run)

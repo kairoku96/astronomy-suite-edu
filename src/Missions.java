@@ -98,8 +98,7 @@ final class Missions {
 
     /** UTC sim seconds for a TDB instant (inverts {@link Astro#ttSeconds}). */
     static double utcOf(double tdb) {
-        double u = tdb - Astro.deltaTSeconds(Astro.decimalYear(tdb));
-        return tdb - Astro.deltaTSeconds(Astro.decimalYear(u));
+        return Astro.utcSeconds(tdb);
     }
 
     // ------------------------------------------------------------------ the catalogue

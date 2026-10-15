@@ -80,26 +80,6 @@ class EclipseAccuracyTest {
         }
     }
 
-    /**
-     * Meeus, <i>Astronomical Algorithms</i> example 47.a: for 1992 April 12, 0h TD the Moon is
-     * at λ=133.162655°, β=−3.229126°, Δ=368409.7 km (equinox of date). Confirms the periodic
-     * tables are transcribed correctly. β and Δ are frame-independent, so they are checked
-     * tightly; λ is compared after removing the precession our model applies to reach J2000.
-     */
-    @Test
-    void matchesMeeusWorkedExample() {
-        double t = secOf(1992, 4, 12, 0, 0);
-        double[] s = MoonEphemeris.geocentric(t);
-        double lam = Math.toDegrees(s[0]), bet = Math.toDegrees(s[1]), distKm = s[2] / 1000.0;
-        // Precession removed by the model at this epoch (T≈-0.07722 cy): λ_J2000 = λ_date + 0.1079°.
-        double lamDate = lam - 0.10787;
-        System.out.printf("  Meeus 47.a: λ_date=%.4f° (exp 133.1627), β=%.4f° (exp -3.2291), Δ=%.1f km (exp 368409.7)%n",
-                lamDate, bet, distKm);
-        assertEquals(133.162655, lamDate, 0.02, "Moon longitude");
-        assertEquals(-3.229126, bet, 0.01, "Moon latitude");
-        assertEquals(368409.7, distKm, 30.0, "Moon distance");
-    }
-
     @Test
     void moonStaysInPhysicalRange() {
         for (double t = 0; t < 30 * 365.25 * DAY; t += 0.37 * DAY) {

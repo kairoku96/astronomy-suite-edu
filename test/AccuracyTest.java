@@ -27,7 +27,7 @@ class AccuracyTest {
     /** UTC sim seconds for a TDB Julian date (the sim clock is UTC; Horizons epochs are TDB). */
     static double simSecForTdbJd(double jd) {
         double tdb = (jd - 2451545.0) * DAY;
-        return tdb - Astro.deltaTSeconds(2000.0 + tdb / (365.25 * DAY));
+        return Astro.utcSeconds(tdb);
     }
 
     // {sim planet index, TDB JD, x, y, z (AU)} — JPL Horizons, body centres, ecliptic J2000.
@@ -62,11 +62,11 @@ class AccuracyTest {
         {8, 2488069.500000000, 3.967530922819456E+01, 2.490476330864163E+01, -1.414321151643269E+01},   // Pluto 2100-Jan-01
     };
     /**
-     * Allowed error (arcsec) per sim planet index. Mercury carries the Wisdom–Holman step error
-     * (∝ step²; measured ≤ 15″). Earth includes the lunar theory's reflex placement of Earth's
-     * centre about the Earth–Moon barycentre (measured ≤ 0.6″); the rest measure ≤ 0.25″.
+     * Allowed error (arcsec) per sim planet index. With the symplectic corrector removing the
+     * Wisdom–Holman step error (it was 15″ for Mercury, 0.6″ for Earth), every planet measures
+     * ≤ 0.03″ except Neptune (≤ 0.14″ by 2100).
      */
-    private static final double[] TOL = {20, 1, 1.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5};
+    private static final double[] TOL = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.3, 0.1};
 
     @Test
     void planetCentresMatchHorizons1950to2100() {
@@ -96,8 +96,8 @@ class AccuracyTest {
             double[] ref = {Double.parseDouble(r[2]), Double.parseDouble(r[3]), Double.parseDouble(r[4])};
             double sep = sepArcsec(got, ref);
             System.out.printf("  %s: %.2f arcsec%n", r[0], sep);
-            // Bennu also drifts from its thermal (Yarkovsky) push, which isn't modelled.
-            assertTrue(sep < 5, r[0] + " off by " + sep + " arcsec");
+            // Measured: Halley 0.58″ (its outgassing isn't modelled), Bennu 0.23″, the rest ≤ 0.14″.
+            assertTrue(sep < 1, r[0] + " off by " + sep + " arcsec");
         }
     }
 

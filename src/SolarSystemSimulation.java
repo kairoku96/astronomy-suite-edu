@@ -40,7 +40,7 @@ import com.formdev.flatlaf.FlatDarkLaf;
  *   <li>Planets, dwarf planets, comets and asteroids move under mutual gravity, integrated by
  *       a symplectic Wisdom–Holman map from JPL Horizons J2000 states ({@link NBodyEphemeris}),
  *       including the Sun's general-relativistic term.</li>
- *   <li>Earth's Moon follows the ELP-2000/82 lunar theory ({@link MoonEphemeris}); every other
+ *   <li>Earth's Moon follows the ELP/MPP02 lunar theory ({@link MoonEphemeris}); every other
  *       moon a mean-element theory fitted to JPL's satellite ephemerides ({@link SatelliteEphemeris}).</li>
  *   <li>Each planet's centre sits off its system barycentre by its moons' reflex (Earth by
  *       ~4700 km, Pluto by ~2100 km), so planet and moons orbit their common centre of mass.</li>
@@ -573,6 +573,21 @@ public class SolarSystemSimulation extends JPanel
     private boolean geBufValid = false;
     private double geRLat, geRLon, geRZoom, geRSunX, geRSunY, geRSunZ;
     private boolean geRShade, geRNight, geRClouds;
+    /** Sim time the cached raster's eclipse shadow was drawn for (NaN: no shadow on it). */
+    private double geREclT = Double.NaN;
+
+    // ---- Solar eclipses on the explorer globe (see SolarEclipse) ----
+    /** The solar eclipse around the current date, once computed (background thread). */
+    private volatile SolarEclipse.Path eclPath;
+    /** Syzygy the path was (or is being) computed for, so each eclipse is computed once. */
+    private double eclPathFor = Double.NaN;
+    private volatile boolean eclComputing;
+    /** Next solar eclipse at or after {@link #eclCheckedFrom} (cached search). */
+    private double eclCheckedFrom = Double.NaN, eclNextAt = Double.NaN;
+    /** Local circumstances at the map centre, cached by place and path. */
+    private double[] eclLocal;
+    private double eclLocalLat = Double.NaN, eclLocalLon = Double.NaN;
+    private SolarEclipse.Path eclLocalPath;
 
     // ---- Satellite tile streaming (Esri World Imagery, Web-Mercator XYZ) for street-level zoom ----
     // Three transparent-overlay layers, each {z}/{y}/{x}, 256 px tiles: satellite base, place +
@@ -3233,15 +3248,71 @@ public class SolarSystemSimulation extends JPanel
         return new double[]{ Math.toDegrees(lat), Math.toDegrees(lonGeo) };
     }
 
-    /** Sub-solar direction in the Earth-fixed frame (Z=north), for a date-accurate terminator. */
+    /**
+     * Sub-solar direction in the Earth-fixed frame (Z=north), for a date-accurate terminator:
+     * the apparent Sun from the ephemeris, through precession, nutation and sidereal time (so
+     * the equation of time and the true declination are in it).
+     */
     private double[] earthSunDirGeo() {
-        java.time.LocalDateTime dt = simDateTime();
-        double utcH = (dt != null) ? dt.getHour() + dt.getMinute() / 60.0 + dt.getSecond() / 3600.0 : 12.0;
-        double lamSun = -(utcH - 12.0) * Math.PI / 12.0;                     // sub-solar east longitude
-        int doy = (dt != null) ? dt.getDayOfYear() : 172;
-        double decl = Math.toRadians(23.44) * Math.sin(2 * Math.PI * (doy - 80) / 365.25);
-        double cD = Math.cos(decl);
-        return new double[]{ cD * Math.cos(lamSun), cD * Math.sin(lamSun), Math.sin(decl) };
+        return SolarEclipse.sunDirEarthFixed(simTimeSec);
+    }
+
+    /**
+     * The solar eclipse whose penumbra is on the Earth within an hour of now, or null. Finding
+     * the next eclipse is cached until the clock passes it; its path is computed once, in the
+     * background (about 0.2 s), and the explorer starts drawing it when it arrives.
+     */
+    private SolarEclipse.Path eclipseNow() {
+        double t = simTimeSec;
+        if (Double.isNaN(eclCheckedFrom) || t < eclCheckedFrom || t > eclNextAt + DAY) {
+            eclCheckedFrom = t;
+            double n = nextEarthEclipse(true, t - DAY, +1);
+            eclNextAt = Double.isNaN(n) ? t + 5 * 365.25 * DAY : n;
+        }
+        SolarEclipse.Path have = eclPath;
+        boolean haveIt = have != null && Math.abs(have.tGreatest() - eclNextAt) < 0.5 * DAY;
+        if (Math.abs(eclNextAt - t) < 0.5 * DAY && eclNextAt != eclPathFor && !haveIt && !eclComputing) {
+            eclPathFor = eclNextAt;
+            eclComputing = true;
+            final double tn = eclNextAt;
+            Thread th = new Thread(() -> {
+                try { eclPath = SolarEclipse.compute(tn); }
+                finally { eclComputing = false; repaint(); }
+            }, "eclipse-path");
+            th.setDaemon(true);
+            th.start();
+        }
+        SolarEclipse.Path p = eclPath;
+        return p != null && t > p.start() - 3600 && t < p.end() + 3600 ? p : null;
+    }
+
+    /**
+     * Jump to a solar eclipse and show it on the explorer globe, centred on the point of
+     * greatest eclipse at that instant, with its path, limits and the shadow.
+     */
+    void showSolarEclipseOnGlobe(double tNear) {
+        SolarEclipse.Path p = SolarEclipse.compute(tNear);
+        if (p == null || !ensureEarthExplorerTextures()) return;
+        eclPath = p; eclPathFor = tNear;
+        if (skyViewActive) exitSkyView();
+        simulationPaused = true;
+        goToSimTime(p.tGreatest());
+        followingPlanet = true; followingMoon = false;
+        cameraFocusIndex = EARTH_INDEX; cameraFocusMoon = -1;
+        selectedPlanet = EARTH_INDEX; selectedMoon = -1;
+        geLat = p.greatest()[0];
+        geLon = p.greatest()[1];
+        if (!earthExplorerActive) {
+            geRoll0 = 0;
+            geZoom = 1.0;
+            geTransition = 0.0;
+            earthExplorerActive = true;
+            draggingView = false;
+        }
+        geTargetZoom = 1.4;
+        geBufValid = false;
+        requestFocusInWindow();
+        repaint();
     }
 
     private void enterEarthExplorer() {
@@ -3383,6 +3454,13 @@ public class SolarSystemSimulation extends JPanel
         double[] sun = earthSunDirGeo();
         double sunX = sun[0], sunY = sun[1], sunZ = sun[2];
         boolean lit = shadingEnabled;
+        // A solar eclipse in progress: sunlight on each pixel is cut to the fraction of the
+        // (limb-darkened) Sun the Moon leaves uncovered there, penumbra and umbra alike.
+        SolarEclipse.Path ecl = eclipseNow();
+        SolarEclipse.Geometry eg = ecl != null && simTimeSec > ecl.start() && simTimeSec < ecl.end()
+                ? SolarEclipse.at(simTimeSec) : null;
+        double[] eAxis = eg != null ? eg.axis() : null;
+        double eSM = eg != null ? SolarEclipse.norm(SolarEclipse.sub(eg.moon(), eg.sun())) : 0;
 
         boolean drawGlobe = geZoom < GE_TILE_MIN;                        // above the band: pure tiles
         double tileAlpha = smoothstep(GE_GLOBE_MAX, GE_TILE_MIN, geZoom); // globe → satellite cross-fade
@@ -3393,7 +3471,8 @@ public class SolarSystemSimulation extends JPanel
         boolean reuse = geBufValid
                 && geRLat == geLat && geRLon == geLon && geRZoom == geZoom
                 && geRShade == lit && geRNight == showNightLights && geRClouds == showClouds
-                && Math.abs(geRSunX - sunX) + Math.abs(geRSunY - sunY) + Math.abs(geRSunZ - sunZ) < 3e-3;
+                && Math.abs(geRSunX - sunX) + Math.abs(geRSunY - sunY) + Math.abs(geRSunZ - sunZ) < 3e-3
+                && (eg == null ? Double.isNaN(geREclT) : geREclT == simTimeSec);
         if (!reuse) {
         // Orthonormal view basis in the Earth-fixed frame (Z=north pole, X=Greenwich equator).
         double phi0 = Math.toRadians(geLat), lam0 = Math.toRadians(geLon);
@@ -3445,7 +3524,9 @@ public class SolarSystemSimulation extends JPanel
                 }
 
                 double dot = lit ? (Px * sunX + Py * sunY + Pz * sunZ) : 1.0;
-                double shade = lit ? (AMB + (1 - AMB) * Math.max(0.0, dot)) : 1.0;
+                double sunlit = lit ? Math.max(0.0, dot) : 1.0;
+                if (eg != null && lit && dot > 0) sunlit *= SolarEclipse.sunlightAt(eg, eAxis, eSM, lat, lon);
+                double shade = lit ? (AMB + (1 - AMB) * sunlit) : 1.0;
                 cr *= shade; cg *= shade; cb *= shade;
 
                 // City lights on the night side.
@@ -3467,6 +3548,7 @@ public class SolarSystemSimulation extends JPanel
         geRLat = geLat; geRLon = geLon; geRZoom = geZoom;
         geRShade = lit; geRNight = showNightLights; geRClouds = showClouds;
         geRSunX = sunX; geRSunY = sunY; geRSunZ = sunZ;
+        geREclT = eg != null ? simTimeSec : Double.NaN;
         }  // end if (!reuse)
 
         // Soft atmosphere rim while the globe is small enough to see space around it
@@ -3502,6 +3584,7 @@ public class SolarSystemSimulation extends JPanel
             drawTileMap(g2, W, H, zf, (float) tileAlpha);
         }
 
+        if (ecl != null) drawEclipseOverlay(g2, W, H, ecl, eg, tileAlpha);
         drawDynamicScale(g2, H);              // surface scale + coordinates on the existing ruler
         drawEarthExplorerHud(g2, W, H, tileAlpha);
     }
@@ -3597,6 +3680,11 @@ public class SolarSystemSimulation extends JPanel
         int[] lm = ((DataBufferInt) geLightBuf.getRaster().getDataBuffer()).getData();
         double[] sun = earthSunDirGeo();
         double sunX = sun[0], sunY = sun[1], sunZ = sun[2];
+        SolarEclipse.Path ecl = eclipseNow();
+        SolarEclipse.Geometry eg = ecl != null && simTimeSec > ecl.start() && simTimeSec < ecl.end()
+                ? SolarEclipse.at(simTimeSec) : null;
+        double[] eAxis = eg != null ? eg.axis() : null;
+        double eSM = eg != null ? SolarEclipse.norm(SolarEclipse.sub(eg.moon(), eg.sun())) : 0;
         double scx = W / 2.0, scy = H / 2.0, span = n * GE_TILE_PX;
         boolean anyNight = false;
         for (int j = 0; j < LH; j++) {
@@ -3609,6 +3697,7 @@ public class SolarSystemSimulation extends JPanel
                 double lon = ((cxw + (sx - scx) / s) / span) * 2 * Math.PI - Math.PI;
                 double dot = (cLat * Math.cos(lon)) * sunX + (cLat * Math.sin(lon)) * sunY + sLat * sunZ;
                 double day = smoothstep(-0.12, 0.12, dot);
+                if (eg != null && dot > 0) day *= SolarEclipse.sunlightAt(eg, eAxis, eSM, lat, lon);
                 int a = (int) ((1 - (0.30 + 0.70 * day)) * 255);        // night floor 0.30
                 if (a > 0) anyNight = true;
                 lm[j * LW + i] = (a << 24) | 0x0A1226;                  // dark night-blue tint
@@ -3777,6 +3866,201 @@ public class SolarSystemSimulation extends JPanel
             g2.drawString(attrib, ax + 6, ay + hfm.getAscent() + 3);
         }
         g2.setFont(oldFont);
+    }
+
+    // ---- Solar eclipse overlay on the explorer ----
+
+    /**
+     * Panel position of a geodetic point (deg) in the explorer, or null when it is on the far
+     * side of the globe. Uses the globe's orthographic projection (with its entry roll) while
+     * the globe shows, and the Web-Mercator tile map once the tiles have taken over.
+     */
+    private double[] geProject(double latDeg, double lonDeg, int W, int H, double tileAlpha) {
+        if (tileAlpha < 0.5) {
+            double phi0 = Math.toRadians(geLat), lam0 = Math.toRadians(geLon);
+            double cP = Math.cos(phi0), sP = Math.sin(phi0), cL = Math.cos(lam0), sL = Math.sin(lam0);
+            double la = Math.toRadians(latDeg), lo = Math.toRadians(lonDeg);
+            double px = Math.cos(la) * Math.cos(lo), py = Math.cos(la) * Math.sin(lo), pz = Math.sin(la);
+            double depth = px * cP * cL + py * cP * sL + pz * sP;
+            if (depth < 0) return null;
+            double x = -px * sL + py * cL;                          // · east
+            double y = -px * sP * cL - py * sP * sL + pz * cP;      // · north
+            double roll = geRoll0 * (1.0 - smoothstep(1.0, GE_GLOBE_MAX, geZoom));
+            double cR = Math.cos(roll), sR = Math.sin(roll);
+            double x0 = x * cR + y * sR, y0 = -x * sR + y * cR;
+            double R = Math.min(W, H) * 0.5 * geZoom;
+            return new double[]{W * 0.5 + x0 * R, H * 0.5 - y0 * R};
+        }
+        double zf = mercatorZoomFor(geZoom, geLat, Math.min(W, H) * 0.5);
+        double world = Math.pow(2, zf) * GE_TILE_PX;
+        double dLon = ((lonDeg - geLon) % 360 + 540) % 360 - 180;   // nearest copy of the point
+        return new double[]{W * 0.5 + dLon / 360.0 * world, H * 0.5 + (mercatorY(latDeg) - mercatorY(geLat)) * world};
+    }
+
+    /** Polyline through the projected points, broken wherever a point is hidden or jumps. */
+    private void strokeGeoLine(Graphics2D g2, java.util.List<double[]> pts, int W, int H, double tileAlpha) {
+        Path2D.Double path = new Path2D.Double();
+        double[] prev = null;
+        double jump = Math.max(W, H) * 0.5;
+        for (double[] ll : pts) {
+            double[] q = ll == null ? null : geProject(ll[0], ll[1], W, H, tileAlpha);
+            if (q == null) { prev = null; continue; }
+            if (prev == null || Math.hypot(q[0] - prev[0], q[1] - prev[1]) > jump) path.moveTo(q[0], q[1]);
+            else path.lineTo(q[0], q[1]);
+            prev = q;
+        }
+        g2.draw(path);
+    }
+
+    private static String hhmmss(double sim) {
+        return java.time.LocalTime.ofSecondOfDay(Math.floorMod(Math.round(sim) + 43_200L, 86_400L)).toString();
+    }
+
+    private static String latLon(double[] ll) {
+        return String.format("%.2f°%s %.2f°%s", Math.abs(ll[0]), ll[0] >= 0 ? "N" : "S", Math.abs(ll[1]), ll[1] >= 0 ? "E" : "W");
+    }
+
+    private static String minSec(double sec) {
+        long t = Math.round(sec);
+        return t >= 60 ? (t / 60) + "m " + String.format("%02d", t % 60) + "s" : t + "s";
+    }
+
+    /**
+     * The eclipse on the map: the band of totality (or annularity) between its limits, the
+     * central line ticked every 10 minutes (UTC), the limits of the partial phase, the point
+     * under the Sun–Moon line right now, and an info box with the local circumstances at the
+     * map centre. The shadow itself is in the globe's and the map's lighting.
+     */
+    private void drawEclipseOverlay(Graphics2D g2, int W, int H, SolarEclipse.Path ecl,
+                                    SolarEclipse.Geometry eg, double tileAlpha) {
+        float fade = (float) Math.max(0.0, Math.min(1.0, geTransition));
+        if (fade <= 0.02f) return;
+        Object oldAA = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        Stroke oldS = g2.getStroke();
+        boolean total = ecl.type() != SolarEclipse.Type.ANNULAR;
+        Color band = total ? new Color(255, 120, 60) : new Color(255, 200, 60);
+
+        // The band: one quad per pair of consecutive samples with both limits on view.
+        java.util.List<SolarEclipse.Sample> cs = ecl.central();
+        g2.setColor(new Color(band.getRed(), band.getGreen(), band.getBlue(), (int) (70 * fade)));
+        for (int i = 0; i + 1 < cs.size(); i++) {
+            SolarEclipse.Sample a = cs.get(i), b = cs.get(i + 1);
+            if (a.north() == null || a.south() == null || b.north() == null || b.south() == null) continue;
+            double[] p1 = geProject(a.north()[0], a.north()[1], W, H, tileAlpha), p2 = geProject(b.north()[0], b.north()[1], W, H, tileAlpha);
+            double[] p3 = geProject(b.south()[0], b.south()[1], W, H, tileAlpha), p4 = geProject(a.south()[0], a.south()[1], W, H, tileAlpha);
+            if (p1 == null || p2 == null || p3 == null || p4 == null) continue;
+            double span = Math.max(Math.hypot(p1[0] - p3[0], p1[1] - p3[1]), Math.hypot(p2[0] - p4[0], p2[1] - p4[1]));
+            if (span > Math.max(W, H)) continue;                    // wrapped across the map seam
+            Path2D.Double q = new Path2D.Double();
+            q.moveTo(p1[0], p1[1]); q.lineTo(p2[0], p2[1]); q.lineTo(p3[0], p3[1]); q.lineTo(p4[0], p4[1]); q.closePath();
+            g2.fill(q);
+        }
+        java.util.List<double[]> north = new ArrayList<>(), south = new ArrayList<>(), centre = new ArrayList<>();
+        for (SolarEclipse.Sample c : cs) { north.add(c.north()); south.add(c.south()); centre.add(c.centre()); }
+        g2.setColor(new Color(band.getRed(), band.getGreen(), band.getBlue(), (int) (230 * fade)));
+        g2.setStroke(new BasicStroke(1.6f));
+        strokeGeoLine(g2, north, W, H, tileAlpha);
+        strokeGeoLine(g2, south, W, H, tileAlpha);
+        g2.setStroke(new BasicStroke(1.2f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 1f, new float[]{6f, 4f}, 0f));
+        strokeGeoLine(g2, centre, W, H, tileAlpha);
+        // Partial-phase limits (where they exist; elsewhere the penumbra runs off the limb).
+        g2.setColor(new Color(230, 230, 240, (int) (120 * fade)));
+        g2.setStroke(new BasicStroke(1.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 1f, new float[]{2f, 4f}, 0f));
+        strokeGeoLine(g2, ecl.partialNorth(), W, H, tileAlpha);
+        strokeGeoLine(g2, ecl.partialSouth(), W, H, tileAlpha);
+        g2.setStroke(oldS);
+
+        // Times along the central line, every 10 minutes.
+        Font oldF = g2.getFont();
+        g2.setFont(oldF.deriveFont(Font.PLAIN, 10f));
+        g2.setColor(new Color(255, 235, 215, (int) (220 * fade)));
+        for (SolarEclipse.Sample c : cs) {
+            long sec = Math.floorMod(Math.round(c.t()) + 43_200L, 86_400L);
+            if (sec % 600 >= 60) continue;                           // samples are a minute apart
+            double[] q = geProject(c.centre()[0], c.centre()[1], W, H, tileAlpha);
+            if (q == null || q[0] < 0 || q[1] < 0 || q[0] > W || q[1] > H) continue;
+            g2.fill(new Ellipse2D.Double(q[0] - 2, q[1] - 2, 4, 4));
+            g2.drawString(hhmmss(c.t()).substring(0, 5), (float) q[0] + 5, (float) q[1] - 4);
+        }
+
+        // Under the Sun–Moon line right now.
+        double[] now = null;
+        if (eg != null) {
+            double[] c = SolarEclipse.intersect(eg.moon(), eg.axis());
+            if (c != null) {
+                now = SolarEclipse.geodetic(c);
+                // The umbra's footprint right now.
+                Path2D.Double fp = new Path2D.Double();
+                boolean first = true;
+                for (double[] ll : SolarEclipse.footprint(eg)) {
+                    double[] q = geProject(ll[0], ll[1], W, H, tileAlpha);
+                    if (q == null) continue;
+                    if (first) fp.moveTo(q[0], q[1]); else fp.lineTo(q[0], q[1]);
+                    first = false;
+                }
+                if (!first) {
+                    fp.closePath();
+                    g2.setColor(new Color(0, 0, 0, (int) (150 * fade)));
+                    g2.fill(fp);
+                    g2.setColor(new Color(255, 255, 255, (int) (200 * fade)));
+                    g2.setStroke(new BasicStroke(1.2f));
+                    g2.draw(fp);
+                    g2.setStroke(oldS);
+                }
+                double[] q = geProject(now[0], now[1], W, H, tileAlpha);
+                if (q != null) {
+                    g2.setColor(new Color(255, 255, 255, (int) (230 * fade)));
+                    g2.setStroke(new BasicStroke(1.5f));
+                    g2.draw(new Ellipse2D.Double(q[0] - 6, q[1] - 6, 12, 12));
+                    g2.setStroke(oldS);
+                }
+            }
+        }
+
+        // Info box: the eclipse, now, and the local circumstances at the map centre.
+        if (Math.abs(geLat - eclLocalLat) > 0.02 || Math.abs(geLon - eclLocalLon) > 0.02 || eclLocalPath != ecl) {
+            eclLocal = SolarEclipse.local(ecl, geLat, geLon);
+            eclLocalLat = geLat; eclLocalLon = geLon; eclLocalPath = ecl;
+        }
+        String kind = switch (ecl.type()) {
+            case TOTAL -> "Total"; case ANNULAR -> "Annular"; case HYBRID -> "Hybrid"; case PARTIAL -> "Partial";
+        };
+        java.time.LocalDate day = java.time.LocalDateTime.ofInstant(J2000_INSTANT.plusSeconds(Math.round(ecl.tGreatest())), java.time.ZoneOffset.UTC).toLocalDate();
+        java.util.List<String> lines = new ArrayList<>();
+        lines.add(kind + " solar eclipse  " + day);
+        String ge = "Greatest " + hhmmss(ecl.tGreatest()) + " UTC at " + latLon(ecl.greatest());
+        if (!cs.isEmpty()) {
+            double best = 0;
+            for (SolarEclipse.Sample c : cs) best = Math.max(best, c.durationSec());
+            ge += ", up to " + minSec(best);
+        }
+        lines.add(ge);
+        lines.add("Now " + hhmmss(simTimeSec) + " UTC" + (now != null ? ", central line at " + latLon(now) : ""));
+        double[] L = eclLocal;
+        String here = "Map centre: ";
+        if (L == null || Double.isNaN(L[0])) here += "no eclipse here";
+        else {
+            here += "partial " + hhmmss(L[0]).substring(0, 5) + "–" + hhmmss(L[4]).substring(0, 5)
+                    + String.format(", max %.0f%% at %s", 100 * L[5], hhmmss(L[2]));
+            if (!Double.isNaN(L[1])) here += ", " + (total ? "totality " : "annularity ") + minSec(L[3] - L[1]);
+            if (L[6] < 0) here += " (Sun below the horizon)";
+        }
+        lines.add(here);
+        g2.setFont(oldF.deriveFont(Font.PLAIN, 12f));
+        FontMetrics fm = g2.getFontMetrics();
+        int bw = 0;
+        for (String l : lines) bw = Math.max(bw, fm.stringWidth(l));
+        int lh = fm.getHeight(), bx = 12, by = 12, pad = 8;
+        g2.setColor(new Color(10, 16, 30, (int) (200 * fade)));
+        g2.fillRoundRect(bx, by, bw + 2 * pad, lines.size() * lh + 2 * pad - 2, 12, 12);
+        for (int i = 0; i < lines.size(); i++) {
+            g2.setColor(i == 0 ? new Color(band.getRed(), band.getGreen(), band.getBlue(), (int) (255 * fade))
+                               : new Color(215, 225, 240, (int) (255 * fade)));
+            g2.drawString(lines.get(i), bx + pad, by + pad + fm.getAscent() + i * lh);
+        }
+        g2.setFont(oldF);
+        if (oldAA != null) g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
     }
 
     /** Camera elevation above the ecliptic used by the sphere lighting frame (deg); 90 = top-down. */
@@ -5480,7 +5764,7 @@ public class SolarSystemSimulation extends JPanel
      * Position of moon {@code m} of planet {@code i} relative to the planet's centre, in world
      * axes (metres) — the real 3-D position, including the moon's tilt to the ecliptic (so
      * shadows land at real latitudes and eclipses happen only near a node). Earth's Moon comes
-     * from the ELP-2000/82 lunar theory, every other moon from {@link SatelliteEphemeris}.
+     * from the ELP/MPP02 lunar theory, every other moon from {@link SatelliteEphemeris}.
      */
     private double[] moonRelPos(int i, int m) { return moonOffsetWorld(i, m, bodyTime(i)); }
 
@@ -5787,6 +6071,20 @@ public class SolarSystemSimulation extends JPanel
         renderSkyShot(dir + "/shot_sky_twilight.png", W, H, "Greenwich, UK", 51.4779, -0.0015,
                 java.time.LocalDateTime.of(2025, 3, 3, 18, 20), null, 120);             // just after sunset, looking west
         skyViewActive = false;
+
+        // O–P) The 2024 total solar eclipse on the Earth Explorer globe: the path of totality
+        //      and its limits, the partial-phase limits, and the shadow in the lighting.
+        double t2024 = java.time.LocalDateTime.of(2024, 4, 8, 18, 17).toEpochSecond(java.time.ZoneOffset.UTC)
+                - J2000_INSTANT.getEpochSecond();
+        showSolarEclipseOnGlobe(t2024);
+        goToSimTime(java.time.LocalDateTime.of(2024, 4, 8, 18, 41).toEpochSecond(java.time.ZoneOffset.UTC)
+                - J2000_INSTANT.getEpochSecond());
+        geTransition = 1.0;
+        geLat = 30; geLon = -95; geZoom = geTargetZoom = 1.15;
+        writeShot(dir + "/shot_eclipse_globe.png", W, H);
+        geLat = 32.78; geLon = -96.80; geZoom = geTargetZoom = 4.5;
+        writeShot(dir + "/shot_eclipse_texas.png", W, H);
+        earthExplorerActive = false;
     }
 
     /**
