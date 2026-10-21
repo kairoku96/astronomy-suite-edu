@@ -94,8 +94,8 @@ double-click returns to the step's view). The panel holds the narration, sliders
 and "check yourself" questions. **Esc** or **← Lessons** restores the simulation
 exactly as you left it: visibility, date, time speed and camera.
 
-The eleven lessons follow the first half of a first astrophysics course (UTM's AST221,
-Days 2–8, plus a rehearsal of its Titan final project); `docs/LESSON_PLAN.md` maps each
+The twelve lessons follow the first half of a first astrophysics course (UTM's AST221,
+Days 2–8, plus its first Python project and a rehearsal of its Titan final project); `docs/LESSON_PLAN.md` maps each
 course topic to a lesson and rates how well it fits a solar-system simulation. Steps that go beyond those slides are hidden by default (marked † below): the seasons
 check, planet temperatures and habitable zones, planets' changing brightness, and aliasing.
 Start with `-Dsss.lessons.all=true` to show them too.
@@ -109,10 +109,11 @@ Start with `-Dsss.lessons.all=true` to show them too.
 | 5 | Intermediate | **Weighing the Solar System** | P² = a³ on the eight planets with their measured periods, weigh the Sun from Earth's year, Jupiter from the traced orbits of its four moons (1.90 × 10²⁷ kg), and Pluto + Charon from their real dance about a barycentre outside Pluto. |
 | 6 | Intermediate | **Luminosity, Flux & Intensity** | With every planet hidden, wrap the real Sun in a Gaussian bubble and count light packets crossing it (always L, for any size or shape), watch one bundle of light spread over 1, 4, 9 tiles (inverse-square law), build 4πr² as a Riemann sum of r² sinθ Δθ Δφ patches, see why a star's surface brightness (intensity) doesn't change with distance, and integrate F = ∫ I cosθ dΩ = πI (R/d)². |
 | 7 | Intermediate | **Hot Bodies Glow** | Planck curves and Wien's law for the Sun, a what-if star beside it (Stefan–Boltzmann), each planet's equilibrium temperature from its live distance against the measured one†, Mars between perihelion and aphelion†, and the Earth-like zone around an M dwarf†. |
-| 8 | Intermediate | **How Bright?** | Magnitudes on the real winter sky (with light pollution), Vega as the zero point, Mars brightening toward its Feb 2027 opposition†, absolute magnitude, B − V colour, the naked-eye stars filtered by spectral class, and the Bohr atom's Balmer lines. |
-| 9 | Intermediate | **Measuring Distance** | Earth's real orbit as the baseline: the true-scale parallactic ellipses of α Centauri, Barnard's Star, 61 Cygni, Sirius and Vega, the parsec, three years of proper motion plus parallax, and how far Hipparcos and Gaia reach. |
-| 10 | Advanced | **The Sun Wobbles Too** | The Sun's real path about the barycentre from the N-body integration, seen astrometrically from 10 pc; its radial-velocity curve at any inclination and Jupiter's minimum mass from it; real transits of Jupiter and Earth with their light curves; binary-star mass checks. |
-| 11 | Intermediate | **Titan Lab** | Through a 100 mm telescope tracking Saturn from Mississauga, log Titan's real offset night by night (with optional clouds), fit its period by least squares (and see aliasing†), and weigh Saturn. The telescope keeps north up, as on an equatorial mount, so the field does not rotate. |
+| 8 | Intermediate | **Project 1: Blackbody Radiation** | The AST221 Python project, step by step: write Planck's law (and catch the notebook's misplaced-parenthesis bug), measure Wien's law with argmax on a wavelength grid, compare the peaks of Bλ and Bν, lay blackbodies over eight real SDSS spectra (read from the original FITS files), and turn the scale factor π(R/d)² into the stars' distance, checked against the cluster M67 they belong to. |
+| 9 | Intermediate | **How Bright?** | Magnitudes on the real winter sky (with light pollution), Vega as the zero point, Mars brightening toward its Feb 2027 opposition†, absolute magnitude, B − V colour, the naked-eye stars filtered by spectral class, and the Bohr atom's Balmer lines. |
+| 10 | Intermediate | **Measuring Distance** | Earth's real orbit as the baseline: the true-scale parallactic ellipses of α Centauri, Barnard's Star, 61 Cygni, Sirius and Vega, the parsec, three years of proper motion plus parallax, and how far Hipparcos and Gaia reach. |
+| 11 | Advanced | **The Sun Wobbles Too** | The Sun's real path about the barycentre from the N-body integration, seen astrometrically from 10 pc; its radial-velocity curve at any inclination and Jupiter's minimum mass from it; real transits of Jupiter and Earth with their light curves; binary-star mass checks. |
+| 12 | Intermediate | **Titan Lab** | Through a 100 mm telescope tracking Saturn from Mississauga, log Titan's real offset night by night (with optional clouds), fit its period by least squares (and see aliasing†), and weigh Saturn. The telescope keeps north up, as on an equatorial mount, so the field does not rotate. |
 
 The scenes are computed, not canned: orbits come from Kepler's equation and vis-viva,
 the photon counters count real crossings, and both integrals are live Riemann sums shown
@@ -673,6 +674,7 @@ src/Astro.java                   time scales (ΔT), precession, nutation, sidere
 src/StarCatalog.java             Yale Bright Star Catalogue, constellations, Milky Way map
 src/SkyView.java                 Sky from Earth: the planetarium view
 src/LessonStudio.java            lessons: docked panel, 3-D stage, software 3-D renderer
+src/SdssSpectra.java             SDSS spectra for the Project 1 lesson (a small FITS table reader)
 src/GLSphereRenderer.java        GPU sphere shader for textured planets
 src/tools/ScreenGrab.java        screenshot helper
 src/tools/FetchMissions.java     downloads + compresses spacecraft tracks from JPL Horizons
@@ -681,6 +683,7 @@ assets/textures/                 planet / moon / sun texture maps
 assets/sky/                      star catalogue, constellation data, Milky Way map
 assets/moon/                     the ELP/MPP02 lunar series (35 901 terms)
 assets/missions/                 spacecraft tracks (*.trk.gz)
+assets/spectra/                  eight SDSS stellar spectra of M67 stars (spec-*.fits.gz)
 libs/                            bundled FlatLaf look-and-feel
 build.gradle / settings.gradle   Gradle build (./gradlew run)
 run2d.ps1                        Windows build + launch script

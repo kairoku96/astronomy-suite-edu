@@ -160,6 +160,7 @@ public final class LessonStudio extends JPanel {
                 new WeighLesson(host).build(),          // Day 7: Kepler III and Newton
                 new LightLesson(host).build(),          // Day 4: radiative quantities
                 new BlackbodyLesson(host).build(),      // Day 5: blackbody radiation
+                new BlackbodyProject(host).build(),     // Python project 1: blackbody radiation and SDSS spectra
                 new MagnitudeLesson(host).build(),      // Day 6: magnitudes and spectra
                 new ParallaxLesson(host).build(),       // Day 7: parallax
                 new WobbleLesson(host).build(),         // Days 7, 8: binaries and the Sun's wobble
@@ -944,6 +945,7 @@ public final class LessonStudio extends JPanel {
             c.setForeground(INK);
             c.setFocusable(false);
             c.setAlignmentX(LEFT_ALIGNMENT);
+            c.setMaximumSize(new Dimension(Integer.MAX_VALUE, c.getPreferredSize().height));   // the row's width, not a clipped label
             c.addActionListener(_ -> { if (!syncing) set.accept(c.isSelected()); });
             box.add(c);
             box.add(Box.createVerticalStrut(8));

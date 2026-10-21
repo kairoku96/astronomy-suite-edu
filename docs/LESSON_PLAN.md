@@ -98,7 +98,7 @@ Days 2–8, the material the term test covers. Each slide topic below gets two r
 
 ## Lesson sequence (built)
 
-All eleven lessons are in the Lesson Studio (Education → Lessons), in this order. Each ends with "check yourself" questions built
+All twelve lessons are in the Lesson Studio (Education → Lessons), in this order. Each ends with "check yourself" questions built
 from the slide problems, so the set also works as term-test practice.
 
 | # | Lesson | Level | Build | Slide days | Status |
@@ -110,10 +110,11 @@ from the slide problems, so the set also works as term-test practice.
 | 5 | **Weighing the Solar System**: Kepler III, Newton's form, weighing the Sun, Jupiter and Pluto | Beginner → Intermediate | S–M | 7 | Built |
 | 6 | **Luminosity, Flux & Intensity** | Intermediate | — | 4 | Existed |
 | 7 | **Hot Bodies Glow**: Planck and Wien for the Sun, Stefan–Boltzmann, planet temperatures, the M-dwarf what-if | Intermediate | M | 5 | Built |
-| 8 | **How Bright?**: magnitudes, Vega, absolute magnitude, the Sun moved to 10 pc, B−V colour | Beginner → Intermediate | S | 6 | Built |
-| 9 | **Measuring Distance**: parallax from Earth's orbit, parsec, proper-motion spiral, Gaia's reach | Intermediate | M | 7 | Built |
-| 10 | **The Sun Wobbles Too**: centre of mass, astrometric wobble, radial-velocity curve, sin i, transits, binary-star masses | Advanced | M | 7, 8 | Built |
-| 11 | **Titan Lab** (project rehearsal): log Titan nightly, fit its period, recover Saturn's mass | Intermediate | M | 3, 7 | Built |
+| 8 | **Project 1: Blackbody Radiation** (Python project 1): Planck's law as a function, Wien by argmax, Bλ vs Bν, real SDSS spectra, distance from π(R/d)² | Intermediate | M | 5 | Built |
+| 9 | **How Bright?**: magnitudes, Vega, absolute magnitude, the Sun moved to 10 pc, B−V colour | Beginner → Intermediate | S | 6 | Built |
+| 10 | **Measuring Distance**: parallax from Earth's orbit, parsec, proper-motion spiral, Gaia's reach | Intermediate | M | 7 | Built |
+| 11 | **The Sun Wobbles Too**: centre of mass, astrometric wobble, radial-velocity curve, sin i, transits, binary-star masses | Advanced | M | 7, 8 | Built |
+| 12 | **Titan Lab** (project rehearsal): log Titan nightly, fit its period, recover Saturn's mass | Intermediate | M | 3, 7 | Built |
 
 **Left out of the 3-D scenes** (Weak fit; teach them with a chart, notebook or slide):
 
@@ -135,6 +136,10 @@ from the slide problems, so the set also works as term-test practice.
 - **Parallax** uses catalogued parallaxes and proper motions for five named stars, with
   Earth's position from the simulation.
 - **Starlink** and **filter integration** stay out, as planned.
+- **Python Project 1** (blackbody radiation) became lesson 8. It follows the notebook's five
+  tasks and reads the same eight SDSS spectra, so **F_λ vs F_ν** is taught after all, as its
+  Task 3. The spectra turned out to be stars of the open cluster M67 (the HD names are SDSS's
+  ELODIE template matches), which gives the intensity-vs-flux step a distance to check.
 
 - **Steps beyond the slides are hidden by default:** the seasons check (lesson 4), planet
   equilibrium temperatures, albedo and habitable zones (three steps of lesson 7), planets'
