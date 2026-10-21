@@ -67,13 +67,14 @@ If the JOGL jars aren't in the default location, point the build at them:
 ./run2d.ps1 -Shot out\shots   # head-less showcase screenshots
 ```
 
+
 ## Lesson Studio
 
 Open **Education → Lessons...** (or pick a lesson directly from the Education menu).
 Lessons run on the live simulation. A lesson panel docks on the right, and each
 step reconfigures the real solar system to demonstrate its idea: it shows only the
 bodies it needs, sets the clock (and sometimes the date), flies the camera there,
-and draws its explanations straight into the 3-D scene. The eccentricity lesson
+and draws its explanations straight into the 3-D scene or the sky. The eccentricity lesson
 follows the real Mercury through perihelion and aphelion; the flux lesson hides
 every planet and wraps the real Sun in a Gaussian bubble, then flies in close to
 its textured surface. You keep the normal camera controls (drag, scroll;
@@ -81,19 +82,41 @@ double-click returns to the step's view). The panel holds the narration, sliders
 and "check yourself" questions. **Esc** or **← Lessons** restores the simulation
 exactly as you left it: visibility, date, time speed and camera.
 
-| Level | Lesson | What you do |
-| ----- | ------ | ----------- |
-| Beginner | **Orbits That Stretch** | Watch the real inner planets, stretch a what-if orbit beside Earth's (both foci, d₁ + d₂ = 2a), follow the real Mercury through perihelion q = a(1−e) and aphelion Q = a(1+e) with equal-time wedges (Kepler's 2nd law), then fly to Venus, Earth, Mars, Pluto and Halley's Comet. |
-| Intermediate | **Luminosity, Flux & Intensity** | With every planet hidden, wrap the real Sun in a Gaussian bubble and count light packets crossing it (always L, for any size or shape), watch one bundle of light spread over 1, 4, 9 tiles (inverse-square law), build 4πr² as a Riemann sum of r² sinθ Δθ Δφ patches, see why a star's surface brightness (intensity) doesn't change with distance, and integrate F = ∫ I cosθ dΩ = πI (R/d)². |
+The eleven lessons follow the first half of a first astrophysics course (UTM's AST221,
+Days 2–8, plus a rehearsal of its Titan final project); `docs/LESSON_PLAN.md` maps each
+course topic to a lesson and rates how well it fits a solar-system simulation. Steps that go beyond those slides are hidden by default (marked † below): the seasons
+check, planet temperatures and habitable zones, planets' changing brightness, and aliasing.
+Start with `-Dsss.lessons.all=true` to show them too.
+
+| # | Level | Lesson | What you do |
+| - | ----- | ------ | ----------- |
+| 1 | Beginner | **Reading the Sky** | On the real sky over the UTM campus (Sept 21, 2026): altitude and azimuth, the celestial pole at your latitude (try other places), RA / Dec, sidereal time and hour angle, and planning an observation of the real Saturn near opposition (rise, transit, set, 90° − \|φ − δ\|). |
+| 2 | Beginner | **How Big Does It Look?** | The 2024 total eclipse over Niagara Falls (Sun and Moon both ~0.53°), the thin wedge θ = D/d makes at the Moon, the Sun's solid angle from every planet, and Jupiter's 47″ disc through a tracking telescope. |
+| 3 | Intermediate | **Telescope Power** | Open the aperture and watch Neptune and then Triton appear (m = 5 + 5 log D/7 mm); see the image a telescope really delivers of the real Pluto–Charon pair (Airy pattern, seeing in Mississauga or on Mauna Kea, adaptive optics); build an Earth-sized interferometer. |
+| 4 | Beginner | **Orbits That Stretch** | Watch the real inner planets, stretch a what-if orbit beside Earth's (both foci, d₁ + d₂ = 2a), follow the real Mercury through perihelion q = a(1−e) and aphelion Q = a(1+e) with equal-time wedges (Kepler's 2nd law), then fly to Venus, Earth, Mars, Pluto and Halley's Comet (plus a seasons check†). |
+| 5 | Intermediate | **Weighing the Solar System** | P² = a³ on the eight planets with their measured periods, weigh the Sun from Earth's year, Jupiter from the traced orbits of its four moons (1.90 × 10²⁷ kg), and Pluto + Charon from their real dance about a barycentre outside Pluto. |
+| 6 | Intermediate | **Luminosity, Flux & Intensity** | With every planet hidden, wrap the real Sun in a Gaussian bubble and count light packets crossing it (always L, for any size or shape), watch one bundle of light spread over 1, 4, 9 tiles (inverse-square law), build 4πr² as a Riemann sum of r² sinθ Δθ Δφ patches, see why a star's surface brightness (intensity) doesn't change with distance, and integrate F = ∫ I cosθ dΩ = πI (R/d)². |
+| 7 | Intermediate | **Hot Bodies Glow** | Planck curves and Wien's law for the Sun, a what-if star beside it (Stefan–Boltzmann), each planet's equilibrium temperature from its live distance against the measured one†, Mars between perihelion and aphelion†, and the Earth-like zone around an M dwarf†. |
+| 8 | Intermediate | **How Bright?** | Magnitudes on the real winter sky (with light pollution), Vega as the zero point, Mars brightening toward its Feb 2027 opposition†, absolute magnitude, B − V colour, the naked-eye stars filtered by spectral class, and the Bohr atom's Balmer lines. |
+| 9 | Intermediate | **Measuring Distance** | Earth's real orbit as the baseline: the true-scale parallactic ellipses of α Centauri, Barnard's Star, 61 Cygni, Sirius and Vega, the parsec, three years of proper motion plus parallax, and how far Hipparcos and Gaia reach. |
+| 10 | Advanced | **The Sun Wobbles Too** | The Sun's real path about the barycentre from the N-body integration, seen astrometrically from 10 pc; its radial-velocity curve at any inclination and Jupiter's minimum mass from it; real transits of Jupiter and Earth with their light curves; binary-star mass checks. |
+| 11 | Intermediate | **Titan Lab** | Through a 100 mm telescope tracking Saturn from Mississauga, log Titan's real offset night by night (with optional clouds), fit its period by least squares (and see aliasing†), and weigh Saturn. The telescope keeps north up, as on an equatorial mount, so the field does not rotate. |
 
 The scenes are computed, not canned: orbits come from Kepler's equation and vis-viva,
 the photon counters count real crossings, and both integrals are live Riemann sums shown
-next to their closed forms. Annotations are projected through the simulation's own
-camera by a small depth-sorted renderer (`R3` in `LessonStudio.java`), and anything
-behind the Sun's disc is hidden by it.
+next to their closed forms. Every position, magnitude and velocity the newer lessons
+show is read from the running simulation (the N-body planets, the moons' theories, the
+Sun's barycentric offset, the planetarium's apparent sky), never from a table of answers.
+Annotations are projected through the simulation's own camera by a small depth-sorted
+renderer (`R3` in `LessonStudio.java`), and anything behind the Sun's disc is hidden by it.
+Sky steps run in the **Sky from Earth** view: their annotations are east-north-up
+directions projected the way the planetarium projects the sky, and a telescope step's
+view tracks its target like a clock drive. Shared helpers for the lessons in their own
+files (`*Lesson.java`) are in `LessonKit.java`.
 
 Developer flags: `-Dsss.lesson=N` starts lesson N at start-up (0 = just open the lesson list);
-`-Dsss.lessonshot=<dir>` renders every step of every lesson to PNGs head-less and exits;
+`-Dsss.lessonshot=<dir>` renders every step of every lesson to PNGs head-less and exits
+(add `-Dsss.lessonshot.only=3,5` for just those lessons);
 `-Dsss.missionshot=<dir>[,id…]` renders every timeline event of the missions (e.g.
 `out/m,apollo11`) head-less and exits.
 
@@ -110,6 +133,21 @@ conversation context for follow-ups, will happily answer general questions too, 
 The live state passed to the assistant includes the simulated date/time and elapsed
 years, the time speed and pause state, the selected body and moon, what the camera is
 following, the zoom mode, and toggles like orbits/labels/barycentric frame.
+
+It also sees:
+
+- **The lesson you are on:** the lesson and step, the narration on screen, the readouts and
+  formulas shown, and every slider and choice setting. On a check-yourself question it knows
+  the answer, but it is told to tutor with hints first and only give the answer if you ask
+  for it outright.
+- **The local sky:** from your observer location at the simulated time, whether or not the
+  Sky from Earth view is open. That covers the Sun's altitude and the state of the sky, the
+  Moon's phase and position, each planet's altitude, direction, brightness and whether it is
+  visible, and the brightest stars up. When the sky view is open it also gets where you are
+  looking and what is in the field.
+
+So you can ask things like "what does this step mean?", "why did the flux go down?" or
+"what is the bright thing low in the east?".
 
 The assistant uses **Google Gemini's free tier**, which costs nothing — no billing
 account is required — but does need a free API key. The first time you open the chat,

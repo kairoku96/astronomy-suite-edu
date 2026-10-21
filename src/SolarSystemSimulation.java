@@ -204,7 +204,9 @@ public class SolarSystemSimulation extends JPanel
                 showVelocityVectors, showVelocityComparison, showKeplersLaw, showOnlySelected, barycentricFrame,
                 timeScale, simulationPaused, simTimeSec, camX, camY, camZ, currentZoom, targetZoom,
                 autoZoomEnabled, zoomMode, followingPlanet, followingMoon, cameraFocusIndex, cameraFocusMoon,
-                selectedPlanet, selectedMoon, viewPitchRad, viewYawRad, showSunInfo};
+                selectedPlanet, selectedMoon, viewPitchRad, viewYawRad, showSunInfo,
+                skyViewActive, skyView().snapshot()};
+            if (earthExplorerActive) exitEarthExplorer();
             showPerihelionAphelion = showVelocityVectors = showVelocityComparison = showKeplersLaw = false;
             showOnlySelected = false;
             showSunInfo = false;
@@ -232,10 +234,15 @@ public class SolarSystemSimulation extends JPanel
             selectedPlanet = (Integer) s[k++]; selectedMoon = (Integer) s[k++];
             setViewPitch((Double) s[k++]); setViewYaw((Double) s[k++]);
             showSunInfo = (Boolean) s[k++];
+            skyViewActive = (Boolean) s[k++];
+            skyView().restore((Object[]) s[k++]);
             moonCamX = camX; moonCamY = camY;
             cameraIsApproaching = moonCameraIsApproaching = false;
             lessonSaved = null;
             lessonAimGoal = null;
+            lessonAimBody = null;
+            lessonSkyGoal = null;
+            lessonSkyTrack = null;
             lessonOnlyBody = null;
             computeBarycenter();
             updateTimeScaleLabel();
@@ -254,8 +261,19 @@ public class SolarSystemSimulation extends JPanel
         double[] g = lessonAimGoal;
         double k = 1 - Math.exp(-3.0 * dtReal);
         double zoomGoal = 0.40 * Math.max(1, Math.min(getWidth(), getHeight())) / (g[2] * METERS_TO_PIXELS);
-        camX += (g[0] - camX) * k;
-        camY += (g[1] - camY) * k;
+        lessonCamOffZ += ((g.length > 5 ? g[5] : 0) - lessonCamOffZ) * k;     // height of the centre (above the body)
+        if (lessonAimBody != null) {
+            // Centred on a moving body: ease only the offset from it, so the camera keeps up
+            // with the body however fast the clock runs.
+            double[] b = lessonBodyWorld(lessonAimBody);
+            lessonCamOffX += (g[0] - lessonCamOffX) * k;
+            lessonCamOffY += (g[1] - lessonCamOffY) * k;
+            camX = b[0] + lessonCamOffX;
+            camY = b[1] + lessonCamOffY;
+        } else {
+            camX += (g[0] - camX) * k;
+            camY += (g[1] - camY) * k;
+        }
         moonCamX = camX; moonCamY = camY;
         currentZoom = Math.exp(Math.log(currentZoom) + (Math.log(zoomGoal) - Math.log(currentZoom)) * k);
         targetZoom = currentZoom;
@@ -294,6 +312,8 @@ public class SolarSystemSimulation extends JPanel
             cameraIsApproaching = moonCameraIsApproaching = false;
             autoZoomEnabled = false;
             lessonAimGoal = goal.clone();
+            if (lessonAimBody != null) lessonCamOffZ = camZ;   // continue smoothly from the followed body's height
+            lessonAimBody = null;
             lessonSteer = true;
         }
         public double sunRadiusM() { return SUN_RADIUS_M; }
@@ -336,6 +356,175 @@ public class SolarSystemSimulation extends JPanel
             return new double[]{projX(sx, sy, 0), projY(sx, sy, 0), SUN_RADIUS_M * perspScaleAt(sx, sy, 0),
                                 cameraDistanceMeters() - viewDepth(sx, sy, 0)};
         }
+
+        // ---- dynamics, in the lessons' heliocentric world frame (m, m/s) ----
+
+        /** Heliocentric ecliptic state (AU, AU/day) -> world {x, y, z, vx, vy, vz} (m, m/s). */
+        private double[] world(double[] s) {
+            double[] p = eclToWorld(s[0] * AU, s[1] * AU, s[2] * AU), v = eclToWorld(s[3] * AU / DAY, s[4] * AU / DAY, s[5] * AU / DAY);
+            return new double[]{p[0], p[1], p[2], v[0], v[1], v[2]};
+        }
+        public double[] stateAt(String body, double t) {
+            int i = planet(body);
+            if (i >= 0) return world(planetStateAU(i, t));
+            for (int p = 0; p < MOON_NAMES.length; p++)
+                for (int m = 0; m < MOON_NAMES[p].length; m++) {
+                    if (!MOON_NAMES[p][m].equals(body)) continue;
+                    double[] w = world(planetStateAU(p, t));
+                    double[] c = moonOffsetWorld(p, m, t), a = moonOffsetWorld(p, m, t - 30), b = moonOffsetWorld(p, m, t + 30);
+                    return new double[]{w[0] + c[0], w[1] + c[1], w[2] + c[2],
+                                        w[3] + (b[0] - a[0]) / 60, w[4] + (b[1] - a[1]) / 60, w[5] + (b[2] - a[2]) / 60};
+                }
+            throw new IllegalArgumentException("no body " + body);
+        }
+        public double[] systemBaryAt(String planetName, double t) {
+            int i = planet(planetName);
+            double[] s = planetStateAU(i, t), o = centreOffsetAU(i, t);
+            if (o != null) {
+                double[] a = centreOffsetAU(i, t - 60), b = centreOffsetAU(i, t + 60);
+                for (int c = 0; c < 3; c++) { s[c] -= o[c]; s[3 + c] -= (b[c] - a[c]) / (120.0 / DAY); }
+            }
+            return world(s);
+        }
+        public double[] sunBaryAt(double t) {
+            double[] s = new double[6 * NBodyEphemeris.N_BODIES];
+            NBodyEphemeris.shared().heliocentric(Astro.ttSeconds(t), s);
+            double total = NBodyEphemeris.GM_SUN;
+            for (int i = 0; i < NBodyEphemeris.N_MASSIVE; i++) total += NBodyEphemeris.GM[i];
+            double[] b = new double[6];
+            for (int i = 0; i < NBodyEphemeris.N_MASSIVE; i++)
+                for (int c = 0; c < 6; c++) b[c] -= NBodyEphemeris.GM[i] * s[6 * i + c] / total;
+            return world(b);
+        }
+        public double gm(String body) {
+            double k = AU * AU * AU / (DAY * DAY);           // AU³/day² -> m³/s²
+            if (body.equals("Sun")) return NBodyEphemeris.GM_SUN * k;
+            return NBodyEphemeris.GM[planet(body)] * k;
+        }
+        public void setBarycentric(boolean on) { barycentricFrame = on; computeBarycenter(); }
+        public void aim(double[] goal, String follow) {
+            aim(goal);
+            lessonAimBody = follow;
+            if (follow != null) {
+                double[] b = lessonBodyWorld(follow);
+                lessonCamOffX = camX - b[0];
+                lessonCamOffY = camY - b[1];
+                lessonCamOffZ = camZ - b[2];
+            }
+        }
+
+        // ---- the sky from a place on Earth ----
+
+        public void sky(boolean on) {
+            SkyView sv = skyView();
+            sv.lessonMode = on;
+            if (on && !skyViewActive) { if (earthExplorerActive) exitEarthExplorer(); skyViewActive = true; }
+            if (!on && skyViewActive) skyViewActive = false;
+            if (!on) { lessonSkyGoal = null; lessonSkyTrack = null; }
+        }
+        public void skyPlace(String name, double lat, double lon, String zone) {
+            skyView().setLocation(name, lat, lon, java.time.ZoneId.of(zone), false);
+        }
+        public void skyAim(double[] azAltFov) { skyAim(azAltFov, null); }
+        public void skyAim(double[] goal, String track) {
+            if (track == null || !track.equals(lessonSkyTrack)) lessonSkyTrackPrev = null;
+            lessonSkyGoal = goal.clone(); lessonSkyTrack = track; lessonSteer = true;
+        }
+        public void skyLayers(boolean altAzGrid, boolean eqGrid, boolean constellations, boolean ground) {
+            SkyView sv = skyView();
+            sv.showAltAzGrid = altAzGrid; sv.showEqGrid = eqGrid;
+            sv.showConstLines = sv.showConstNames = constellations;
+            sv.showStarNames = true;
+            sv.showGround = ground;
+            sv.showEcliptic = false;
+        }
+        public void skyOptics(double limitMag, double apertureMm, java.util.function.DoublePredicate starFilter) {
+            SkyView sv = skyView();
+            sv.limitOverride = limitMag; sv.apertureMm = apertureMm; sv.starFilter = starFilter;
+        }
+        public void skyNorthUp(boolean on) { skyView().northUp = on; }
+        public double[] skyBody(String name) { return skyView().bodyInfo(name, simTimeSec); }
+        public double[] skyBodyAt(String name, double t) { return skyView().bodyInfo(name, t); }
+        public double[] skyEnu(String name) { return skyView().enuOf(name, simTimeSec); }
+        public double[] skyEnuRaDec(double raH, double decDeg) { return skyView().enuOfRaDec(raH, decDeg, simTimeSec); }
+        public boolean skyProject(double[] enu, double[] out) { return skyView().projectEnu(enu, out); }
+        public double skyLst() { return skyView().lstHours(simTimeSec); }
+        public double skyLat() { return skyView().latDeg; }
+        public double skyLimit() { return skyView().limitMag(simTimeSec); }
+        public double skySunAlt() { return skyView().sunAltDeg(simTimeSec); }
+        public double skyEclipsed() { return skyView().eclipsed(simTimeSec); }
+        public double[] skyRiseTransitSet(String name) { return skyView().riseTransitSetOf(name, simTimeSec); }
+        public String skyLocalTime() { return skyView().localTimeOf(simTimeSec); }
+        public String skyClock(double simSec) { return skyView().clockOf(simSec); }
+        public void goToUTC(int y, int mo, int d, int h, int mi) {
+            SolarSystemSimulation.this.goToDate(java.time.LocalDateTime.of(y, mo, d, h, mi));
+        }
+    }
+
+    /** Body a lesson's camera goal is centred on (its centre moves with it), or null. */
+    private String lessonAimBody;
+    /**
+     * The lesson camera's eased offset (m) from {@link #lessonAimBody}; the z part is the height of
+     * the view centre (goal element 5) above the body, or above the ecliptic when nothing is followed.
+     */
+    private double lessonCamOffX, lessonCamOffY, lessonCamOffZ;
+
+    /**
+     * World position (m) of a body a lesson follows: a planet, "Sun", "Moon", any planet's moon
+     * by name, or "bary:Pluto" for a planet system's barycentre.
+     */
+    private double[] lessonBodyWorld(String name) {
+        if (name.startsWith("bary:")) {
+            int i = java.util.Arrays.asList(NAMES).indexOf(name.substring(5));
+            double[] o = centreOffsetAU(i, bodyTime(i));
+            double[] w = o == null ? new double[3] : eclToWorld(o[0] * AU, o[1] * AU, o[2] * AU);
+            return new double[]{planetX[i] + sunBarycenterX - w[0], planetY[i] + sunBarycenterY - w[1], planetZ[i] - w[2]};
+        }
+        double[] w = bodyWorld(name);
+        if (w != null) return w;
+        for (int p = 0; p < MOON_NAMES.length; p++)
+            for (int m = 0; m < MOON_NAMES[p].length; m++)
+                if (MOON_NAMES[p][m].equals(name)) {
+                    double[] rel = moonRelPos(p, m);
+                    return new double[]{planetX[p] + sunBarycenterX + rel[0], planetY[p] + sunBarycenterY + rel[1], planetZ[p] + rel[2]};
+                }
+        return new double[]{sunBarycenterX, sunBarycenterY, 0};
+    }
+    /** A lesson's sky-view goal {azimuth°, altitude°, field°}, eased toward until the user takes the view. */
+    private double[] lessonSkyGoal;
+    /** Body the lesson's sky view tracks, like a telescope's drive (the goal is then an offset from it), or null. */
+    private String lessonSkyTrack;
+
+    /**
+     * Ease the sky view toward the lesson's goal. A tracked body is followed like a telescope's
+     * clock drive: once the view has swung onto it, it stays locked on however fast the sky turns.
+     */
+    private void steerLessonSky(double dtReal) {
+        SkyView sv = skyView();
+        double[] cur = sv.view(), g = lessonSkyGoal.clone();
+        if (lessonSkyTrack != null) {
+            double[] b = sv.bodyInfo(lessonSkyTrack, simTimeSec);
+            if (b != null) { g[0] += b[1]; g[1] += b[0]; }
+        }
+        double k = 1 - Math.exp(-3.0 * dtReal);
+        double daz = Math.IEEEremainder(g[0] - cur[0], 360), dalt = g[1] - cur[1];
+        sv.look(cur[0] + daz * k, cur[1] + dalt * k);
+        sv.setFov(Math.exp(Math.log(cur[2]) + (Math.log(g[2]) - Math.log(cur[2])) * k));
+    }
+
+    /** The tracked body's {altitude°, azimuth°} last frame, for the clock drive. */
+    private double[] lessonSkyTrackPrev;
+
+    /** Clock drive: turn the view with the tracked body as the sky rotates (also while the user aims). */
+    private void driveLessonSky() {
+        SkyView sv = skyView();
+        double[] b = sv.bodyInfo(lessonSkyTrack, simTimeSec);
+        if (b == null) return;
+        if (lessonSkyTrackPrev != null) {
+            double[] cur = sv.view();
+            sv.look(cur[0] + Math.IEEEremainder(b[1] - lessonSkyTrackPrev[1], 360), cur[1] + b[0] - lessonSkyTrackPrev[0]);
+        }
+        lessonSkyTrackPrev = new double[]{b[0], b[1]};
     }
     /* ==============================
        SPACECRAFT MISSIONS (played back inside this view)
@@ -1154,7 +1343,7 @@ public class SolarSystemSimulation extends JPanel
      */
     private void handleClick(int mx, int my) {
         exitSearchModeIfActive();
-        if (skyViewActive) { skyView().click(mx, my); return; }
+        if (skyViewActive) { lessonSteer = false; skyView().click(mx, my); return; }
         if (earthExplorerActive) return;   // clicks don't select bodies while exploring Earth
         int cx = getWidth() / 2, cy = getHeight() / 2;
 
@@ -1270,6 +1459,7 @@ public class SolarSystemSimulation extends JPanel
 
     @Override public void mouseDragged(MouseEvent e) {
         if (skyViewActive) {
+            lessonSteer = false;                 // the user is aiming the sky now
             skyView().drag(e.getX() - lastDragX, e.getY() - lastDragY);
             lastDragX = e.getX();
             lastDragY = e.getY();
@@ -1488,7 +1678,11 @@ public class SolarSystemSimulation extends JPanel
         // Google-Earth-style surface explorer takes over the whole canvas when active.
         if (earthExplorerActive) { drawEarthExplorer(g2); return; }
         // The planetarium likewise takes over the canvas.
-        if (skyViewActive) { skyView().paint(g2, getWidth(), getHeight()); return; }
+        if (skyViewActive) {
+            skyView().paint(g2, getWidth(), getHeight());
+            if (lessonActive()) lessonStudio.paintOverlay(g2, getWidth(), getHeight());
+            return;
+        }
 
         // Deep-space background + starfield
         drawStarfield(g2, getWidth(), getHeight());
@@ -1557,7 +1751,13 @@ public class SolarSystemSimulation extends JPanel
             double worldX = planetX[i] + sunBarycenterX;
             double worldY = planetY[i] + sunBarycenterY;
             double worldZ = planetZ[i];
-            if (!inFront(worldX, worldY, worldZ)) continue;   // behind the camera (zoomed in elsewhere)
+            if (!inFront(worldX, worldY, worldZ)) {           // behind the camera (zoomed in elsewhere)...
+                if (MOON_NAMES[i].length > 0 && currentZoom > 10) {   // ...but its moons may be right in view
+                    double dS = Math.sqrt(planetX[i] * planetX[i] + planetY[i] * planetY[i] + planetZ[i] * planetZ[i]);
+                    drawMoonBodies(g2, i, worldX, worldY, worldZ, 0, 0, 0, dS > 1e-3 ? SUN_RADIUS_M / dS : 0, false);
+                }
+                continue;
+            }
             double px = projX(worldX, worldY, worldZ);
             double py = projY(worldX, worldY, worldZ);
             double pr = RADIUS_M[i] * perspScaleAt(worldX, worldY, worldZ);   // true physical scale under perspective
@@ -1776,78 +1976,7 @@ public class SolarSystemSimulation extends JPanel
                 }
 
                 // Draw moon bodies (only when zoomed in)
-                if (currentZoom > 10) {
-                    for (int m = 0; m < MOON_A_M[i].length; m++) {
-                        // Solve moon position (3-D, including its own orbital inclination)
-                        double[] rel = moonRelPos(i, m);
-                        double rx = rel[0], ry = rel[1], rz = rel[2];
-                        // Moon position relative to planet's barycentric position
-                        double moonWorldX = planetX[i] + sunBarycenterX + rx;
-                        double moonWorldY = planetY[i] + sunBarycenterY + ry;
-                        double moonWorldZ = planetZ[i] + rz;   // planet height + moon out-of-plane
-                        if (!inFront(moonWorldX, moonWorldY, moonWorldZ)) continue;   // moon behind the camera
-
-                        double mpx = projX(moonWorldX, moonWorldY, moonWorldZ);
-                        double mpy = projY(moonWorldX, moonWorldY, moonWorldZ);
-                        double mr = MOON_RADIUS_M[i][m] * perspScaleAt(moonWorldX, moonWorldY, moonWorldZ);   // true physical scale under perspective
-                        double[] mL = viewLight(moonWorldX, moonWorldY, moonWorldZ);   // exact view-frame Sun direction
-
-                        // Depth cue: a moon on the far side of the planet, projected inside its
-                        // disc, is hidden behind it — skip it rather than drawing it on top.
-                        double moonDepth = viewDepth(moonWorldX, moonWorldY, moonWorldZ);
-                        double planetDepth = viewDepth(worldX, worldY, worldZ);
-                        if (moonDepth < planetDepth && Math.hypot(mpx - px, mpy - py) < pr - mr) {
-                            continue;
-                        }
-
-                        // Ray-traced lit sphere for every moon: a real surface map when one exists
-                        // (Luna), otherwise a flat-colour sphere pushed through the SAME shader, so
-                        // untextured moons still get a correct 3-D terminator and true ray-traced
-                        // eclipse shadows (fully black in the parent planet's umbra) rather than the
-                        // old flat half-black gradient.
-                        String moonKey = MOON_NAMES[i][m].toLowerCase();
-                        boolean moonDrawn = false;
-                        if (mr > 2) {
-                            String key = hasTexture(moonKey) ? moonKey : ensureFlatTexture(MOON_FLAT_RGB);
-                            // Parent planet occludes the Sun -> shadow falls on the moon
-                            // (a lunar eclipse when the moon crosses the planet's shadow).
-                            // Occluder = the planet, at offset -rel from the moon, in the view frame,
-                            // scaled to moon-radius units.
-                            double ratio = MOON_SIZE_RATIO[i][m];
-                            double invMr = 1.0 / (RADIUS_M[i] * ratio);
-                            double[] mOcc = null;
-                            if (showEclipses && shadingEnabled) {
-                                double[] pv = worldToView(-rx, -ry, -rz);   // planet relative to the moon, view frame
-                                double orad = 1.0 / ratio;
-                                double[] occP = { pv[0] * invMr, pv[1] * invMr, pv[2] * invMr, orad };
-                                double ocx = occP[0], ocy = occP[1], ocz = occP[2];
-                                double al = ocx * mL[0] + ocy * mL[1] + ocz * mL[2];
-                                double pp = ocx * ocx + ocy * ocy + ocz * ocz - al * al;
-                                if (al > 0 && pp <= (orad + 1) * (orad + 1)) {   // Moon actually in the umbra
-                                    mOcc = new double[]{ocx, ocy, ocz, orad};
-                                }
-                            }
-                            boolean luna = i == EARTH_INDEX && m == 0;
-                            moonDrawn = drawTexturedSphere(g2, key, mpx, mpy, mr,
-                                    luna ? lunaPole() : obliquityPole(MOON_OBLIQUITY_DEG),
-                                    luna ? lunaSpin(moonWorldX, moonWorldY, moonWorldZ) : spinAngle(MOON_ROTATION_H),
-                                    !shadingEnabled, mL[0], mL[1], mL[2],
-                                    mOcc, mOcc != null ? 1 : 0, sunAngR);
-                        }
-                        if (!moonDrawn) {   // sub-pixel moon: a simple dot
-                            g2.setColor(Color.LIGHT_GRAY);
-                            g2.fill(new Ellipse2D.Double(mpx - mr, mpy - mr, 2*mr, 2*mr));
-                        }
-
-                        g2.setColor(Color.WHITE);
-                        g2.drawString(MOON_NAMES[i][m], (int)(mpx + mr + 4), (int)(mpy - mr - 2));
-
-                        if (followingPlanet && selectedMoon == m) {
-                            g2.setColor(Color.YELLOW);
-                            g2.draw(new Ellipse2D.Double(mpx - mr - 3, mpy - mr - 3, 2*mr + 6, 2*mr + 6));
-                        }
-                    }
-                }
+                if (currentZoom > 10) drawMoonBodies(g2, i, worldX, worldY, worldZ, px, py, pr, sunAngR, true);
             }
         }
 
@@ -2547,7 +2676,19 @@ public class SolarSystemSimulation extends JPanel
      * looking at?" or "how fast is time running?" accurately.
      */
     String aiContextSnapshot() {
-        StringBuilder b = new StringBuilder(512);
+        // The assistant asks from a background thread; the sim, sky and lesson state belong to
+        // the Swing thread, so read them there.
+        if (javax.swing.SwingUtilities.isEventDispatchThread()) return aiContextSnapshotNow();
+        String[] out = new String[1];
+        try { javax.swing.SwingUtilities.invokeAndWait(() -> out[0] = aiContextSnapshotNow()); }
+        catch (Exception e) { return null; }
+        return out[0];
+    }
+
+    private String aiContextSnapshotNow() {
+        StringBuilder b = new StringBuilder(4096);
+        b.append("Current view: ").append(skyViewActive ? "Sky from Earth (planetarium)"
+                : earthExplorerActive ? "Earth Explorer (zoomed-in globe)" : "3-D Solar System").append('\n');
         b.append("Simulated date/time (UTC): ").append(simDateString()).append('\n');
         String local = simLocalDateString();
         if (local != null) b.append("Same instant in the user's time zone (").append(displayZone).append("): ").append(local).append('\n');
@@ -2586,6 +2727,14 @@ public class SolarSystemSimulation extends JPanel
          .append("; labels shown: ").append(showLabels ? "yes" : "no")
          .append("; barycentric (Sun-wobble) frame: ").append(barycentricFrame ? "on" : "off")
          .append('\n');
+        if (lessonStudio != null) {
+            b.append("\n=== LESSON STUDIO ===\n");
+            try { b.append(lessonStudio.aiContext()); } catch (Exception e) { b.append("(lesson state unavailable)\n"); }
+        }
+        b.append("\n=== LOCAL SKY (from the observer's location at the simulated time; ")
+         .append(skyViewActive ? "the user is looking at this sky right now" : "the Sky from Earth view is not open, so this is what it would show")
+         .append(") ===\n");
+        try { b.append(skyView().aiDescribe(simTimeSec, skyViewActive)); } catch (Exception e) { b.append("(sky unavailable)\n"); }
         return b.toString();
     }
 
@@ -5715,6 +5864,12 @@ public class SolarSystemSimulation extends JPanel
         } else if (lessonActive() && lessonAimGoal != null) {
             /* ---------- LESSON FRAMING ---------- */
             if (lessonSteer) steerLessonCamera(dtReal);
+            else if (lessonAimBody != null) {          // the user has the view: keep riding along
+                double[] b = lessonBodyWorld(lessonAimBody);
+                camX = b[0] + lessonCamOffX;
+                camY = b[1] + lessonCamOffY;
+            }
+            moonCamX = camX; moonCamY = camY;
             cameraIsApproaching = moonCameraIsApproaching = false;
         } else {
             /* ---------- NO FOLLOW – return to Sun ---------- */
@@ -5737,9 +5892,13 @@ public class SolarSystemSimulation extends JPanel
             camZ = planetZ[cameraFocusIndex] + moonRelPos(cameraFocusIndex, cameraFocusMoon)[2];
         } else if (followingPlanet && cameraFocusIndex >= 0) {
             camZ = planetZ[cameraFocusIndex];
+        } else if (lessonActive() && lessonAimGoal != null) {
+            camZ = (lessonAimBody != null ? lessonBodyWorld(lessonAimBody)[2] : 0) + lessonCamOffZ;
         } else {
             camZ = 0;
         }
+        if (lessonActive() && skyViewActive && lessonSkyTrack != null) driveLessonSky();
+        if (lessonActive() && skyViewActive && lessonSkyGoal != null && lessonSteer) steerLessonSky(dtReal);
 
         /* ----- SMOOTH ZOOM INTERPOLATION ----- */
         if (autoZoomEnabled) {
@@ -5758,6 +5917,85 @@ public class SolarSystemSimulation extends JPanel
         if (lessonStudio != null) lessonStudio.tick(dtReal);
 
         repaint();
+    }
+
+    /**
+     * Draw the moons of planet {@code i} (planet centre at world (worldX, worldY, worldZ), drawn at
+     * (px, py) with radius pr). Called even when the planet itself is behind the camera, so that a
+     * view from beside a moon (with its planet behind the eye) still shows the moon.
+     */
+    private void drawMoonBodies(Graphics2D g2, int i, double worldX, double worldY, double worldZ,
+                                double px, double py, double pr, double sunAngR, boolean planetOnScreen) {
+        for (int m = 0; m < MOON_A_M[i].length; m++) {
+            // Solve moon position (3-D, including its own orbital inclination)
+            double[] rel = moonRelPos(i, m);
+            double rx = rel[0], ry = rel[1], rz = rel[2];
+            // Moon position relative to planet's barycentric position
+            double moonWorldX = planetX[i] + sunBarycenterX + rx;
+            double moonWorldY = planetY[i] + sunBarycenterY + ry;
+            double moonWorldZ = planetZ[i] + rz;   // planet height + moon out-of-plane
+            if (!inFront(moonWorldX, moonWorldY, moonWorldZ)) continue;   // moon behind the camera
+
+            double mpx = projX(moonWorldX, moonWorldY, moonWorldZ);
+            double mpy = projY(moonWorldX, moonWorldY, moonWorldZ);
+            double mr = MOON_RADIUS_M[i][m] * perspScaleAt(moonWorldX, moonWorldY, moonWorldZ);   // true physical scale under perspective
+            double[] mL = viewLight(moonWorldX, moonWorldY, moonWorldZ);   // exact view-frame Sun direction
+
+            // Depth cue: a moon on the far side of the planet, projected inside its
+            // disc, is hidden behind it — skip it rather than drawing it on top.
+            double moonDepth = viewDepth(moonWorldX, moonWorldY, moonWorldZ);
+            double planetDepth = viewDepth(worldX, worldY, worldZ);
+            if (planetOnScreen && moonDepth < planetDepth && Math.hypot(mpx - px, mpy - py) < pr - mr) {
+                continue;
+            }
+
+            // Ray-traced lit sphere for every moon: a real surface map when one exists
+            // (Luna), otherwise a flat-colour sphere pushed through the SAME shader, so
+            // untextured moons still get a correct 3-D terminator and true ray-traced
+            // eclipse shadows (fully black in the parent planet's umbra) rather than the
+            // old flat half-black gradient.
+            String moonKey = MOON_NAMES[i][m].toLowerCase();
+            boolean moonDrawn = false;
+            if (mr > 2) {
+                String key = hasTexture(moonKey) ? moonKey : ensureFlatTexture(MOON_FLAT_RGB);
+                // Parent planet occludes the Sun -> shadow falls on the moon
+                // (a lunar eclipse when the moon crosses the planet's shadow).
+                // Occluder = the planet, at offset -rel from the moon, in the view frame,
+                // scaled to moon-radius units.
+                double ratio = MOON_SIZE_RATIO[i][m];
+                double invMr = 1.0 / (RADIUS_M[i] * ratio);
+                double[] mOcc = null;
+                if (showEclipses && shadingEnabled) {
+                    double[] pv = worldToView(-rx, -ry, -rz);   // planet relative to the moon, view frame
+                    double orad = 1.0 / ratio;
+                    double[] occP = { pv[0] * invMr, pv[1] * invMr, pv[2] * invMr, orad };
+                    double ocx = occP[0], ocy = occP[1], ocz = occP[2];
+                    double al = ocx * mL[0] + ocy * mL[1] + ocz * mL[2];
+                    double pp = ocx * ocx + ocy * ocy + ocz * ocz - al * al;
+                    if (al > 0 && pp <= (orad + 1) * (orad + 1)) {   // Moon actually in the umbra
+                        mOcc = new double[]{ocx, ocy, ocz, orad};
+                    }
+                }
+                boolean luna = i == EARTH_INDEX && m == 0;
+                moonDrawn = drawTexturedSphere(g2, key, mpx, mpy, mr,
+                        luna ? lunaPole() : obliquityPole(MOON_OBLIQUITY_DEG),
+                        luna ? lunaSpin(moonWorldX, moonWorldY, moonWorldZ) : spinAngle(MOON_ROTATION_H),
+                        !shadingEnabled, mL[0], mL[1], mL[2],
+                        mOcc, mOcc != null ? 1 : 0, sunAngR);
+            }
+            if (!moonDrawn) {   // sub-pixel moon: a simple dot
+                g2.setColor(Color.LIGHT_GRAY);
+                g2.fill(new Ellipse2D.Double(mpx - mr, mpy - mr, 2*mr, 2*mr));
+            }
+
+            g2.setColor(Color.WHITE);
+            g2.drawString(MOON_NAMES[i][m], (int)(mpx + mr + 4), (int)(mpy - mr - 2));
+
+            if (followingPlanet && selectedMoon == m) {
+                g2.setColor(Color.YELLOW);
+                g2.draw(new Ellipse2D.Double(mpx - mr - 3, mpy - mr - 3, 2*mr + 6, 2*mr + 6));
+            }
+        }
     }
 
     /**
@@ -5954,6 +6192,7 @@ public class SolarSystemSimulation extends JPanel
                 super.processMouseEvent(evt);
             }
         }
+
     }
 
     /**
@@ -6204,6 +6443,7 @@ public class SolarSystemSimulation extends JPanel
             f.setContentPane(root);
             f.setSize(1600, 960);
             f.addNotify();                                     // realise (never shown) so layout is complete
+            sim.lessonStudio.aiSnapshot = sim::aiContextSnapshot;
             sim.lessonStudio.renderShots(lessonDir, root, sim::advanceFrame);
             f.dispose();
             System.out.println("Lesson shots complete: " + lessonDir);

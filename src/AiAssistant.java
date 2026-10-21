@@ -63,7 +63,18 @@ final class AiAssistant {
               + "the reference and live state over any prior assumptions. If the live "
               + "state does not contain something, say so rather than guessing. You may "
               + "also answer general astronomy or other questions. Keep answers concise "
-              + "and use plain text (no markdown tables).";
+              + "and use plain text (no markdown tables). "
+              + "The live state includes a LESSON STUDIO section (the lesson and step the user is "
+              + "on, the narration they are reading, the numbers on screen and the settings of the "
+              + "controls) and a LOCAL SKY section (what the sky looks like from the observer's "
+              + "place at the simulated time: Sun, Moon, planets, bright stars, and the view if the "
+              + "Sky from Earth view is open). Use them to answer questions such as 'what does this "
+              + "step mean?', 'why did that number change?', 'what is that bright thing in the "
+              + "east?' or 'can I see Saturn tonight?'. The lessons follow the University of "
+              + "Toronto Mississauga course AST221 (Days 2-8 slides); explain in that course's terms. "
+              + "When the user is on a check-yourself question they have not answered correctly yet, "
+              + "act as a tutor: give hints and walk through the reasoning, and only state the "
+              + "answer if they ask for it outright.";
 
         /** Static, accurate reference for the app so the model can answer precisely. */
         private static final String APP_FACTS =
@@ -115,7 +126,7 @@ final class AiAssistant {
               + "Education, and Help.\n"
               + "PLANETARIUM: jump the whole simulation to any real calendar date/time; the "
               + "current simulated date is shown and used for all positions.\n"
-              + "LESSONS: Education > Lessons... opens a lesson list docked on the right of the main window; lessons run on the live simulation itself: each step shows only the bodies it needs (e.g. just Mercury for perihelion, only the Sun for flux), sets the clock and date, flies the camera there and draws its annotations (foci, perihelion/aphelion, equal-area wedges, Gaussian bubble, light packets, integration patches) into the scene; the object sidebar and search bar step aside, and leaving (Esc or the Lessons button) restores the simulation exactly as it was. Beginner: 'Orbits That Stretch' (eccentricity, perihelion, aphelion, Kepler's 2nd law). Intermediate: 'Luminosity, Flux & Intensity' (Gaussian bubble, inverse-square law, surface integral 4 pi r^2, specific intensity, F = integral of I cos(theta) dOmega). Arrow keys or N page through steps. Overlays (Education > Overlays) for the live sim: Kepler's 3rd law, perihelion/aphelion markers, velocity vectors, velocity labels.\n"
+              + "LESSONS: Education > Lessons... opens a lesson list docked on the right of the main window. Lessons run on the live simulation itself: each step shows only the bodies it needs, sets the clock and date, flies the camera (or the Sky from Earth view) there, and draws its annotations into the scene; the panel holds the narration, sliders/choices and 'check yourself' multiple-choice questions. Leaving (Esc or the Lessons button) restores the simulation exactly as it was. Right arrow or N next step, left arrow back; double-click the view to re-centre it. The eleven lessons follow UTM's AST221 (Days 2-8): 1 Reading the Sky (alt/az, the celestial pole at your latitude, RA/Dec, sidereal time and hour angle, planning an observation of Saturn from the UTM campus on Sept 21 2026); 2 How Big Does It Look? (angular size on the 2024 eclipse, radians and arcseconds, solid angle, Jupiter's disc); 3 Telescope Power (aperture and limiting magnitude, diffraction limit 1.22 lambda/D, seeing and adaptive optics shown on Pluto-Charon, interferometry); 4 Orbits That Stretch (eccentricity, perihelion, aphelion, Kepler's 2nd law); 5 Weighing the Solar System (Kepler's 3rd law, Newton's form, weighing the Sun, Jupiter from its moons, Pluto+Charon); 6 Luminosity, Flux & Intensity (Gaussian bubble, inverse-square law, intensity, F = integral of I cos(theta) dOmega); 7 Hot Bodies Glow (Planck, Wien, Stefan-Boltzmann, a red dwarf beside the Sun); 8 How Bright? (magnitudes, Vega zero point, absolute magnitude, B-V colour, OBAFGKM, Balmer lines); 9 Measuring Distance (parallax from Earth's orbit, the parsec, proper motion, Hipparcos and Gaia); 10 The Sun Wobbles Too (centre of mass, astrometric and spectroscopic binaries, radial velocity, transits); 11 Titan Lab (rehearsal of the Titan final project: log Titan nightly, least-squares period fit, weigh Saturn). Steps beyond the slides (seasons, planet temperatures and habitable zones, planets' changing brightness, aliasing) are hidden unless the app is started with -Dsss.lessons.all=true. Overlays (Education > Overlays) for the live sim: Kepler's 3rd law, perihelion/aphelion markers, velocity vectors, velocity labels.\n"
               + "AI ASSISTANT: opened from Help > Ask AI Assistant (this chat). It uses the "
               + "free Google Gemini tier; the API key is set via the 'API key...' button.\n";
 

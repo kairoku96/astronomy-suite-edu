@@ -107,8 +107,24 @@ public final class LessonStudio extends JPanel {
         Consumer<Controls> controls;
         Scene scene;
         Quiz quiz;
+        /** Sky steps look at the sky from Earth; their scene units are east-north-up directions. */
+        boolean sky;
+        /** Sky view goal {azimuth°, altitude°, field°}; re-read every frame. */
+        Supplier<double[]> skyCam = () -> new double[]{180, 30, 90};
+        /** Body the camera goal is centred on (it moves with it), or null. */
+        String follow;
+        /** Runs every frame before painting (and once on entry): state the view itself depends on. */
+        Runnable live;
+        /** Covers material the AST221 slides (Days 2–8) don't: hidden unless -Dsss.lessons.all=true. */
+        boolean beyondSlides;
         Step(String title, String html) { this.title = title; this.html = html; }
         Step cam(Supplier<double[]> s) { cam = s; return this; }
+        Step cam(String body, Supplier<double[]> s) { follow = body; cam = s; return this; }
+        Step sky(Supplier<double[]> view) { sky = true; skyCam = view; return this; }
+        Step live(Runnable r) { live = r; return this; }
+        Step beyondSlides() { beyondSlides = true; return this; }
+        /** A sky step that tracks a body; the view is {Δazimuth°, Δaltitude°, field°} from it. */
+        Step sky(String track, Supplier<double[]> view) { follow = track; return sky(view); }
         Step unit(double metres) { unitM = metres; return this; }
         Step enter(Runnable r) { enter = r; return this; }
         Step controls(Consumer<Controls> c) { controls = c; return this; }
@@ -124,13 +140,30 @@ public final class LessonStudio extends JPanel {
         LessonDef(String level, String title, String subtitle, String blurb, Color accent,
                   List<Step> steps, DoubleConsumer tick) {
             this.level = level; this.title = title; this.subtitle = subtitle; this.blurb = blurb;
-            this.accent = accent; this.steps = steps; this.tick = tick;
+            this.accent = accent; this.tick = tick;
+            // Steps beyond the course slides so far are kept, but hidden unless asked for.
+            this.steps = SHOW_BEYOND_SLIDES ? steps : steps.stream().filter(s -> !s.beyondSlides).toList();
         }
         int quizCount() { int n = 0; for (Step s : steps) if (s.quiz != null) n++; return n; }
     }
 
+    /** The lessons, in the order of the AST221 course they follow (see docs/LESSON_PLAN.md). */
+    /** Show the steps that go beyond the AST221 slides (Days 2–8) as well: -Dsss.lessons.all=true. */
+    static final boolean SHOW_BEYOND_SLIDES = Boolean.getBoolean("sss.lessons.all");
+
     static List<LessonDef> buildLessons(Host host) {
-        return List.of(new OrbitLesson(host).build(), new LightLesson(host).build());
+        return List.of(
+                new SkyLesson(host).build(),            // Day 3: coordinates and planning observations
+                new AngularLesson(host).build(),        // Days 2, 4: angular size and solid angle
+                new TelescopeLesson(host).build(),      // Day 2: telescopes
+                new OrbitLesson(host).build(),          // Day 7: Kepler I and II
+                new WeighLesson(host).build(),          // Day 7: Kepler III and Newton
+                new LightLesson(host).build(),          // Day 4: radiative quantities
+                new BlackbodyLesson(host).build(),      // Day 5: blackbody radiation
+                new MagnitudeLesson(host).build(),      // Day 6: magnitudes and spectra
+                new ParallaxLesson(host).build(),       // Day 7: parallax
+                new WobbleLesson(host).build(),         // Days 7, 8: binaries and the Sun's wobble
+                new TitanLesson(host).build());         // final project rehearsal
     }
 
     // =====================================================================
@@ -319,7 +352,15 @@ public final class LessonStudio extends JPanel {
         boolean first = stepIdx < 0;
         stepIdx = i;
         Step s = lesson.steps.get(i);
+        if (host != null) {
+            // Every step starts from the plain heliocentric view and the naked eye; it sets up the rest.
+            host.setBarycentric(false);
+            host.skyOptics(Double.NaN, Double.NaN, null);
+            host.skyNorthUp(false);
+            host.sky(s.sky);
+        }
         s.enter.run();
+        if (s.live != null) s.live.run();
         overlay.reaim();
 
         stepCount.setText("STEP " + (i + 1) + " OF " + n + (s.quiz != null ? "  ·  CHECK YOURSELF" : ""));
@@ -398,8 +439,78 @@ public final class LessonStudio extends JPanel {
         dt = Math.max(0, Math.min(0.1, dt));
         simT += dt;
         lesson.tick.accept(dt);
+        Step s = step();
+        if (s.live != null) s.live.run();
         overlay.tickCamera();
         if (controls != null) controls.sync();
+    }
+
+    // ---- the AI assistant's view of the lesson ----
+
+    /**
+     * What the AI assistant should know about the Lesson Studio right now: the lesson and step
+     * the user is on, the narration they are reading, the check-yourself question (with its answer,
+     * for tutoring), the readouts on screen and the current setting of every control.
+     */
+    String aiContext() {
+        StringBuilder b = new StringBuilder(1024);
+        if (lesson == null || stepIdx < 0) {
+            b.append("Lesson Studio: no lesson running").append(isVisible() ? " (the lesson list is open)." : ".").append('\n');
+            b.append("Available lessons: ");
+            for (int i = 0; i < lessons.size(); i++)
+                b.append(i == 0 ? "" : "; ").append(i + 1).append(". ").append(lessons.get(i).title)
+                 .append(" (").append(lessons.get(i).level).append(")");
+            return b.append('\n').toString();
+        }
+        Step s = step();
+        int li = lessons.indexOf(lesson) + 1;
+        b.append("LESSON IN PROGRESS: lesson ").append(li).append(" of ").append(lessons.size()).append(", \"")
+         .append(lesson.title).append("\" (").append(lesson.level).append(": ").append(lesson.subtitle).append(")\n");
+        b.append("Step ").append(stepIdx + 1).append(" of ").append(lesson.steps.size()).append(": \"").append(s.title).append("\"")
+         .append(s.sky ? " - shown in the Sky from Earth view" : " - shown in the 3-D Solar System view").append('\n');
+        b.append("Steps in this lesson: ");
+        for (int k = 0; k < lesson.steps.size(); k++)
+            b.append(k == 0 ? "" : " | ").append(k + 1).append(". ").append(lesson.steps.get(k).title);
+        b.append('\n');
+        b.append("Narration on the user's screen:\n").append(plainText(s.html).strip()).append('\n');
+        if (s.quiz != null) {
+            Quiz q = s.quiz;
+            b.append("CHECK-YOURSELF QUESTION: ").append(plainText(q.question).strip()).append('\n');
+            for (int k = 0; k < q.options.length; k++)
+                b.append("  ").append((char) ('A' + k)).append(". ").append(plainText(q.options[k]).strip())
+                 .append(q.tried[k] ? "   (user tried this: wrong)" : "").append('\n');
+            b.append("  Correct answer (for tutoring only): ").append((char) ('A' + q.correct)).append(". ")
+             .append(plainText(q.options[q.correct]).strip()).append(" - ").append(plainText(q.explain).strip()).append('\n');
+            b.append("  Status: ").append(q.solved ? "the user has answered it correctly" : "not answered correctly yet").append('\n');
+        }
+        Hud hud = overlay.hud;
+        if (hud.title != null || !hud.rows.isEmpty() || !hud.formulas.isEmpty()) {
+            b.append("Readouts on screen").append(hud.title != null ? " (" + hud.title + ")" : "").append(":\n");
+            for (Object[] r : hud.rows) if (r != null) b.append("  ").append(r[0]).append(": ").append(r[1]).append('\n');
+            for (String f : hud.formulas) b.append("  formula shown: ").append(f).append('\n');
+            if (hud.inset != null) b.append("  chart shown: ").append(hud.insetTitle).append('\n');
+        }
+        if (controls != null && !controls.describers.isEmpty()) {
+            b.append("Controls in the lesson panel:\n");
+            for (Supplier<String> d : controls.describers) {
+                try { b.append("  ").append(d.get()).append('\n'); } catch (Exception ignored) { }
+            }
+        }
+        b.append("Lesson keys: right arrow or N next step, left arrow back, Esc leaves the lesson; double-click the view to re-centre it.\n");
+        return b.toString();
+    }
+
+    /** Lesson markup ({k:term}, **bold**, _italic_, "$ " equations, "> " hints) as plain text. */
+    static String plainText(String m) {
+        StringBuilder out = new StringBuilder();
+        for (String raw : m.split("\n")) {
+            String line = raw.strip();
+            if (line.startsWith("$ ")) line = "    " + line.substring(2);
+            else if (line.startsWith("> ")) line = "(hint) " + line.substring(2);
+            out.append(line).append('\n');
+        }
+        return out.toString().replaceAll("\\{[kpavg]:", "").replace("}", "").replace("**", "")
+                .replaceAll("(?<=\\s|^)_|_(?=[\\s.,;:!?)]|$)", "").replaceAll("\n{3,}", "\n\n");
     }
 
     // ---- hosting: the simulation canvas calls these while a lesson runs ----
@@ -770,6 +881,8 @@ public final class LessonStudio extends JPanel {
     static final class Controls {
         private final JPanel box;
         private final List<Runnable> syncers = new ArrayList<>();
+        /** One line per control with its current setting, for the AI assistant. */
+        final List<Supplier<String>> describers = new ArrayList<>();
         private boolean syncing;
         Controls(JPanel box) {
             this.box = box;
@@ -822,6 +935,7 @@ public final class LessonStudio extends JPanel {
             };
             syncers.add(sy);
             syncing = true; sy.run(); syncing = false;
+            describers.add(() -> name + ": " + fmt.apply(get.getAsDouble()));
         }
         void toggle(String name, BooleanSupplier get, Consumer<Boolean> set) {
             JCheckBox c = new JCheckBox(name);
@@ -835,6 +949,7 @@ public final class LessonStudio extends JPanel {
             box.add(Box.createVerticalStrut(8));
             syncers.add(() -> { if (c.isSelected() != get.getAsBoolean()) c.setSelected(get.getAsBoolean()); });
             c.setSelected(get.getAsBoolean());
+            describers.add(() -> name + ": " + (get.getAsBoolean() ? "on" : "off"));
         }
         void choices(String name, String[] labels, IntSupplier get, IntConsumer set) {
             box.add(caption(name.toUpperCase()));
@@ -861,8 +976,13 @@ public final class LessonStudio extends JPanel {
                 int k = get.getAsInt();
                 for (int i = 0; i < bs.length; i++) if (bs[i].isSelected() != (i == k)) bs[i].setSelected(i == k);
             });
+            describers.add(() -> {
+                int k = get.getAsInt();
+                return name + ": " + (k >= 0 && k < labels.length ? labels[k] : "(none)") + "   [choices: " + String.join(", ", labels) + "]";
+            });
         }
         void button(String name, Runnable r) {
+            describers.add(() -> "button: " + name);
             JButton b = new JButton(name);
             b.setFont(uiFont(Font.PLAIN, 12f));
             b.setFocusable(false);
@@ -894,7 +1014,10 @@ public final class LessonStudio extends JPanel {
         void goToDate(int year, int month, int day);
         String dateString();
         double simTime();
-        /** Ease the camera to {centreX m, centreY m, radius m to fit, pitch deg off top-down, yaw deg}. */
+        /**
+         * Ease the camera to {centreX m, centreY m, radius m to fit, pitch deg off top-down, yaw deg},
+         * optionally followed by the centre's height z (m; 0 = the ecliptic, or the followed body).
+         */
         void aim(double[] goal);
         double sunRadiusM();
 
@@ -912,6 +1035,56 @@ public final class LessonStudio extends JPanel {
         double[] eye();
         /** The Sun's disc on screen {x, y, radius px, distance m}, or null when it is off-screen. */
         double[] sunDisc();
+
+        // ---- dynamics: heliocentric world frame, metres and m/s ----
+
+        /** {x, y, z, vx, vy, vz} at sim time t of a planet's centre, or of any planet's moon by name. */
+        double[] stateAt(String body, double t);
+        default double[] state(String body) { return stateAt(body, simTime()); }
+        /** A planet system's barycentre (e.g. Pluto and Charon's) at sim time t. */
+        double[] systemBaryAt(String planet, double t);
+        /** The Sun's position and velocity relative to the Solar-System barycentre at sim time t. */
+        double[] sunBaryAt(double t);
+        /** GM (m³/s²) of the "Sun" or of a planet system. */
+        double gm(String body);
+        /** Draw the system around its barycentre, so the Sun shows its real wobble. */
+        void setBarycentric(boolean on);
+        /** {@link #aim} with the goal's centre measured from a moving body ("bary:Pluto" = a system barycentre). */
+        void aim(double[] goal, String follow);
+
+        // ---- the sky from a place on Earth (the planetarium view) ----
+
+        /** Switch the canvas to the sky view (true) or back to the 3-D Solar System. */
+        void sky(boolean on);
+        void skyPlace(String name, double latDeg, double lonDeg, String zoneId);
+        /** Ease the view to {azimuth°, altitude°, field°}. */
+        void skyAim(double[] azAltFov);
+        /** Track a body like a telescope: the goal is {Δazimuth°, Δaltitude°, field°} from it. */
+        void skyAim(double[] goal, String track);
+        void skyLayers(boolean altAzGrid, boolean eqGrid, boolean constellations, boolean ground);
+        /** Keep celestial north up (an equatorial telescope) instead of the zenith (alt-az). */
+        void skyNorthUp(boolean on);
+        /** Naked-eye limit (NaN = the sky's own), telescope aperture in mm (NaN = none), B−V filter (null = all stars). */
+        void skyOptics(double limitMag, double apertureMm, DoublePredicate starFilter);
+        /** {alt°, az°, RA h, Dec °, V mag, diameter ″, distance AU, B−V} of a body or named star, or null. */
+        double[] skyBody(String name);
+        double[] skyBodyAt(String name, double t);
+        /** Apparent east-north-up unit vector of a body or named star, or null. */
+        double[] skyEnu(String name);
+        double[] skyEnuRaDec(double raHours, double decDeg);
+        /** ENU direction -> {screenX, screenY, 1, pixels per radian}; false if behind the viewer. */
+        boolean skyProject(double[] enu, double[] out);
+        double skyLst();
+        double skyLat();
+        double skyLimit();
+        double skySunAlt();
+        double skyEclipsed();
+        /** {rise, transit, set} in sim seconds (NaN = none) within ±12 h of now. */
+        double[] skyRiseTransitSet(String name);
+        String skyLocalTime();
+        /** Local clock time "HH:mm" of a sim instant. */
+        String skyClock(double simSec);
+        void goToUTC(int year, int month, int day, int hour, int minute);
     }
 
     // =====================================================================
@@ -927,13 +1100,25 @@ public final class LessonStudio extends JPanel {
         void tickCamera() {
             Step s = step();
             if (s == null) return;
-            double[] g = s.cam.get();
+            double[] g = s.sky ? s.skyCam.get() : s.cam.get();
             if (lastGoal == null || !java.util.Arrays.equals(g, lastGoal)) {
-                host.aim(g);
+                if (s.sky) host.skyAim(g, s.follow);
+                else if (s.follow != null) host.aim(g, s.follow);
+                else host.aim(g);
                 lastGoal = g.clone();
             }
         }
         void reaim() { lastGoal = null; }
+
+        /** Sky steps: scene points are east-north-up directions, projected as the planetarium draws them. */
+        private final R3.Projector skyProj = new R3.Projector() {
+            private final double[] d = new double[3];
+            public boolean proj(double x, double y, double z, double[] o) {
+                d[0] = x; d[1] = y; d[2] = z;
+                return host.skyProject(d, o);
+            }
+            public double[] eye() { return v(0, 0, 0); }
+        };
 
         void paint(Graphics2D g0, int w, int h) {
             Step s = step();
@@ -943,7 +1128,7 @@ public final class LessonStudio extends JPanel {
             g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
             g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
             final double u = s.unitM;
-            r3.ext = new R3.Projector() {
+            r3.ext = s.sky ? skyProj : new R3.Projector() {
                 public boolean proj(double x, double y, double z, double[] o) {
                     if (!host.project(x * u, y * u, z * u, o)) return false;
                     o[2] /= u;
@@ -953,7 +1138,7 @@ public final class LessonStudio extends JPanel {
                 public double[] eye() { double[] e = host.eye(); return v(e[0] / u, e[1] / u, e[2] / u); }
             };
             r3.begin(w, h);
-            double[] sun = host.sunDisc();
+            double[] sun = s.sky ? null : host.sunDisc();
             if (sun != null) r3.occluder(sun[0], sun[1], sun[2], sun[3] / u);
             hud.clear();
             if (s.scene != null) s.scene.draw(r3, hud, simT);
@@ -1484,7 +1669,7 @@ public final class LessonStudio extends JPanel {
         Supplier<double[]> frame(Orbit o, double pitch, double yaw) {
             return () -> {
                 double[] c = lerp(o.at(0), o.at(Math.PI), 0.5);
-                return new double[]{c[0] * AU, c[1] * AU, o.a() * AU * 1.12, pitch, yaw};
+                return new double[]{c[0] * AU, c[1] * AU, o.a() * AU * 1.12, pitch, yaw, c[2] * AU};
             };
         }
 
@@ -1840,6 +2025,7 @@ public final class LessonStudio extends JPanel {
             s.add(new Step("Check: distance and the seasons", """
                 The simulation is set to **January 3, 2026**. Here is Earth on its real orbit that day.
                 """)
+                .beyondSlides()                 // seasons aren't in the AST221 slides
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.goToDate(2026, 1, 3); host.setTime(0); })
                 .cam(() -> new double[]{0, 0, 1.35 * AUm, 35, 0})
@@ -2420,8 +2606,8 @@ public final class LessonStudio extends JPanel {
             double F = L_SUN / (4 * Math.PI * sq(intRs * R_SUN));
             hud.title("Summing patches", TEAL);
             hud.row("patches added", added + " / " + K);
-            hud.row("Σ ΔA so far", String.format("%.2f R☉²", sumA), TEAL);
-            hud.row("exact 4πr²", String.format("%.2f R☉²", exact));
+            hud.row("Σ ΔA so far", String.format("%.2f solar radii²", sumA), TEAL);
+            hud.row("exact 4πr²", String.format("%.2f solar radii²", exact));
             hud.row("full sum / exact", String.format("%.4f", full / exact));
             hud.gap();
             hud.row("F on this bubble", wm2(F), GREEN);
@@ -2625,12 +2811,18 @@ public final class LessonStudio extends JPanel {
     //  as it appears inside the main window ({@code root} holds the canvas + this panel)
     // =====================================================================
 
+    /** The AI assistant's snapshot of the sim, saved beside each shot with -Dsss.lessonshot.ai=true. */
+    Supplier<String> aiSnapshot;
+
     void renderShots(String dir, Container root, DoubleConsumer simFrame) {
         new File(dir).mkdirs();
         showPicker();
         shot(root, dir + "/00_picker.png");
         int n = 1;
+        // -Dsss.lessonshot.only=3,5 renders just those lessons (1-based).
+        String only = System.getProperty("sss.lessonshot.only", "");
         for (int li = 0; li < lessons.size(); li++) {
+            if (!only.isBlank() && !java.util.Arrays.asList(only.split(",")).contains(String.valueOf(li + 1))) continue;
             startLesson(li);
             List<Step> steps = lesson.steps;
             for (int k = 0; k < steps.size(); k++) {
@@ -2639,11 +2831,74 @@ public final class LessonStudio extends JPanel {
                 Step st = steps.get(k);
                 if (st.quiz != null) { st.quiz.solved = true; rebuildQuiz(st); }
                 shot(root, String.format("%s/L%d_step%02d.png", dir, li + 1, k + 1));
+                if (aiSnapshot != null && Boolean.getBoolean("sss.lessonshot.ai")) {
+                    try {
+                        java.nio.file.Files.writeString(java.nio.file.Path.of(String.format("%s/L%d_step%02d_ai.txt", dir, li + 1, k + 1)),
+                                aiSnapshot.get());
+                    } catch (Exception ex) { System.err.println(ex); }
+                }
                 n++;
+                if (Boolean.getBoolean("sss.lessonshot.controls")) n += exerciseControls(dir, root, simFrame, li, k);
             }
             exitLesson();
         }
         System.out.println("  rendered " + n + " lesson shots");
+    }
+
+    /**
+     * Head-less check of a step's controls (-Dsss.lessonshot.controls=true): click every choice,
+     * button and checkbox and set every slider to its ends, letting the scene settle after each
+     * change, and render each state.
+     */
+    private int exerciseControls(String dir, Container root, DoubleConsumer simFrame, int li, int k) {
+        List<JComponent> cs = new ArrayList<>();
+        collectControls(controlsBox, cs);
+        int n = 0, idx = 0;
+        for (JComponent c : cs) {
+            List<String> names = new ArrayList<>();
+            List<Runnable> acts = new ArrayList<>();
+            if (c instanceof JCheckBox b) {
+                names.add("on-" + b.getText()); acts.add(b::doClick);
+                names.add("off-" + b.getText()); acts.add(b::doClick);
+            } else if (c instanceof JToggleButton b) {
+                names.add(b.getText()); acts.add(b::doClick);
+            } else if (c instanceof JButton b) {
+                names.add(b.getText()); acts.add(b::doClick);
+            } else if (c instanceof JSlider s) {
+                int v0 = s.getValue();
+                String lab = sliderName(s);
+                names.add(lab + "-min"); acts.add(() -> s.setValue(s.getMinimum()));
+                names.add(lab + "-max"); acts.add(() -> s.setValue(s.getMaximum()));
+                names.add(lab + "-back"); acts.add(() -> s.setValue(v0));
+            }
+            for (int a = 0; a < acts.size(); a++) {
+                acts.get(a).run();
+                for (int fr = 0; fr < 75; fr++) simFrame.accept(1 / 30.0);
+                if (names.get(a).endsWith("-back")) continue;        // restoring, not a new state
+                String nm = names.get(a).replaceAll("<[^>]*>", "").replaceAll("[^A-Za-z0-9]+", "-");
+                shot(root, String.format("%s/L%d_step%02d_c%02d_%s.png", dir, li + 1, k + 1, ++idx,
+                        nm.substring(0, Math.min(28, nm.length()))));
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private static void collectControls(Container c, List<JComponent> out) {
+        for (Component ch : c.getComponents()) {
+            if (ch instanceof JSlider || ch instanceof AbstractButton) out.add((JComponent) ch);
+            else if (ch instanceof Container cc) collectControls(cc, out);
+        }
+    }
+
+    /** A slider's caption, from the label above it. */
+    private static String sliderName(JSlider s) {
+        Container p = s.getParent();
+        List<JComponent> found = new ArrayList<>();
+        java.util.function.Consumer<Container>[] walk = new java.util.function.Consumer[1];
+        walk[0] = cc -> { for (Component ch : cc.getComponents()) { if (ch instanceof JLabel l) found.add(l); else if (ch instanceof Container x) walk[0].accept(x); } };
+        if (p != null) walk[0].accept(p);
+        return found.isEmpty() ? "slider" : ((JLabel) found.get(0)).getText();
     }
 
     private static void shot(Container root, String path) {

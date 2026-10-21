@@ -62,6 +62,29 @@ final class SkyView {
     boolean showConstLines = true, showConstNames = true, showStarNames = true, showAltAzGrid = false,
             showEqGrid = false, showEcliptic = true, showGround = true, showAtmosphere = true;
 
+    // ---- Lesson hooks (see LessonStudio): a lesson draws its own readouts over the sky ----
+    /** While a lesson runs the sky's own HUD and info panel step aside for the lesson's. */
+    boolean lessonMode;
+    /**
+     * Naked-eye limiting magnitude set by a lesson (light pollution), or NaN for the sky's own
+     * value from the Sun's altitude and the Moon.
+     */
+    double limitOverride = Double.NaN;
+    /**
+     * Telescope aperture (mm) a lesson looks through, or NaN to let a narrow field stand in for
+     * optical aid. A telescope of aperture D gathers (D / 7 mm)² times the light of a dark-adapted
+     * pupil, so it reaches 5 log₁₀(D / 7 mm) magnitudes fainter.
+     */
+    double apertureMm = Double.NaN;
+    /** Only stars whose B−V passes this test are drawn (a lesson's spectral-class filter); null = all. */
+    java.util.function.DoublePredicate starFilter;
+    /**
+     * Keep celestial north up, as an equatorially mounted telescope does, instead of the zenith.
+     * With the zenith up (an alt-az view) the field rotates as a target crosses the sky: a
+     * tracked Saturn's rings would turn through tens of degrees in a night.
+     */
+    boolean northUp;
+
     /** Selected object (by name) for the info panel, or null. */
     private String selectedName;
     private double[] riseSet;           // {rise, transit, set} sim seconds (NaN = none) for the selection
@@ -110,7 +133,11 @@ final class SkyView {
     private double cx, cy, scale;       // stereographic: screen = c + scale·k·(x, −y)
     private double[] camR, camU, camF;  // camera basis in ENU
 
+    /** Sim time the frame state below was computed for. */
+    private double frameT = Double.NaN;
+
     private void computeFrame(double t) {
+        frameT = t;
         double tt = Astro.ttSeconds(t);
         double[] P = Astro.j2000ToTrueOfDate(tt);
         double ce = Math.cos(Astro.EPS_J2000), se = Math.sin(Astro.EPS_J2000);
@@ -285,9 +312,19 @@ final class SkyView {
         // at totality the brighter stars and planets come out (it's like deep twilight).
         if (s > -6 && sunVisible < 1) L = Math.min(6.3, L - 2.5 * Math.log10(Math.max(sunVisible, 2e-3)));
         if (moonAltDeg > 0 && s < -6) L -= 1.2 * moonIllum * Math.sin(Math.toRadians(moonAltDeg));
+        if (!Double.isNaN(limitOverride)) L = limitOverride;
+        if (!Double.isNaN(apertureMm)) return L + 5 * Math.log10(Math.max(1.0, apertureMm / 7.0));
         double optical = 2.5 * Math.log10(Math.max(1.0, 60.0 / fovDeg));
         return L + Math.min(optical, 9);
     }
+
+    /**
+     * The limiting magnitude that point sources are sized against. Through a lesson's telescope the
+     * real limit can reach magnitude 20, which would blow every catalogue star up into a maximal glare
+     * disc; the telescope shows fainter things, but bright stars should not balloon on screen. So
+     * sprites are sized against at most magnitude 7.5, while visibility still uses the real limit.
+     */
+    private double spriteLimit() { return Double.isNaN(apertureMm) ? limitMag : Math.min(limitMag, 7.5); }
 
     /** Extinction (mag) at apparent altitude {@code alt}: k·(X − 1) with Rozenberg's airmass. */
     private static double extinction(double alt) {
@@ -303,6 +340,13 @@ final class SkyView {
         scale = (w / 2.0) / (2 * Math.tan(Math.toRadians(fovDeg) / 4));
         camF = enuDir(viewAz, viewAlt);
         camR = new double[]{Math.cos(viewAz), -Math.sin(viewAz), 0};
+        if (northUp && PC != null) {
+            // Celestial north (the true pole of date) in ENU; right = forward × up.
+            double[] q = applyT(PC, new double[]{0, 0, 1});
+            double[] pole = Astro.apply(H, q[0], q[1], q[2]);
+            double[] r = cross(camF, pole);
+            if (norm(r) > 1e-6) camR = unit(r);
+        }
         camU = cross(camR, camF);
     }
 
@@ -363,6 +407,7 @@ final class SkyView {
             if (oldI != null) g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldI);
             drawHorizonDecor(g2);
         }
+        if (lessonMode) return;
         drawHud(g2, t);
         drawInfoPanel(g2, t);
     }
@@ -472,13 +517,14 @@ final class SkyView {
         double labelLimit = Math.min(limitMag - 1.0, 1.6 + 2.5 * Math.log10(Math.max(1, 90 / fovDeg)));
         for (int i = 0; i < cat.n; i++) {
             if (cat.vmag[i] > limitMag + 1) continue;
+            if (starFilter != null && !starFilter.test(cat.bv[i])) continue;
             double[] d = aberrate(cat.directionAt(i, years));
             double[] v = eclToEnuApparent(d);
             if (showGround && v[2] < 0) continue;
             double[] s = project(v);
             if (s == null || s[0] < -10 || s[1] < -10 || s[0] > W + 10 || s[1] > Hh + 10) continue;
             double m = cat.vmag[i] + extinction(Math.asin(clamp(v[2])));
-            double[] sp = StarCatalog.pointSprite(m, limitMag);
+            double[] sp = StarCatalog.pointSprite(m, spriteLimit());
             if (sp[1] < 0.04) continue;
             int rgb = cat.rgb[i];
             double r = drawPointSource(g2, s[0], s[1], 0, sp, rgb);
@@ -634,10 +680,10 @@ final class SkyView {
                 // Resolved disc (phases show from a few pixels up); glare from a bright small disc
                 // lies over it, starting at the limb.
                 drawSphere(g2, o, s[0], s[1], rPx, axes);
-                if (rPx < 10) drawGlare(g2, s[0], s[1], rPx, StarCatalog.pointSprite(m, limitMag), o.rgb, true);
+                if (rPx < 10) drawGlare(g2, s[0], s[1], rPx, StarCatalog.pointSprite(m, spriteLimit()), o.rgb, true);
             }
             else {
-                double[] sp = StarCatalog.pointSprite(m, limitMag);
+                double[] sp = StarCatalog.pointSprite(m, spriteLimit());
                 drawPointSource(g2, s[0], s[1], rPx, new double[]{Math.max(sp[0], 1.0), Math.max(0.35, sp[1])}, o.rgb);
                 if (o.kind.equals("Comet")) drawCometHint(g2, o, s, axes);
             }
@@ -718,19 +764,22 @@ final class SkyView {
      */
     private double[][] screenAxes(double[] d, double[] Ht) {
         double[] a = unit(cross(Math.abs(d[2]) < 0.9 ? new double[]{0, 0, 1} : new double[]{1, 0, 0}, d));
+        double[] b = cross(d, a);
         double eps = 1e-6;
         double[] s0 = project(eclToEnuApparent(d));
-        double[] s1 = project(eclToEnuApparent(unit(new double[]{d[0] + eps * a[0], d[1] + eps * a[1], d[2] + eps * a[2]})));
-        if (s0 == null || s1 == null) return new double[][]{a, cross(d, a)};
-        double ang = Math.atan2(-(s1[1] - s0[1]), s1[0] - s0[0]);     // screen angle (y up) of 'a'
-        double[] b = cross(d, a);
-        // Rotate the (a, b) tangent basis by −ang so it lines up with screen right/up.
-        double c = Math.cos(ang), s = Math.sin(ang);
-        double[] right = {c * a[0] - s * b[0], c * a[1] - s * b[1], c * a[2] - s * b[2]};
-        double[] up = {s * a[0] + c * b[0], s * a[1] + c * b[1], s * a[2] + c * b[2]};
-        // Mirror check: screen-up must be where a step along 'up' lands.
-        double[] s2 = project(eclToEnuApparent(unit(new double[]{d[0] + eps * up[0], d[1] + eps * up[1], d[2] + eps * up[2]})));
-        if (s2 != null && s2[1] > s0[1]) up = new double[]{-up[0], -up[1], -up[2]};
+        double[] sa = project(eclToEnuApparent(unit(new double[]{d[0] + eps * a[0], d[1] + eps * a[1], d[2] + eps * a[2]})));
+        double[] sb = project(eclToEnuApparent(unit(new double[]{d[0] + eps * b[0], d[1] + eps * b[1], d[2] + eps * b[2]})));
+        if (s0 == null || sa == null || sb == null) return new double[][]{a, b};
+        // Screen displacements (y up) of a step along a and along b. The sky seen from inside the
+        // celestial sphere is mirrored, so b need not lie 90° anticlockwise of a on screen: solve
+        // the 2×2 map exactly for the tangent vectors that land on screen-right and screen-up.
+        double ax = sa[0] - s0[0], ay = -(sa[1] - s0[1]), bx = sb[0] - s0[0], by = -(sb[1] - s0[1]);
+        double det = ax * by - bx * ay;
+        if (Math.abs(det) < 1e-30) return new double[][]{a, b};
+        // [ax bx; ay by]·(α, β) = (1, 0) for right and (0, 1) for up.
+        double ra = by / det, rb = -ay / det, ua = -bx / det, ub = ax / det;
+        double[] right = unit(new double[]{ra * a[0] + rb * b[0], ra * a[1] + rb * b[1], ra * a[2] + rb * b[2]});
+        double[] up = unit(new double[]{ua * a[0] + ub * b[0], ua * a[1] + ub * b[1], ua * a[2] + ub * b[2]});
         return new double[][]{right, up};
     }
 
@@ -1124,12 +1173,13 @@ final class SkyView {
         // Reuse the full pipeline for one object without disturbing this frame's state.
         double[] sH = H, sPC = PC, sB = beta, sO = obsEcl;
         double sL = lst, sSun = sunAltDeg, sSunAz = sunAzRad, sMoon = moonAltDeg, sIll = moonIllum, sLim = limitMag;
+        double sT = frameT, sVis = sunVisible;
         List<Obj> saved = new ArrayList<>(objs);
         computeFrame(t);
         Obj o = find(name);
         double alt = o == null ? -1 : o.alt - refraction(o.alt);
         H = sH; PC = sPC; beta = sB; obsEcl = sO; lst = sL; sunAltDeg = sSun; sunAzRad = sSunAz;
-        moonAltDeg = sMoon; moonIllum = sIll; limitMag = sLim;
+        moonAltDeg = sMoon; moonIllum = sIll; limitMag = sLim; frameT = sT; sunVisible = sVis;
         objs.clear(); objs.addAll(saved);
         return alt;
     }
@@ -1210,6 +1260,199 @@ final class SkyView {
             }
         }
         return false;
+    }
+
+    // ---------------------------------------------------------------- lesson API
+
+    /** The view {azimuth°, altitude°, field°}. */
+    double[] view() { return new double[]{Math.toDegrees(viewAz), Math.toDegrees(viewAlt), fovDeg}; }
+
+    private void ensureFrame(double t) { if (t != frameT || H == null) computeFrame(t); }
+
+    /**
+     * What the observer sees of a named Sun / Moon / planet / moon, or a bright star by its
+     * proper name, at sim time {@code t}: {apparent altitude°, azimuth°, RA (h, of date),
+     * Dec (°, of date), V magnitude, apparent diameter (″), distance (AU; NaN for a star),
+     * B−V (NaN unless a star)}; null if unknown.
+     */
+    double[] bodyInfo(String name, double t) {
+        ensureFrame(t);
+        Obj o = find(name);
+        if (o != null) {
+            double[] tod = Astro.apply(PC, o.dir[0], o.dir[1], o.dir[2]);
+            double ang = o.radiusKm > 0 ? 2 * Math.toDegrees(Math.asin(Math.min(1, o.radiusKm / (o.distAU * AU_KM)))) * 3600 : 0;
+            return new double[]{Math.toDegrees(o.alt), Math.toDegrees(wrap(o.az)),
+                    Math.toDegrees(wrap(Math.atan2(tod[1], tod[0]))) / 15, Math.toDegrees(Math.asin(clamp(tod[2]))),
+                    o.mag, ang, o.distAU, Double.NaN};
+        }
+        StarCatalog cat = StarCatalog.get();
+        if (cat == null) return null;
+        for (int i = 0; i < cat.n; i++) {
+            if (!cat.properName[i].equalsIgnoreCase(name)) continue;
+            double[] d = aberrate(cat.directionAt(i, t / (365.25 * DAY)));
+            double[] v = eclToEnuApparent(d);
+            double[] tod = Astro.apply(PC, d[0], d[1], d[2]);
+            return new double[]{Math.toDegrees(Math.asin(clamp(v[2]))), Math.toDegrees(wrap(Math.atan2(v[0], v[1]))),
+                    Math.toDegrees(wrap(Math.atan2(tod[1], tod[0]))) / 15, Math.toDegrees(Math.asin(clamp(tod[2]))),
+                    cat.vmag[i], 0, Double.NaN, cat.bv[i]};
+        }
+        return null;
+    }
+
+    /** Apparent ENU unit vector (east, north, up; refraction included) of a body or star, or null. */
+    double[] enuOf(String name, double t) {
+        double[] b = bodyInfo(name, t);
+        return b == null ? null : enuDir(Math.toRadians(b[1]), Math.toRadians(b[0]));
+    }
+
+    /** Apparent ENU unit vector of an equatorial (of date) direction, refraction included. */
+    double[] enuOfRaDec(double raHours, double decDeg, double t) {
+        ensureFrame(t);
+        double ra = Math.toRadians(raHours * 15), dec = Math.toRadians(decDeg);
+        double[] e = {Math.cos(dec) * Math.cos(ra), Math.cos(dec) * Math.sin(ra), Math.sin(dec)};
+        return eclToEnuApparent(applyT(PC, e));
+    }
+
+    /**
+     * Screen position of an ENU direction (any length) as last painted:
+     * {x, y, 1, pixels per radian there}; false when it is behind the viewer.
+     */
+    boolean projectEnu(double[] v, double[] out) {
+        if (camF == null) return false;
+        double[] s = project(unit(v));
+        if (s == null) return false;
+        out[0] = s[0]; out[1] = s[1]; out[2] = 1; out[3] = scale * s[2];
+        return true;
+    }
+
+    /** Local apparent sidereal time (hours) at sim time {@code t}. */
+    double lstHours(double t) { ensureFrame(t); return Math.toDegrees(wrap(lst)) / 15; }
+    double limitMag(double t) { ensureFrame(t); limitMag = limitingMagnitude(); return limitMag; }
+    double sunAltDeg(double t) { ensureFrame(t); return sunAltDeg; }
+    /** Fraction of the Sun's disc hidden by the Moon (0 = none, 1 = total). */
+    double eclipsed(double t) { ensureFrame(t); return 1 - sunVisible; }
+    /** {rise, transit, set} (sim seconds, NaN = none) of a solar-system object within ±12 h of {@code t}. */
+    double[] riseTransitSetOf(String name, double t) { ensureFrame(t); return riseTransitSet(name, t); }
+    String localTimeOf(double t) { return localTime(t); }
+    String clockOf(double t) { return clock(t); }
+
+    // ---------------------------------------------------------------- AI assistant
+
+    private static final String[] COMPASS = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+            "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"};
+    private static String compass(double azDeg) { return COMPASS[(int) Math.round(((azDeg % 360) + 360) % 360 / 22.5) % 16]; }
+
+    /**
+     * A plain-text description of the sky from the observer's place at sim time {@code t}, for the
+     * AI assistant: place and time, the Sun and the state of the sky, the Moon, every planet, the
+     * brightest stars above the horizon and, when {@code onScreen}, where the view points and
+     * what is in it.
+     */
+    String aiDescribe(double t, boolean onScreen) {
+        computeFrame(t);
+        StringBuilder b = new StringBuilder(2048);
+        b.append("Observer: ").append(placeName).append(String.format(" (latitude %.4f° %s, longitude %.4f° %s)",
+                Math.abs(latDeg), latDeg >= 0 ? "N" : "S", Math.abs(lonDeg), lonDeg >= 0 ? "E" : "W")).append('\n');
+        b.append("Local time: ").append(localTime(t)).append('\n');
+        double lstH = Math.toDegrees(wrap(lst)) / 15;
+        b.append(String.format("Local sidereal time: %02dh%02dm (RA on the meridian)%n", (int) lstH, (int) ((lstH % 1) * 60)));
+        Obj sun = objs.get(0), moon = objs.get(1);
+        b.append(String.format("Sun: altitude %+.1f°, azimuth %.0f° (%s); sky: %s; faintest stars visible about magnitude %.1f%n",
+                sunAltDeg, Math.toDegrees(wrap(sun.az)), compass(Math.toDegrees(sun.az)), skyState(), Math.min(limitMag, 6.5)));
+        if (sunVisible < 0.999) b.append(String.format("SOLAR ECLIPSE in progress: %.1f%% of the Sun is covered%n", 100 * (1 - sunVisible)));
+        // Moon: illuminated fraction, and waxing / waning from its elongation east or west of the Sun.
+        double ill = (1 + Math.cos(moon.phaseAngle)) / 2;
+        double lamM = Math.atan2(moon.dir[1], moon.dir[0]), lamS = Math.atan2(sun.dir[1], sun.dir[0]);
+        double el = Math.toDegrees(Math.IEEEremainder(lamM - lamS, 2 * Math.PI));
+        String phase = ill < 0.03 ? "new" : ill > 0.97 ? "full" : (el > 0 ? "waxing " : "waning ")
+                + (ill < 0.47 ? "crescent" : ill > 0.53 ? "gibbous" : "half (quarter)");
+        b.append(String.format("Moon: %s, %.0f%% lit; altitude %+.1f°, azimuth %.0f° (%s)%s%n", phase, 100 * ill,
+                Math.toDegrees(moon.alt), Math.toDegrees(wrap(moon.az)), compass(Math.toDegrees(moon.az)),
+                moon.alt > 0 ? "" : " - below the horizon"));
+        b.append("Planets (apparent position from here):\n");
+        for (Obj o : objs) {
+            if (o.planet < 0 || o.moonOf >= 0 || o.name.equals("Sun") || o.name.equals("Moon")) continue;
+            if (o.planet > 8) continue;      // Ceres, Haumea, Eris: skip in the summary
+            double[] tod = Astro.apply(PC, o.dir[0], o.dir[1], o.dir[2]);
+            double ra = wrap(Math.atan2(tod[1], tod[0])), dec = Math.asin(clamp(tod[2]));
+            double alt = Math.toDegrees(o.alt);
+            b.append(String.format("  %-8s mag %+.1f  altitude %+5.1f°  azimuth %3.0f° (%-3s)  RA %s  Dec %s  %.2f AU%s%n",
+                    o.name, o.mag, alt, Math.toDegrees(wrap(o.az)), compass(Math.toDegrees(o.az)), hms(ra), dms(dec), o.distAU,
+                    alt < 0 ? "  [below horizon]" : o.mag + extinction(o.alt) > limitMag ? "  [up, but too faint to see by eye now]" : "  [visible]"));
+        }
+        StarCatalog cat = StarCatalog.get();
+        if (cat != null) {
+            double years = t / (365.25 * DAY);
+            List<Object[]> up = new ArrayList<>();
+            for (int i = 0; i < cat.n; i++) {
+                if (cat.vmag[i] > 2.0 || cat.properName[i].isEmpty()) continue;
+                double[] v = eclToEnuApparent(aberrate(cat.directionAt(i, years)));
+                double alt = Math.toDegrees(Math.asin(clamp(v[2])));
+                if (alt < 0) continue;
+                up.add(new Object[]{cat.vmag[i], cat.properName[i], alt, Math.toDegrees(wrap(Math.atan2(v[0], v[1])))});
+            }
+            up.sort(Comparator.comparingDouble(o -> (Double) o[0]));
+            b.append("Brightest named stars above the horizon:");
+            for (int k = 0; k < Math.min(14, up.size()); k++) {
+                Object[] o = up.get(k);
+                b.append(String.format(" %s (mag %.1f, alt %.0f°, %s);", o[1], (Double) o[0], (Double) o[2], compass((Double) o[3])));
+            }
+            b.append('\n');
+        }
+        if (onScreen && camF != null) {
+            b.append(String.format("View: looking toward azimuth %.0f° (%s) at altitude %.0f°, field %s wide, %s up%n",
+                    Math.toDegrees(wrap(viewAz)), compass(Math.toDegrees(viewAz)), Math.toDegrees(viewAlt),
+                    fovDeg >= 1 ? String.format("%.0f°", fovDeg) : String.format("%.1f′", fovDeg * 60),
+                    northUp ? "celestial north" : "the zenith"));
+            b.append("Shown: ").append(showAltAzGrid ? "alt-az grid, " : "").append(showEqGrid ? "RA/Dec grid, " : "")
+             .append(showConstLines ? "constellation lines, " : "").append(showGround ? "ground" : "no ground").append('\n');
+            // Everything bright enough to see that projects inside the screen, brightest first.
+            List<Object[]> seen = new ArrayList<>();          // {magnitude, label}
+            for (Obj o : objs) {
+                if (showGround && o.alt < 0) continue;
+                if (!o.name.equals("Sun") && o.mag + extinction(o.alt) > limitMag) continue;
+                double[] sp = project(enuDir(o.az, o.alt));
+                if (sp == null || sp[0] < 0 || sp[1] < 0 || sp[0] > W || sp[1] > Hh) continue;
+                seen.add(new Object[]{o.mag, o.name + String.format(" (%s, mag %.1f)", o.kind, o.mag)});
+            }
+            if (cat != null) {
+                double years = t / (365.25 * DAY);
+                java.util.Set<String> named = new java.util.HashSet<>();
+                for (int i = 0; i < cat.n; i++) {
+                    if (cat.properName[i].isEmpty() || cat.vmag[i] > limitMag || !named.add(cat.properName[i])) continue;
+                    double[] v = eclToEnuApparent(aberrate(cat.directionAt(i, years)));
+                    if (showGround && v[2] < 0) continue;
+                    double[] sp = project(v);
+                    if (sp == null || sp[0] < 0 || sp[1] < 0 || sp[0] > W || sp[1] > Hh) continue;
+                    seen.add(new Object[]{cat.vmag[i], cat.properName[i] + String.format(" (star, mag %.1f)", cat.vmag[i])});
+                }
+            }
+            seen.sort(Comparator.comparingDouble(o -> (Double) o[0]));
+            List<String> inView = new ArrayList<>();
+            for (int k = 0; k < Math.min(20, seen.size()); k++) inView.add((String) seen.get(k)[1]);
+            b.append("In the field of view now (brightest first): ").append(inView.isEmpty() ? "nothing bright" : String.join(", ", inView)).append('\n');
+            if (selectedName != null) b.append("Selected (clicked) object: ").append(selectedName).append('\n');
+        }
+        return b.toString();
+    }
+
+    /** Everything a lesson may change, to put back afterwards. */
+    Object[] snapshot() {
+        return new Object[]{latDeg, lonDeg, placeName, zone, viewAz, viewAlt, fovDeg, showConstLines, showConstNames,
+                showStarNames, showAltAzGrid, showEqGrid, showEcliptic, showGround, showAtmosphere, selectedName,
+                lessonMode, limitOverride, apertureMm, starFilter, northUp};
+    }
+    void restore(Object[] s) {
+        int k = 0;
+        latDeg = (Double) s[k++]; lonDeg = (Double) s[k++]; placeName = (String) s[k++]; zone = (java.time.ZoneId) s[k++];
+        viewAz = (Double) s[k++]; viewAlt = (Double) s[k++]; fovDeg = (Double) s[k++];
+        showConstLines = (Boolean) s[k++]; showConstNames = (Boolean) s[k++]; showStarNames = (Boolean) s[k++];
+        showAltAzGrid = (Boolean) s[k++]; showEqGrid = (Boolean) s[k++]; showEcliptic = (Boolean) s[k++];
+        showGround = (Boolean) s[k++]; showAtmosphere = (Boolean) s[k++]; selectedName = (String) s[k++];
+        lessonMode = (Boolean) s[k++]; limitOverride = (Double) s[k++]; apertureMm = (Double) s[k++];
+        starFilter = (java.util.function.DoublePredicate) s[k++];
+        northUp = (Boolean) s[k++];
+        bgKey = ""; riseSetKey = ""; frameT = Double.NaN;
     }
 
     /** Sky-mode keys; returns true if consumed. Esc is handled by the host (it leaves the mode). */
