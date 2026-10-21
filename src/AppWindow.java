@@ -2,7 +2,11 @@ import javax.swing.*;
 import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.awt.geom.*;
+import java.awt.image.BufferedImage;
 import java.util.*;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import com.formdev.flatlaf.FlatDarkLaf;
 
 /**
@@ -12,6 +16,143 @@ import com.formdev.flatlaf.FlatDarkLaf;
  */
 final class AppWindow {
     private AppWindow() {}
+
+    static final String APP_NAME = "Astronomy Suite";
+
+    /** A checkbox menu item and the panel setting it mirrors, saved under {@code key} (null: not saved). */
+    private record Toggle(String key, JCheckBoxMenuItem item, BooleanSupplier get, Consumer<Boolean> set) {
+        void refresh() { item.setSelected(get.getAsBoolean()); }
+    }
+
+    /**
+     * A checkbox menu item for one setting. {@code hintKey} (0 for none) is the plain key that
+     * toggles it from the canvas; the menu only shows it.
+     */
+    private static JCheckBoxMenuItem toggle(java.util.List<Toggle> all, SolarSystemSimulation panel, String key,
+                                            String text, int hintKey, BooleanSupplier get, Consumer<Boolean> set) {
+        SolarSystemSimulation.StayOpenCheckBoxMenuItem item =
+                new SolarSystemSimulation.StayOpenCheckBoxMenuItem(text, get.getAsBoolean());
+        if (hintKey != 0) item.setAccelerator(KeyStroke.getKeyStroke(hintKey, 0));
+        item.addActionListener(_ -> {
+            set.accept(item.isSelected());
+            item.setSelected(get.getAsBoolean());   // the setter may refuse (no GPU)
+            panel.repaint();
+        });
+        all.add(new Toggle(key, item, get, set));
+        return item;
+    }
+
+    private static void applySettings(AppSettings s, SolarSystemSimulation panel, java.util.List<Toggle> toggles) {
+        for (Toggle t : toggles) {
+            if (t.key() == null || !s.has(t.key())) continue;
+            t.set().accept(s.getBool(t.key(), t.get().getAsBoolean()));
+            t.refresh();
+        }
+        if (s.has("time.scale")) panel.setTimeScaleAndSync(s.getDouble("time.scale", panel.timeScale));
+    }
+
+    private static void saveSettings(AppSettings s, JFrame frame, SolarSystemSimulation panel,
+                                     java.util.List<Toggle> toggles) {
+        // A lesson changes what is shown; leaving it first restores the user's own choices.
+        if (panel.lessonActive()) panel.lessonStudio.exitLesson();
+        for (Toggle t : toggles) {
+            if (t.key() != null) s.put(t.key(), t.get().getAsBoolean());
+        }
+        s.put("ui.size", panel.uiSize.name());
+        s.put("time.scale", panel.timeScale);
+        Rectangle r = frame.getRootPane().getClientProperty(NORMAL_BOUNDS) instanceof Rectangle nb ? nb : frame.getBounds();
+        s.put("window.x", r.x);
+        s.put("window.y", r.y);
+        s.put("window.w", r.width);
+        s.put("window.h", r.height);
+        s.put("window.maximized", (frame.getExtendedState() & Frame.MAXIMIZED_BOTH) == Frame.MAXIMIZED_BOTH);
+        s.save();
+    }
+
+    /** The window's last un-maximized bounds, so a maximized window still remembers its normal size. */
+    private static final String NORMAL_BOUNDS = "sss.normalBounds";
+
+    private static void restoreBounds(JFrame frame, AppSettings s) {
+        frame.addComponentListener(new ComponentAdapter() {
+            private void track() {
+                if ((frame.getExtendedState() & Frame.MAXIMIZED_BOTH) == 0)
+                    frame.getRootPane().putClientProperty(NORMAL_BOUNDS, frame.getBounds());
+            }
+            @Override public void componentResized(ComponentEvent e) { track(); }
+            @Override public void componentMoved(ComponentEvent e) { track(); }
+        });
+        Rectangle r = new Rectangle(s.getInt("window.x", 0), s.getInt("window.y", 0),
+                s.getInt("window.w", 0), s.getInt("window.h", 0));
+        // Only reuse the saved place if enough of it is still on a screen (a monitor may be gone).
+        boolean onScreen = false;
+        if (r.width >= 400 && r.height >= 300) {
+            for (GraphicsDevice d : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+                Rectangle seen = d.getDefaultConfiguration().getBounds().intersection(r);
+                if (seen.width >= 200 && seen.height >= 150) { onScreen = true; break; }
+            }
+        }
+        if (onScreen) frame.setBounds(r); else frame.setLocationRelativeTo(null);
+        frame.getRootPane().putClientProperty(NORMAL_BOUNDS, frame.getBounds());
+        if (s.getBool("window.maximized", false)) frame.setExtendedState(Frame.MAXIMIZED_BOTH);
+    }
+
+    private static void showAbout(JFrame frame) {
+        String html = """
+                <html><body style='width:400px'>
+                <p style='font-size:15pt'><b>%s</b></p>
+                <p>A real-date 3-D model of the Solar System, with a planetarium, lessons and spacecraft.
+                The planets, comets and asteroids move under their mutual gravity (a symplectic
+                Wisdom–Holman integrator with general relativity), the Moon follows ELP/MPP02, and the
+                other moons follow theories fitted to JPL ephemerides.</p>
+                <p><b>Data</b><br>
+                Initial conditions and test references: NASA/JPL Horizons and DE441<br>
+                The Moon: ELP/MPP02 (Chapront &amp; Francou 2003)<br>
+                Rotation: IAU WGCCRE 2015<br>
+                Stars: Yale Bright Star Catalogue<br>
+                ΔT and eclipse checks: NASA (Espenak &amp; Meeus)<br>
+                Planet maps: Solar System Scope (CC BY 4.0); Earth's night lights and clouds: NASA Visible Earth<br>
+                Satellite imagery: Esri World Imagery (© Esri, Maxar, Earthstar Geographics)</p>
+                <p><b>Built with</b> FlatLaf and JOGL, running on Java %s.</p>
+                <p>MIT License, © 2025 Ethan Lin<br>Settings are saved in %s</p>
+                </body></html>""".formatted(APP_NAME, System.getProperty("java.version"),
+                AppSettings.file().getParent());
+        JOptionPane.showMessageDialog(frame, html, "About " + APP_NAME,
+                JOptionPane.INFORMATION_MESSAGE, new ImageIcon(drawIcon(64)));
+    }
+
+    private static java.util.List<Image> appIcons() {
+        java.util.List<Image> icons = new ArrayList<>();
+        for (int size : new int[]{16, 20, 24, 32, 40, 48, 64, 128, 256}) icons.add(drawIcon(size));
+        return icons;
+    }
+
+    /** The app icon: a ringed planet lit from the upper left, drawn at {@code s} pixels. */
+    static BufferedImage drawIcon(int s) {
+        BufferedImage img = new BufferedImage(s, s, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        double c = s / 2.0, r = s * 0.29;
+        AffineTransform tilt = AffineTransform.getRotateInstance(Math.toRadians(-24), c, c);
+        Shape ring = tilt.createTransformedShape(new Ellipse2D.Double(c - 0.47 * s, c - 0.14 * s, 0.94 * s, 0.28 * s));
+        Shape backHalf = tilt.createTransformedShape(new Rectangle2D.Double(-s, -s, 3 * s, c + s));
+        Shape frontHalf = tilt.createTransformedShape(new Rectangle2D.Double(-s, c, 3 * s, 2 * s));
+        g.setStroke(new BasicStroke((float) Math.max(1.3, s * 0.042)));
+        Color ringColor = new Color(150, 190, 255);
+        g.setColor(ringColor);
+        g.setClip(backHalf);
+        g.draw(ring);
+        g.setClip(null);
+        g.setPaint(new RadialGradientPaint(new Point2D.Double(c - 0.4 * r, c - 0.45 * r), (float) (1.6 * r),
+                new float[]{0f, 0.55f, 1f},
+                new Color[]{new Color(255, 232, 170), new Color(226, 160, 72), new Color(120, 66, 28)}));
+        g.fill(new Ellipse2D.Double(c - r, c - r, 2 * r, 2 * r));
+        g.setColor(ringColor);
+        g.setClip(frontHalf);
+        g.draw(ring);
+        g.dispose();
+        return img;
+    }
 
     /** Build and show the main window. */
     static void open() {
@@ -33,16 +174,33 @@ final class AppWindow {
             // FlatLaf not on the classpath (or failed) -> keep default L&F
         }
 
-        JFrame frame = new JFrame("Solar System Simulation");
-        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        AppSettings settings = AppSettings.load();
+        JFrame frame = new JFrame(APP_NAME);
+        frame.setIconImages(appIcons());
+        frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);   // quit() saves the settings first
         SolarSystemSimulation panel = new SolarSystemSimulation();
         panel.parentFrame = frame; // Set frame reference for menu toggling
+        // Every checkbox below mirrors a panel setting; the menus re-read them when opened,
+        // since the keys and lessons change the same settings.
+        java.util.List<Toggle> toggles = new ArrayList<>();
+        Runnable quit = () -> {
+            saveSettings(settings, frame, panel, toggles);
+            System.exit(0);
+        };
+        frame.addWindowListener(new WindowAdapter() {
+            @Override public void windowClosing(WindowEvent e) { quit.run(); }
+        });
         // ----- Build professional-style UI frame -----
          // Top-level menu bar
          JMenuBar menuBar = new JMenuBar();
 
         // Simulation menu
         JMenu simMenu = new JMenu("Simulation");
+        JMenuItem pauseItem = new SolarSystemSimulation.KeyHintMenuItem("Pause / resume", KeyEvent.VK_SPACE);
+        pauseItem.addActionListener(_ -> {
+            panel.simulationPaused = !panel.simulationPaused;
+            panel.updateTimeScaleLabel();
+        });
         JMenuItem resetViewItem = new JMenuItem("Reset View to Sun");
         resetViewItem.addActionListener(_ -> {
             panel.followingPlanet = false;
@@ -66,8 +224,10 @@ final class AppWindow {
         lunarEclipseItem.addActionListener(_ -> panel.showEclipse(false));
         // Real-date scrubbing (planetarium): jump the whole system to a calendar date.
         JMenuItem gotoDateItem = new JMenuItem("Go to date…");
+        gotoDateItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_G, InputEvent.CTRL_DOWN_MASK));
         gotoDateItem.addActionListener(_ -> panel.promptGoToDate(frame));
         JMenuItem todayItem = new JMenuItem("Jump to today");
+        todayItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_T, InputEvent.CTRL_DOWN_MASK));
         todayItem.addActionListener(_ -> {
             panel.simulationPaused = true;
             panel.goToDate(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
@@ -77,7 +237,9 @@ final class AppWindow {
             panel.goToDate(java.time.LocalDateTime.of(2000, 1, 1, 12, 0));
         });
         JMenuItem exitItem = new JMenuItem("Exit");
-        exitItem.addActionListener(_ -> System.exit(0));
+        exitItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_Q, InputEvent.CTRL_DOWN_MASK));
+        exitItem.addActionListener(_ -> quit.run());
+        simMenu.add(pauseItem);
         simMenu.add(resetViewItem);
         simMenu.addSeparator();
         simMenu.add(gotoDateItem);
@@ -88,6 +250,7 @@ final class AppWindow {
         simMenu.add(eclipsePathItem);
         simMenu.add(lunarEclipseItem);
         JMenuItem eventsItem = new JMenuItem("Next events (conjunctions, transits, occultations…)…");
+        eventsItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_E, InputEvent.CTRL_DOWN_MASK));
         eventsItem.addActionListener(_ -> { panel.showDockPanel(panel.eventsPanel); panel.eventsPanel.search(); });
         simMenu.add(eventsItem);
         simMenu.addSeparator();
@@ -95,122 +258,62 @@ final class AppWindow {
 
         // Objects menu — toggle the built-in catalog of real minor bodies
         JMenu objectsMenu = new JMenu("Objects");
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem cometsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Comets  (with tails)", false);
-        cometsItem.addActionListener(_ -> { panel.showComets = cometsItem.isSelected(); panel.repaint(); });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem asteroidsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Asteroids & near-Earth objects", false);
-        asteroidsItem.addActionListener(_ -> { panel.showAsteroids = asteroidsItem.isSelected(); panel.repaint(); });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem distantItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Distant objects (centaurs / TNOs)", false);
-        distantItem.addActionListener(_ -> { panel.showDistantBodies = distantItem.isSelected(); panel.repaint(); });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem bodyLabelsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Show object labels", true);
-        bodyLabelsItem.addActionListener(_ -> { panel.showSmallBodyLabels = bodyLabelsItem.isSelected(); panel.repaint(); });
-        objectsMenu.add(cometsItem);
-        objectsMenu.add(asteroidsItem);
-        objectsMenu.add(distantItem);
+        objectsMenu.add(toggle(toggles, panel, "objects.comets", "Comets  (with tails)", 0,
+                () -> panel.showComets, v -> panel.showComets = v));
+        objectsMenu.add(toggle(toggles, panel, "objects.asteroids", "Asteroids & near-Earth objects", 0,
+                () -> panel.showAsteroids, v -> panel.showAsteroids = v));
+        objectsMenu.add(toggle(toggles, panel, "objects.distant", "Distant objects (centaurs / TNOs)", 0,
+                () -> panel.showDistantBodies, v -> panel.showDistantBodies = v));
         objectsMenu.addSeparator();
-        objectsMenu.add(bodyLabelsItem);
+        objectsMenu.add(toggle(toggles, panel, "objects.labels", "Show object labels", 0,
+                () -> panel.showSmallBodyLabels, v -> panel.showSmallBodyLabels = v));
 
         // View menu – mirrors keyboard toggles
         JMenu viewMenu = new JMenu("View");
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem orbitsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Show planet orbits", true);
-        orbitsItem.addActionListener(_ -> {
-            panel.showPlanetOrbits = orbitsItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem ringsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Show Saturn rings", true);
-        ringsItem.addActionListener(_ -> {
-            panel.showRings = ringsItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem labelsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Show labels", true);
-        labelsItem.addActionListener(_ -> {
-            panel.showLabels = labelsItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem shadingItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Enable shading", true);
-        shadingItem.addActionListener(_ -> {
-            panel.shadingEnabled = shadingItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem atmosphereItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Atmospheric glow  (A)", true);
-        atmosphereItem.addActionListener(_ -> {
-            panel.showAtmosphere = atmosphereItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem eclipsesItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Eclipse shadows  (E)", true);
-        eclipsesItem.addActionListener(_ -> {
-            panel.showEclipses = eclipsesItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem cloudsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Earth clouds  (C)", true);
-        cloudsItem.addActionListener(_ -> {
-            panel.showClouds = cloudsItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem nightLightsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Earth night lights  (I)", true);
-        nightLightsItem.addActionListener(_ -> {
-            panel.showNightLights = nightLightsItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem gpuItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("GPU sphere shader  (G)", panel.gpuSpheres);
-        gpuItem.addActionListener(_ -> {
-            boolean want = gpuItem.isSelected();
-            if (want) {
-                GLSphereRenderer r = panel.gpuRenderer();
-                want = r != null && r.isAvailable();
-                if (!want) gpuItem.setSelected(false);   // no GPU available: keep CPU path
-            }
-            panel.gpuSpheres = want;
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem selectedOnlyItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Show only selected planet", false);
-        selectedOnlyItem.addActionListener(_ -> {
-            panel.showOnlySelected = selectedOnlyItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem baryItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Sun reflex wobble (barycentric frame)", false);
+        viewMenu.add(toggle(toggles, panel, "view.orbits", "Show planet orbits", KeyEvent.VK_O,
+                () -> panel.showPlanetOrbits, v -> panel.showPlanetOrbits = v));
+        viewMenu.add(toggle(toggles, panel, "view.rings", "Show Saturn rings", KeyEvent.VK_R,
+                () -> panel.showRings, v -> panel.showRings = v));
+        viewMenu.add(toggle(toggles, panel, "view.labels", "Show labels", KeyEvent.VK_L,
+                () -> panel.showLabels, v -> panel.showLabels = v));
+        viewMenu.add(toggle(toggles, panel, "view.shading", "Enable shading", KeyEvent.VK_S,
+                () -> panel.shadingEnabled, v -> panel.shadingEnabled = v));
+        viewMenu.add(toggle(toggles, panel, "view.atmosphere", "Atmospheric glow", KeyEvent.VK_A,
+                () -> panel.showAtmosphere, v -> panel.showAtmosphere = v));
+        viewMenu.add(toggle(toggles, panel, "view.eclipses", "Eclipse shadows", KeyEvent.VK_E,
+                () -> panel.showEclipses, v -> panel.showEclipses = v));
+        viewMenu.add(toggle(toggles, panel, "view.clouds", "Earth clouds", KeyEvent.VK_C,
+                () -> panel.showClouds, v -> panel.showClouds = v));
+        viewMenu.add(toggle(toggles, panel, "view.nightLights", "Earth night lights", KeyEvent.VK_I,
+                () -> panel.showNightLights, v -> panel.showNightLights = v));
+        // -Dsss.gpu on the command line wins over the saved choice.
+        viewMenu.add(toggle(toggles, panel, System.getProperty("sss.gpu") == null ? "view.gpu" : null,
+                "GPU sphere shader", KeyEvent.VK_G,
+                () -> panel.gpuSpheres, v -> {
+                    if (v) {
+                        GLSphereRenderer r = panel.gpuRenderer();
+                        v = r != null && r.isAvailable();      // no GPU available: keep CPU path
+                    }
+                    panel.gpuSpheres = v;
+                }));
+        viewMenu.addSeparator();
+        viewMenu.add(toggle(toggles, panel, null, "Show only selected planet", KeyEvent.VK_B,
+                () -> panel.showOnlySelected, v -> panel.showOnlySelected = v));
+        JMenuItem baryItem = viewMenu.add(toggle(toggles, panel, "view.barycentric", "Sun reflex wobble (barycentric frame)", 0,
+                () -> panel.barycentricFrame, v -> { panel.barycentricFrame = v; panel.computeBarycenter(); }));
         baryItem.setToolTipText("Off: Sun fixed, orbits steady. On: Sun wobbles about the barycentre "
                 + "(the real motion that reveals exoplanets) — noticeable at high time speed.");
-        baryItem.addActionListener(_ -> {
-            panel.barycentricFrame = baryItem.isSelected();
-            panel.computeBarycenter();
-            panel.repaint();
-        });
-        viewMenu.add(orbitsItem);
-        viewMenu.add(ringsItem);
-        viewMenu.add(labelsItem);
-        viewMenu.add(shadingItem);
-        viewMenu.add(atmosphereItem);
-        viewMenu.add(eclipsesItem);
-        viewMenu.add(cloudsItem);
-        viewMenu.add(nightLightsItem);
-        viewMenu.add(gpuItem);
-        viewMenu.addSeparator();
-        viewMenu.add(selectedOnlyItem);
-        viewMenu.add(baryItem);
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem lightItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Apparent positions — light-time from Earth  (T)", false);
+        JMenuItem lightItem = viewMenu.add(toggle(toggles, panel, null, "Apparent positions — light-time from Earth", KeyEvent.VK_T,
+                () -> panel.apparentPositions, v -> { panel.apparentPositions = v; panel.updateEphemeris(); }));
         lightItem.setToolTipText("Draw each body where it appears from Earth: where it was when the light now arriving left it. "
                 + "A hollow ring marks where it really is.");
-        lightItem.addActionListener(_ -> {
-            panel.apparentPositions = lightItem.isSelected();
-            panel.updateEphemeris();
-            panel.repaint();
-        });
-        viewMenu.add(lightItem);
         viewMenu.addSeparator();
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem starsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Real star field (Yale Bright Star Catalogue)", true);
-        starsItem.addActionListener(_ -> {
-            panel.showRealStars = starsItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem constItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Constellation lines", false);
-        constItem.addActionListener(_ -> {
-            panel.showConstellations = constItem.isSelected();
-            panel.repaint();
-        });
-        viewMenu.add(starsItem);
-        viewMenu.add(constItem);
+        viewMenu.add(toggle(toggles, panel, "view.stars", "Real star field (Yale Bright Star Catalogue)", 0,
+                () -> panel.showRealStars, v -> panel.showRealStars = v));
+        viewMenu.add(toggle(toggles, panel, "view.constellations", "Constellation lines", 0,
+                () -> panel.showConstellations, v -> panel.showConstellations = v));
         viewMenu.addSeparator();
-        JMenuItem skyItem = new JMenuItem("Sky from Earth…  (K)");
+        JMenuItem skyItem = new SolarSystemSimulation.KeyHintMenuItem("Sky from Earth…", KeyEvent.VK_K);
         skyItem.addActionListener(_ -> panel.enterSkyView());
         JMenuItem locationItem = new JMenuItem("Observer location…");
         locationItem.addActionListener(_ -> panel.skyView().showLocationDialog());
@@ -222,74 +325,47 @@ final class AppWindow {
         JMenu planetsMenu = new JMenu("Planets");
         for (int i = 0; i < SolarSystemSimulation.NAMES.length; i++) {
             final int planetIndex = i;
-            // Dwarf planets (except Pluto) start unchecked
-            boolean initialState = panel.planetVisible[i];
-            SolarSystemSimulation.StayOpenCheckBoxMenuItem checkbox = new SolarSystemSimulation.StayOpenCheckBoxMenuItem(SolarSystemSimulation.NAMES[i], initialState);
-            checkbox.addActionListener(_ -> {
-                panel.planetVisible[planetIndex] = checkbox.isSelected();
-                panel.updateTreeVisibility();
-                panel.repaint();
-            });
-            planetsMenu.add(checkbox);
+            planetsMenu.add(toggle(toggles, panel, "planet." + SolarSystemSimulation.NAMES[i], SolarSystemSimulation.NAMES[i], 0,
+                    () -> panel.planetVisible[planetIndex],
+                    v -> { panel.planetVisible[planetIndex] = v; panel.updateTreeVisibility(); }));
         }
         viewMenu.add(planetsMenu);
 
         // Add asteroid/debris belts submenu
         viewMenu.addSeparator();
         JMenu beltsMenu = new JMenu("Belts & Lines");
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem asteroidBeltItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Asteroid Belt", false);
-        asteroidBeltItem.addActionListener(_ -> {
-            panel.showAsteroidBelt = asteroidBeltItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem kuiperBeltItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Kuiper Belt", false);
-        kuiperBeltItem.addActionListener(_ -> {
-            panel.showKuiperBelt = kuiperBeltItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem iceLinesItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Frost Lines", false);
-        iceLinesItem.addActionListener(_ -> {
-            panel.showIceLines = iceLinesItem.isSelected();
-            panel.repaint();
-        });
-        beltsMenu.add(asteroidBeltItem);
-        beltsMenu.add(kuiperBeltItem);
-        beltsMenu.add(iceLinesItem);
+        beltsMenu.add(toggle(toggles, panel, "belts.asteroid", "Asteroid Belt", 0,
+                () -> panel.showAsteroidBelt, v -> panel.showAsteroidBelt = v));
+        beltsMenu.add(toggle(toggles, panel, "belts.kuiper", "Kuiper Belt", 0,
+                () -> panel.showKuiperBelt, v -> panel.showKuiperBelt = v));
+        beltsMenu.add(toggle(toggles, panel, "belts.frost", "Frost Lines", 0,
+                () -> panel.showIceLines, v -> panel.showIceLines = v));
         viewMenu.add(beltsMenu);
 
         // UI Size submenu
         viewMenu.addSeparator();
         JMenu uiSizeMenu = new JMenu("UI Size");
         ButtonGroup uiSizeGroup = new ButtonGroup();
-
-        SolarSystemSimulation.StayOpenRadioButtonMenuItem smallUIItem = new SolarSystemSimulation.StayOpenRadioButtonMenuItem("Small", false);
-        smallUIItem.addActionListener(_ -> {
-            panel.uiSize = SolarSystemSimulation.UISize.SMALL;
-            panel.repaint();
-        });
-        uiSizeGroup.add(smallUIItem);
-        uiSizeMenu.add(smallUIItem);
-
-        SolarSystemSimulation.StayOpenRadioButtonMenuItem normalUIItem = new SolarSystemSimulation.StayOpenRadioButtonMenuItem("Normal", true);
-        normalUIItem.addActionListener(_ -> {
-            panel.uiSize = SolarSystemSimulation.UISize.NORMAL;
-            panel.repaint();
-        });
-        uiSizeGroup.add(normalUIItem);
-        uiSizeMenu.add(normalUIItem);
-
-        SolarSystemSimulation.StayOpenRadioButtonMenuItem largeUIItem = new SolarSystemSimulation.StayOpenRadioButtonMenuItem("Large", false);
-        largeUIItem.addActionListener(_ -> {
-            panel.uiSize = SolarSystemSimulation.UISize.LARGE;
-            panel.repaint();
-        });
-        uiSizeGroup.add(largeUIItem);
-        uiSizeMenu.add(largeUIItem);
+        try {
+            panel.uiSize = SolarSystemSimulation.UISize.valueOf(settings.get("ui.size", panel.uiSize.name()));
+        } catch (IllegalArgumentException ignored) { }
+        for (SolarSystemSimulation.UISize size : SolarSystemSimulation.UISize.values()) {
+            String label = size.name().charAt(0) + size.name().substring(1).toLowerCase();
+            SolarSystemSimulation.StayOpenRadioButtonMenuItem sizeItem =
+                    new SolarSystemSimulation.StayOpenRadioButtonMenuItem(label, panel.uiSize == size);
+            sizeItem.addActionListener(_ -> {
+                panel.uiSize = size;
+                panel.repaint();
+            });
+            uiSizeGroup.add(sizeItem);
+            uiSizeMenu.add(sizeItem);
+        }
 
         viewMenu.add(uiSizeMenu);
 
         JMenu helpMenu = new JMenu("Help");
         JMenuItem controlsItem = new JMenuItem("Controls...");
+        controlsItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F1, 0));
         controlsItem.addActionListener(_ -> JOptionPane.showMessageDialog(
                 frame,
                 """
@@ -327,6 +403,11 @@ final class AppWindow {
                         (In Earth Explorer, V looks up at the sky
                         from the point under the map centre.)
 
+                        Menu shortcuts:
+                        - Ctrl+G: Go to date   - Ctrl+T: Jump to today
+                        - Ctrl+E: Next events   - Ctrl+L: Lessons
+                        - Ctrl+Q: Exit   - F1: this list
+
                         Shortcuts work from anywhere in the window,
                         except while typing in the search box.
 
@@ -336,14 +417,8 @@ final class AppWindow {
                         - Frost Lines (H2O and CO2)""",
                 "Controls",
                 JOptionPane.INFORMATION_MESSAGE));
-        JMenuItem aboutItem = new JMenuItem("About");
-        aboutItem.addActionListener(_ -> JOptionPane.showMessageDialog(
-                frame,
-                "Solar System Simulation\n" +
-                        "Real-date 3-D model: planets, comets and asteroids integrated under mutual gravity\n" +
-                        "(symplectic Wisdom–Holman, JPL Horizons initial conditions); moons on fitted JPL theories.",
-                "About",
-                JOptionPane.INFORMATION_MESSAGE));
+        JMenuItem aboutItem = new JMenuItem("About " + APP_NAME);
+        aboutItem.addActionListener(_ -> showAbout(frame));
         JMenuItem aiChatItem = new JMenuItem("Ask AI Assistant...");
         aiChatItem.addActionListener(_ -> AiAssistant.showAiChat(frame, panel));
         helpMenu.add(controlsItem);
@@ -378,9 +453,8 @@ final class AppWindow {
         stopMission.addActionListener(_ -> { if (panel.missionPlayer.isActive()) panel.missionPlayer.stop(); });
         missionsMenu.add(stopMission);
         missionsMenu.addSeparator();
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem inFlightItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Show spacecraft in flight on the current date", true);
-        inFlightItem.addActionListener(_ -> { panel.missionPlayer.setShowAllInFlight(inFlightItem.isSelected()); panel.repaint(); });
-        missionsMenu.add(inFlightItem);
+        missionsMenu.add(toggle(toggles, panel, "missions.inFlight", "Show spacecraft in flight on the current date", 0,
+                panel.missionPlayer::showAllInFlight, panel.missionPlayer::setShowAllInFlight));
 
         menuBar.add(simMenu);
         menuBar.add(objectsMenu);
@@ -392,6 +466,7 @@ final class AppWindow {
         panel.lessonStudio.setVisible(false);
         JMenu educationMenu = new JMenu("Education");
         JMenuItem studioItem = new JMenuItem("Lessons...");
+        studioItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_L, InputEvent.CTRL_DOWN_MASK));
         studioItem.addActionListener(_ -> panel.lessonStudio.showPicker());
         educationMenu.add(studioItem);
         String[] lessonLabels = LessonStudio.menuLabels();
@@ -405,35 +480,29 @@ final class AppWindow {
 
         // Orbit overlays — annotations on the live simulation
         JMenu overlaysMenu = new JMenu("Overlays");
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem keplersLawItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Kepler's 3rd Law (P²/a³)", false);
-        keplersLawItem.addActionListener(_ -> {
-            panel.showKeplersLaw = keplersLawItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem periAphelionItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Perihelion / Aphelion markers", false);
-        periAphelionItem.addActionListener(_ -> {
-            panel.showPerihelionAphelion = periAphelionItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem velocityVectorsItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Velocity vectors", false);
-        velocityVectorsItem.addActionListener(_ -> {
-            panel.showVelocityVectors = velocityVectorsItem.isSelected();
-            panel.repaint();
-        });
-        SolarSystemSimulation.StayOpenCheckBoxMenuItem velocityComparisonItem = new SolarSystemSimulation.StayOpenCheckBoxMenuItem("Velocity labels", false);
-        velocityComparisonItem.addActionListener(_ -> {
-            panel.showVelocityComparison = velocityComparisonItem.isSelected();
-            panel.repaint();
-        });
-        overlaysMenu.add(keplersLawItem);
-        overlaysMenu.add(periAphelionItem);
-        overlaysMenu.add(velocityVectorsItem);
-        overlaysMenu.add(velocityComparisonItem);
+        overlaysMenu.add(toggle(toggles, panel, "overlays.kepler", "Kepler's 3rd Law (P²/a³)", 0,
+                () -> panel.showKeplersLaw, v -> panel.showKeplersLaw = v));
+        overlaysMenu.add(toggle(toggles, panel, "overlays.periAphelion", "Perihelion / Aphelion markers", 0,
+                () -> panel.showPerihelionAphelion, v -> panel.showPerihelionAphelion = v));
+        overlaysMenu.add(toggle(toggles, panel, "overlays.velocityVectors", "Velocity vectors", 0,
+                () -> panel.showVelocityVectors, v -> panel.showVelocityVectors = v));
+        overlaysMenu.add(toggle(toggles, panel, "overlays.velocityLabels", "Velocity labels", 0,
+                () -> panel.showVelocityComparison, v -> panel.showVelocityComparison = v));
         educationMenu.add(overlaysMenu);
 
 
         menuBar.add(educationMenu);
         menuBar.add(helpMenu);
+        int[] mnemonics = {KeyEvent.VK_S, KeyEvent.VK_O, KeyEvent.VK_V, KeyEvent.VK_M, KeyEvent.VK_E, KeyEvent.VK_H};
+        for (int i = 0; i < menuBar.getMenuCount(); i++) {
+            JMenu menu = menuBar.getMenu(i);
+            menu.setMnemonic(mnemonics[i]);
+            menu.addMenuListener(new javax.swing.event.MenuListener() {
+                @Override public void menuSelected(javax.swing.event.MenuEvent e) { toggles.forEach(Toggle::refresh); }
+                @Override public void menuDeselected(javax.swing.event.MenuEvent e) { }
+                @Override public void menuCanceled(javax.swing.event.MenuEvent e) { }
+            });
+        }
         frame.setJMenuBar(menuBar);
 
         // ----- Top search bar -----
@@ -651,6 +720,14 @@ final class AppWindow {
             playPause.setText(panel.simulationPaused ? "Play" : "Pause");
             panel.updateTimeScaleLabel();
         });
+        // Space, the menu, date jumps and lessons pause the clock too: keep the button in step.
+        new javax.swing.Timer(250, _ -> {
+            String want = panel.simulationPaused ? "Play" : "Pause";
+            if (!want.equals(playPause.getText())) {
+                playPause.setText(want);
+                panel.updateTimeScaleLabel();
+            }
+        }).start();
 
         panel.timeScaleSlider = new JSlider(SolarSystemSimulation.TIME_SLIDER_MIN, SolarSystemSimulation.TIME_SLIDER_MAX,
                 panel.timeScaleToSliderValue(panel.timeScale));
@@ -788,11 +865,11 @@ final class AppWindow {
         content.add(eastDock, BorderLayout.EAST);
 
         frame.setContentPane(content);
+        applySettings(settings, panel, toggles);
 
         frame.pack();
-        frame.setLocationRelativeTo(null);
+        restoreBounds(frame, settings);
         frame.setVisible(true);
-        frame.setTitle("Solar System Simulation");
         // Give the canvas keyboard focus so shortcuts work immediately.
         SwingUtilities.invokeLater(panel::requestFocusInWindow);
         // -Dsss.lesson=N starts lesson N (1-based) at start-up; 0 = just open the lesson list.

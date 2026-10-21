@@ -67,6 +67,18 @@ If the JOGL jars aren't in the default location, point the build at them:
 ./run2d.ps1 -Shot out\shots   # head-less showcase screenshots
 ```
 
+### Settings and shortcuts
+
+The app remembers its display toggles, the planets and objects shown, the UI size, the time
+speed and the window's size and position in `~/.astronomy-suite/settings.properties` (beside
+the sky view's observer location and the AI key). They are saved when you quit; if you quit
+during a lesson, the settings from before the lesson are saved. Delete the file to go back to
+the defaults. `-Pgpu` / `-Dsss.gpu` overrides the saved GPU choice.
+
+The menus show each toggle's single-key shortcut (O, R, L, …). The menu items also have
+shortcuts of their own: **Ctrl+G** go to date, **Ctrl+T** jump to today, **Ctrl+E** next
+events, **Ctrl+L** lessons, **Ctrl+Q** exit and **F1** the list of controls. **Alt** plus the
+underlined letter opens a menu.
 
 ## Lesson Studio
 

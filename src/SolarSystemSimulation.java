@@ -1155,7 +1155,7 @@ public class SolarSystemSimulation extends JPanel
         // Direct listener so the canvas responds when it holds focus.
         addKeyListener(new KeyAdapter() {
             @Override public void keyPressed(KeyEvent e) {
-                if (handleGlobalKey(e.getKeyCode())) e.consume();
+                if (!isMenuShortcut(e) && handleGlobalKey(e.getKeyCode())) e.consume();
             }
         });
         // App-wide dispatcher so the toggle keys work no matter which widget
@@ -1168,6 +1168,7 @@ public class SolarSystemSimulation extends JPanel
             // Only act while this simulation's window is the active one.
             Window w = SwingUtilities.getWindowAncestor(this);
             if (w == null || !w.isActive()) return false;
+            if (isMenuShortcut(e)) return false;
             return handleGlobalKey(e.getKeyCode());
         });
         // Start 60 FPS timer (skipped in off-screen screenshot mode, where the sim
@@ -1192,6 +1193,15 @@ public class SolarSystemSimulation extends JPanel
             Timer timer = new Timer(16, this);
             timer.start();
         }
+    }
+
+    /**
+     * Ctrl, Alt or Meta held: a menu shortcut (Ctrl+G) or mnemonic (Alt+V), which must not also
+     * toggle the plain-letter setting. Ctrl+Alt together is AltGr, which types characters.
+     */
+    private static boolean isMenuShortcut(KeyEvent e) {
+        boolean ctrl = e.isControlDown(), alt = e.isAltDown();
+        return e.isMetaDown() || ctrl != alt;
     }
 
     /**
@@ -6193,6 +6203,28 @@ public class SolarSystemSimulation extends JPanel
             }
         }
 
+        /** The accelerator is only shown: the key itself goes through {@link #handleGlobalKey}. */
+        @Override
+        protected boolean processKeyBinding(KeyStroke ks, KeyEvent e, int condition, boolean pressed) {
+            return condition != WHEN_IN_FOCUSED_WINDOW && super.processKeyBinding(ks, e, condition, pressed);
+        }
+    }
+
+    /**
+     * Menu item whose accelerator is only shown, not bound. The plain-letter keys belong to
+     * {@link #handleGlobalKey}, which gives them other meanings in the sky view, the Earth
+     * Explorer and lessons; a real binding would also fire while typing in the search box.
+     */
+    static class KeyHintMenuItem extends JMenuItem {
+        KeyHintMenuItem(String text, int keyCode) {
+            super(text);
+            setAccelerator(KeyStroke.getKeyStroke(keyCode, 0));
+        }
+
+        @Override
+        protected boolean processKeyBinding(KeyStroke ks, KeyEvent e, int condition, boolean pressed) {
+            return condition != WHEN_IN_FOCUSED_WINDOW && super.processKeyBinding(ks, e, condition, pressed);
+        }
     }
 
     /**
