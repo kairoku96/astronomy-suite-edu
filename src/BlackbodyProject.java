@@ -1,184 +1,383 @@
 import java.awt.*;
 import java.awt.geom.*;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Lesson: Project 1, Investigating Blackbody Radiation (the AST221 Python project by Gwen Irvine,
- * AST399 ROP), worked in the sim. Each notebook task is a step: Planck's law as a function (and the
- * notebook's misplaced-parenthesis bug), Wien's law measured with argmax on a wavelength grid,
- * B_λ against B_ν, eight real SDSS spectra against scaled blackbodies, and the observed peaks
- * against Wien's law. The scale factor between a spectrum and its blackbody, π (R/d)², gives the
- * stars' distance, which can be checked: all eight lie in the open cluster M67.
+ * Lesson: Project 1, Blackbody Radiation, as a coding lesson about the Sun. It follows the AST221
+ * Python project (Gwen Irvine, AST399 ROP), but every task is about the solar system and is written
+ * by the student in real Python ({@link CodeCell}, {@link PythonKernel}): light time to the Sun
+ * from the sim's live distance, Planck's law for the Sun, a sunspot, the Sun's peak by argmax and
+ * Wien's law, Wien across the planets, B_ν against B_λ, and the sunlight reaching Earth and every
+ * planet today. Checks grade each cell, and the scene draws the student's own numbers.
  */
 final class BlackbodyProject extends LessonKit {
 
     BlackbodyProject(LessonStudio.Host host) { super(host); }
 
-    /** Wien's law for B_ν: ν(max) = 5.879 × 10¹⁰ Hz/K × T. */
-    static final double WIEN_NU = 5.878925757e10;
-    /** M67's distance (pc) from its Gaia parallax (≈ 1.16 mas). */
-    static final double M67_PC = 860;
-    static final int[] GRID_N = {200, 1000, 5000};
-    /** One colour per spectrum when all eight share a plot. */
-    static final Color[] SERIES = {ACCENT, ORANGE, GREEN, PINK, TEAL, VIOLET, SUN_C, APO_C};
-    static final Color OBS_C = new Color(176, 196, 232);
-    /** Strong absorption features in the SDSS range: vacuum wavelengths (nm), as SDSS records them. */
-    static final double[] LINE_NM = {395.2, 410.3, 430.8, 434.2, 486.3, 517.6, 589.5, 656.5, 854.4};
-    static final String[] LINE_ID = {"Ca H,K", "Hδ", "G", "Hγ", "Hβ", "Mg b", "Na D", "Hα", "Ca II"};
+    static final String[] PLANETS = BlackbodyLesson.PLANETS;
+    static final double T_SPOT = 3900;
+    /** The total solar irradiance measured at 1 AU (W/m², Kopp & Lean 2011). */
+    static final double TSI = 1361;
 
-    // Task 1
-    double temp = 5000, temp2 = 3000;
-    boolean bug;
-    // Task 2
-    double lamLo = 100, lamHi = 3000;
-    int gridK = 1;
-    final List<double[]> wienLog = new ArrayList<>();      // {T (K), argmax λ (nm)}
-    // Tasks 4 and 5
-    int star;
-    boolean allStars, lines = true, smooth;
-    double radius = 1, distPc = 500;
+    int zone;                                   // 0 = inner planets, 1 = outer
 
-    // ------------------------------------------------------------------ the notebook's functions
+    // ------------------------------------------------------------------ the live values handed to Python as `sim`
 
-    /** Planck's B_λ in the notebook's units, W m⁻² nm⁻¹ sr⁻¹. */
-    static double bLam(double nm, double T) { return planck(nm * 1e-9, T) * 1e-9; }
-    /** The notebook's first try, 1 / np.exp(hc/λkT − 1): the −1 slipped inside the exponential. */
-    static double bLamBug(double nm, double T) {
-        double l = nm * 1e-9, x = H_PL * C / (l * K_B * T);
-        return x > 700 ? 0 : 2 * H_PL * C * C / Math.pow(l, 5) / Math.exp(x - 1) * 1e-9;
-    }
-    /** Planck's B_ν, W m⁻² Hz⁻¹ sr⁻¹. */
-    static double bNu(double hz, double T) {
-        double x = H_PL * hz / (K_B * T);
-        return x > 700 ? 0 : 2 * H_PL * hz * hz * hz / (C * C) / Math.expm1(x);
-    }
-    /** np.linspace(a, b, n). */
-    static double[] linspace(double a, double b, int n) {
-        double[] x = new double[n];
-        for (int i = 0; i < n; i++) x[i] = a + (b - a) * i / (n - 1);
-        return x;
-    }
-    /** np.argmax: the first index of the largest value. */
-    static int argmax(double[] y) {
-        int k = 0;
-        for (int i = 1; i < y.length; i++) if (y[i] > y[k]) k = i;
-        return k;
-    }
-    static double[] bLamOn(double[] nm, double T) {
-        double[] b = new double[nm.length];
-        for (int i = 0; i < nm.length; i++) b[i] = bLam(nm[i], T);
-        return b;
-    }
-    /** Task 2: the grid wavelength (nm) where B_λ is largest, as argmax finds it. */
-    static double peakOnGrid(double T, double lo, double hi, int n) {
-        double[] nm = linspace(lo, hi, n);
-        return nm[argmax(bLamOn(nm, T))];
-    }
-    /** Task 3: the same grid turned into frequencies ν = c/λ; returns c/ν (nm) where B_ν is largest. */
-    static double nuPeakOnGrid(double T, double lo, double hi, int n) {
-        double[] nm = linspace(lo, hi, n), bn = new double[n];
-        for (int i = 0; i < n; i++) bn[i] = bNu(C / (nm[i] * 1e-9), T);
-        return nm[argmax(bn)];
-    }
-    /** ∫ B_λ dλ (W m⁻² sr⁻¹) from 10 nm to 1 mm, trapezoids in ln λ; over all λ it is σT⁴/π. */
-    static double area(double T) {
-        int n = 4000;
-        double a = Math.log(10), b = Math.log(1e6), s = 0, h = (b - a) / n;
-        for (int i = 0; i <= n; i++) {
-            double nm = Math.exp(a + i * h), f = bLam(nm, T) * nm;
-            s += (i == 0 || i == n) ? f / 2 : f;
+    Map<String, Object> sim() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("date", host.dateString());
+        m.put("earth_sun_au", len(pos(host.state("Earth"))) / AU);
+        Map<String, Object> d = new LinkedHashMap<>(), t = new LinkedHashMap<>();
+        t.put("Sun", T_SUN);
+        for (int i = 0; i < PLANETS.length; i++) {
+            d.put(PLANETS[i], len(pos(host.state(PLANETS[i]))) / AU);
+            t.put(PLANETS[i], BlackbodyLesson.T_MEAS[i]);
         }
-        return s * h;
-    }
-    static double median(double[] a) {
-        double[] s = a.clone();
-        java.util.Arrays.sort(s);
-        int n = s.length;
-        return n % 2 == 1 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+        m.put("planet_au", d);
+        m.put("temperatures", t);
+        m.put("T_sun", T_SUN);
+        return m;
     }
 
-    // ------------------------------------------------------------------ the real spectra
-
-    static List<SdssSpectra.Spectrum> spectra() { return SdssSpectra.all(); }
-    SdssSpectra.Spectrum spec() {
-        List<SdssSpectra.Spectrum> all = spectra();
-        return all.isEmpty() ? null : all.get(Math.min(star, all.size() - 1));
-    }
-    String[] starLabels() {
-        List<SdssSpectra.Spectrum> all = spectra();
-        String[] s = new String[all.size()];
-        for (int i = 0; i < s.length; i++) s[i] = all.get(i).name();
+    /** The starter with each blank, in order, filled by an answer. */
+    static String solve(String starter, String... answers) {
+        String s = starter;
+        for (String a : answers) {
+            int i = s.indexOf(CodeCell.BLANK);
+            if (i < 0) throw new IllegalArgumentException("more answers than blanks");
+            s = s.substring(0, i) + a + s.substring(i + CodeCell.BLANK.length());
+        }
+        if (s.contains(CodeCell.BLANK)) throw new IllegalArgumentException("a blank was left unanswered");
         return s;
     }
 
-    /** The notebook's scaling, median(F) / median(B) (sr): π (R/d)², times any light the fibre missed. */
-    static double medianScale(SdssSpectra.Spectrum s) { return median(s.flux()) / median(bLamOn(s.nm(), s.teff())); }
-
-    /** The peak wavelength (nm): the brightest pixel, as argmax finds it, or the brightest 5-nm average. */
-    static double peakOf(SdssSpectra.Spectrum s, boolean smooth) {
-        double[] nm = s.nm(), f = s.flux();
-        if (!smooth) return nm[argmax(f)];
-        double best = -1, at = nm[0], sum = 0;
-        int lo = 0;
-        for (int hi = 0; hi < nm.length; hi++) {           // a running 5-nm boxcar, kept clear of the ends
-            sum += f[hi];
-            while (nm[hi] - nm[lo] > 5) sum -= f[lo++];
-            if (nm[lo] - nm[0] < 2.5 || nm[nm.length - 1] - nm[hi] < 2.5) continue;
-            double m = sum / (hi - lo + 1);
-            if (m > best) { best = m; at = (nm[lo] + nm[hi]) / 2; }
-        }
-        return at;
+    CodeCell cell(String id, String starter, String check, String... answers) {
+        return new CodeCell(id, starter, solve(starter, answers), check, this::sim);
     }
 
-    private static final Map<String, Double> FIT_T = new HashMap<>();
-    /** The blackbody that best fits the whole spectrum (free scale, weighted by ivar): its temperature (K). */
-    static synchronized double fitT(SdssSpectra.Spectrum s) {
-        return FIT_T.computeIfAbsent(s.file(), _ -> {
-            double best = Double.MAX_VALUE, bestT = 0;
-            for (int pass = 0; pass < 2; pass++) {
-                double lo = pass == 0 ? 3000 : bestT - 50, hi = pass == 0 ? 10000 : bestT + 50, step = pass == 0 ? 25 : 1;
-                for (double T = lo; T <= hi; T += step) {
-                    double sfb = 0, sbb = 0, sff = 0;
-                    for (int i = 0; i < s.nm().length; i++) {
-                        double w = s.ivar()[i], b = bLam(s.nm()[i], T), f = s.flux()[i];
-                        sfb += w * f * b; sbb += w * b * b; sff += w * f * f;
-                    }
-                    double chi = sff - sfb * sfb / sbb;           // Σw(F − aB)² at the best scale a
-                    if (chi < best) { best = chi; bestT = T; }
-                }
-            }
-            return bestT;
-        });
-    }
+    // ------------------------------------------------------------------ the cells
 
-    // ------------------------------------------------------------------ the 3-D stage
+    static final String LIGHT = """
+            # Already imported for you, as in the notebook:
+            #   import numpy as np
+            #   from astropy import units as u
+            #   from astropy.constants import c, h, k_B, b_wien
+            #   from astropy.constants import sigma_sb, R_sun
+            # sim: a dictionary of live values from the simulation.
 
-    void sunOnly() { host.showOnly(null); host.setOrbits(false, false); host.setTime(DAY); }
+            d = sim["earth_sun_au"] * u.AU    # Earth-Sun distance now
+            print("On", sim["date"], "Earth is", d, "from the Sun")
+            print("That is", d.to(u.km))
 
-    /** Centre of the star beside the Sun (solar radii), clear of the Sun at any size. */
-    double starX(double rad) { return 1 + 0.9 + 1.25 * rad; }
-    /** Frame the Sun and the star beside it. */
-    double[] pairView(double rad) {
-        double x = starX(rad), left = -1.2, right = x + 1.15 * rad;
-        return new double[]{(left + right) / 2 * R_SUN, 0, Math.max(2.4, 0.62 * (right - left)) * R_SUN, 8, 0};
-    }
-    /** The real Sun and a star of temperature T and radius rad (solar radii) beside it. */
-    void pair(LessonStudio.R3 r, double T, double rad, String label) {
-        double[] c0 = v(starX(rad), 0, 0);
-        Color col = starColor(T);
-        r.glow(c0, rad * 1.8, alpha(col, 90), 0.5);
-        int n = rad > 0.8 ? 30 : 16;
-        r.sphere(c0, rad, n, 2 * n, (nx, ny, nz, mu) -> LessonStudio.scale(col, 0.55 + 0.45 * mu));
-        r.labelBelow(c0, rad, label, col, 12.5f);
-        r.labelBelow(v(0, 0, 0), 1, "the Sun: 5772 K", SUN_C, 12.5f);
-    }
+            # How long does sunlight take to reach Earth today?
+            light_time = ____
+            print("Light time:", light_time.to(u.min))
+            """;
+    static final String LIGHT_CHECK = """
+            d = sim["earth_sun_au"] * u.AU
+            lt = quantity(need("light_time", "fill in its blank"), u.s, "light_time")
+            want = (d / const.c).to(u.s)
+            report.data["minutes"] = lt.to(u.min).value
+            report.data["au"] = sim["earth_sun_au"]
+            if abs((lt / want).decompose().value - 1) < 1e-6:
+                report.ok(f"Sunlight takes {lt.to(u.min).value:.3f} minutes to reach Earth today ({d.value:.5f} AU).")
+            else:
+                report.bad(f"light_time is {lt.to(u.min).value:.3f} minutes, but light crosses {d.value:.5f} AU in "
+                           f"{want.to(u.min).value:.3f} minutes. Time = distance / speed.")
+            """;
+
+    static final String PLANCK = """
+            def planck_lambda(temperature, wavelengths):
+                \"\"\"Planck's law: intensity B_lambda in W / (m2 nm sr).
+                temperature: Quantity in K; wavelengths: Quantity in nm\"\"\"
+                # Fill in Planck's law, using h, c, k_B and np.exp:
+                B_lambda = ____
+                B_lambda = B_lambda.to(u.W / u.m**2 / u.nm)
+                return B_lambda / u.sr     # intensity is per steradian
+
+            T_sun = 5772 * u.K
+            print("At 500 nm:", planck_lambda(T_sun, 500 * u.nm))
+            """;
+    static final String PLANCK_CHECK = """
+            f = need("planck_lambda", "run the cell that defines it")
+            waves = np.linspace(100, 3000, 400) * u.nm
+            B = quantity(f(5772 * u.K, waves), "W / (m2 nm sr)", "planck_lambda(5772 * u.K, waves)")
+            want = planck_ref(5772 * u.K, waves)
+            r = (B / want).decompose().value
+            report.data["nm"] = waves.value
+            report.data["B"] = B.value
+            report.data["ref"] = want.value
+            x = (const.h * const.c / (waves * const.k_B * 5772 * u.K)).decompose().value
+            if np.allclose(r, 1, rtol=1e-6):
+                report.ok(f"planck_lambda matches Planck's law. The Sun's surface gives {B.value.max():.4g} W m-2 nm-1 sr-1 at the peak.")
+            elif np.allclose(r, np.e * (1 - np.exp(-x)), rtol=1e-4):
+                report.bad("Close! Your curve is e = 2.7 times too high: the - 1 slipped inside np.exp(...). "
+                           "It belongs outside: 1 / (np.exp(...) - 1).")
+            elif np.allclose(r, r[0], rtol=1e-4):
+                report.bad(f"Right shape, wrong height: your values are {r[0]:.4g} times Planck's. Check the 2 h c**2 in front.")
+            else:
+                report.bad("Your curve doesn't have Planck's shape. Compare with the formula: wavelength to the 5th power "
+                           "underneath, and h c / (wavelength k_B T) in the exponent.")
+            """;
+
+    static final String SPOT = """
+            waves = np.linspace(100, 3000, 500) * u.nm
+            B_photosphere = planck_lambda(5772 * u.K, waves)
+
+            # A sunspot's dark centre is about 3900 K:
+            B_sunspot = ____
+
+            # At 500 nm (green), the spot's brightness as a fraction
+            # of the photosphere's:
+            ratio_500 = ____
+            print("At 500 nm:", ratio_500)
+
+            # Over all wavelengths together (the total goes as T**4):
+            ratio_total = ____
+            print("In total:", ratio_total)
+            """;
+    static final String SPOT_CHECK = """
+            waves = quantity(need("waves"), u.nm, "waves")
+            spot = quantity(need("B_sunspot", "fill in its blank"), "W / (m2 nm sr)", "B_sunspot")
+            want = planck_ref(3900 * u.K, waves)
+            report.data["nm"] = waves.value
+            report.data["phot"] = planck_ref(5772 * u.K, waves).value
+            report.data["spot"] = spot.value
+            if spot.shape == want.shape and np.allclose((spot / want).decompose().value, 1, rtol=1e-6):
+                report.ok("B_sunspot is a 3900 K blackbody.")
+            else:
+                report.bad("B_sunspot should be planck_lambda at 3900 K, on the same wavelengths.")
+            r500 = number(need("ratio_500", "fill in its blank"), "ratio_500")
+            want500 = (planck_ref(3900 * u.K, 500 * u.nm) / planck_ref(5772 * u.K, 500 * u.nm)).decompose().value
+            report.data["r500"] = r500
+            if abs(r500 / want500 - 1) < 0.03:
+                report.ok(f"At 500 nm the spot gives {r500:.3f} of the photosphere's light, about 1/{1 / r500:.0f}.")
+            else:
+                report.bad(f"ratio_500 is {r500:.4g}. Divide the spot's B at 500 nm by the photosphere's B at 500 nm.")
+            rt = number(need("ratio_total", "fill in its blank"), "ratio_total")
+            report.data["rt"] = rt
+            if abs(rt / (3900 / 5772) ** 4 - 1) < 0.01:
+                report.ok(f"In total it gives {rt:.3f}: (3900 / 5772)**4, the Stefan-Boltzmann law.")
+            else:
+                report.bad(f"ratio_total is {rt:.4g}. The total over all wavelengths goes as T**4.")
+            """;
+
+    static final String PEAK = """
+            waves = np.linspace(100, 3000, 1000) * u.nm
+            B_sun = planck_lambda(5772 * u.K, waves)
+
+            # The index of the largest value in B_sun:
+            i_peak = ____
+            peak_wavelength = waves[i_peak]
+            print("argmax peak:", peak_wavelength)
+
+            # Wien's law, b_wien / T:
+            wien_peak = ____
+            print("Wien's law: ", wien_peak.to(u.nm))
+            """;
+    static final String PEAK_CHECK = """
+            waves = quantity(need("waves"), u.nm, "waves")
+            B = quantity(need("B_sun"), "W / (m2 nm sr)", "B_sun")
+            k = int(np.argmax(B.value))
+            report.data["nm"] = waves.value
+            report.data["B"] = B.value
+            report.data["peak"] = waves[k].value
+            i = need("i_peak", "fill in its blank")
+            if np.ndim(i) != 0:
+                raise Fail("i_peak should be one index (a whole number), not an array.")
+            if k == 0 or k == len(waves) - 1:
+                report.bad("The largest value is at the very end of your wavelength grid, so it isn't a peak: widen the grid.")
+            elif int(i) == k:
+                report.ok(f"argmax finds the Sun's peak at {waves[k].value:.2f} nm.")
+            else:
+                report.bad(f"i_peak is {i}, but the largest value of B_sun is at index {k}. np.argmax(B_sun) finds it.")
+            w = quantity(need("wien_peak", "fill in its blank"), u.nm, "wien_peak")
+            want = (const.b_wien / (5772 * u.K)).to(u.nm)
+            report.data["wien"] = w.value
+            if abs((w / want).decompose().value - 1) < 1e-6:
+                step = (waves[1] - waves[0]).value
+                report.ok(f"Wien's law gives {w.value:.2f} nm. They differ by {abs(waves[k].value - w.value):.2f} nm: "
+                          f"argmax can only land on a grid point, and yours are {step:.2f} nm apart.")
+            else:
+                report.bad(f"wien_peak is {w:.2f}. Wien's law is b_wien / T, with T = 5772 K.")
+            """;
+
+    static final String WIEN_CELL = """
+            # sim["temperatures"]: measured temperatures (K)
+            peaks = {}
+            for name, T in sim["temperatures"].items():
+                # Wien's law, in micrometres (u.um):
+                peaks[name] = ____
+                print(f"{name:8s} {T:5.0f} K  peak {peaks[name]:.2f}")
+            """;
+    static final String WIEN_CHECK = """
+            peaks = need("peaks")
+            if not isinstance(peaks, dict):
+                raise Fail("peaks should be a dictionary: name -> wavelength.")
+            names, temps, um, wrong = [], [], [], []
+            for name, T in sim["temperatures"].items():
+                if name not in peaks:
+                    raise Fail(f"peaks has no entry for {name}: fill in the blank inside the loop.")
+                lam = quantity(peaks[name], u.um, f"peaks['{name}']")
+                if abs((lam / (const.b_wien / (T * u.K))).decompose().value - 1) > 1e-4:
+                    wrong.append(name)
+                names.append(name)
+                temps.append(T)
+                um.append(lam.value)
+            report.data.update(names=names, temps=temps, um=um)
+            if wrong:
+                report.bad("These don't follow Wien's law, b_wien / T: " + ", ".join(wrong))
+            else:
+                report.ok(f"The Sun peaks at {um[0]:.2f} um, in visible light. The planets peak at "
+                          f"{min(um[1:]):.1f} to {max(um[1:]):.0f} um, all in the infrared.")
+            """;
+
+    static final String NU = """
+            def planck_nu(temperature, frequencies):
+                \"\"\"Planck's law per unit frequency, in W / (m2 Hz sr).\"\"\"
+                # Fill in, using h, c, k_B and np.exp:
+                B_nu = ____
+                B_nu = B_nu.to(u.W / u.m**2 / u.Hz)
+                return B_nu / u.sr
+
+            waves = np.linspace(100, 3000, 1000) * u.nm
+            freqs = (c / waves).to(u.Hz)   # the same grid, as frequencies
+            B_lam = planck_lambda(5772 * u.K, waves)
+            B_nu = planck_nu(5772 * u.K, freqs)
+            lam_peak = waves[np.argmax(B_lam)]
+
+            # The frequency where B_nu is largest:
+            nu_peak = ____
+            print("B_lambda peaks at", lam_peak)
+            print("B_nu peaks at", nu_peak)
+            print("  as a wavelength:", (c / nu_peak).to(u.nm))
+            """;
+    static final String NU_CHECK = """
+            f = need("planck_nu", "run the cell that defines it")
+            freqs = quantity(need("freqs"), u.Hz, "freqs")
+            Bn = quantity(f(5772 * u.K, freqs), "W / (m2 Hz sr)", "planck_nu(5772 * u.K, freqs)")
+            want = planck_nu_ref(5772 * u.K, freqs)
+            nm = (const.c / freqs).to(u.nm)
+            Bl = planck_ref(5772 * u.K, nm)
+            lam_peak = nm[int(np.argmax(Bl.value))]
+            report.data.update(nm=nm.value, Blam=Bl.value, nu=freqs.value, Bnu=Bn.value, lam_peak=lam_peak.value)
+            if np.allclose((Bn / want).decompose().value, 1, rtol=1e-6):
+                report.ok("planck_nu matches Planck's law per unit frequency.")
+            else:
+                report.bad("planck_nu doesn't match: B_nu = (2 h nu**3 / c**2) / (np.exp(h nu / (k_B T)) - 1).")
+            nu = quantity(need("nu_peak", "fill in its blank"), u.Hz, "nu_peak")
+            if np.ndim(nu) != 0:
+                raise Fail("nu_peak should be one frequency, not an array.")
+            want_nu = freqs[int(np.argmax(want.value))]
+            report.data.update(nu_peak=nu.value, c_over_nu=(const.c / nu).to(u.nm).value)
+            if abs((nu / want_nu).decompose().value - 1) < 1e-9:
+                report.ok(f"B_nu peaks at {nu.value:.4g} Hz. As a wavelength that is c / nu = "
+                          f"{(const.c / nu).to(u.nm).value:.0f} nm, not {lam_peak.value:.0f} nm.")
+            else:
+                report.bad(f"nu_peak is {nu:.4g}. It should be the frequency where B_nu is largest: freqs[np.argmax(B_nu)].")
+            """;
+
+    static final String FLUX = """
+            waves = np.linspace(100, 10000, 5000) * u.nm
+            d = sim["earth_sun_au"] * u.AU     # live from the sim
+
+            # Intensity at the Sun's surface -> flux at Earth:
+            #  integrate over outgoing directions: a factor of pi sr,
+            #  then spread from R_sun out to d: (R_sun / d)**2
+            F_earth = ____
+            # A flux has no steradians; this fails if any are left:
+            F_earth = F_earth.to(u.W / u.m**2 / u.nm)
+
+            solar_constant = np.trapezoid(F_earth, waves)
+            solar_constant = solar_constant.to(u.W / u.m**2)
+            print("Sunlight at Earth on", sim["date"], ":", solar_constant)
+            """;
+    static final String FLUX_CHECK = """
+            waves = quantity(need("waves"), u.nm, "waves")
+            F = need("F_earth", "fill in its blank")
+            if isinstance(F, u.Quantity) and any(b == u.sr for b in F.unit.bases):
+                raise Fail(f"F_earth is still per steradian ({F.unit.to_string()}). Turning intensity into flux means "
+                           "integrating over the outgoing directions, a factor of pi sr: multiply by np.pi * u.sr.")
+            F = quantity(F, "W / (m2 nm)", "F_earth")
+            d = sim["earth_sun_au"] * u.AU
+            want = (np.pi * u.sr * planck_ref(5772 * u.K, waves) * (const.R_sun / d) ** 2).to(u.W / u.m ** 2 / u.nm)
+            r = (F / want).decompose().value if F.shape == want.shape else None
+            step = max(1, len(waves) // 600)
+            report.data.update(nm=waves.value[::step], F=F.value[::step] if F.shape == want.shape else [], au=sim["earth_sun_au"])
+            if r is not None and np.allclose(r, 1, rtol=1e-6):
+                report.ok("F_earth is the Sun's spectrum as it arrives at Earth.")
+            elif r is not None and np.allclose(r, 1 / np.pi, rtol=1e-6):
+                report.bad("F_earth is pi times too small: integrating the intensity over directions gives a factor of pi sr.")
+            elif r is not None and np.allclose(r, r[0], rtol=1e-6):
+                report.bad(f"Right shape, but {r[0]:.4g} times too big. Check (R_sun / d)**2: the light spreads over a sphere.")
+            else:
+                report.bad("F_earth should be planck_lambda(5772 K, waves) * pi sr * (R_sun / d)**2, on the same wavelengths.")
+            S = quantity(need("solar_constant"), u.W / u.m ** 2, "solar_constant")
+            total = (const.sigma_sb * (5772 * u.K) ** 4 * (const.R_sun / d) ** 2).to(u.W / u.m ** 2)
+            report.data.update(S=S.value, total=total.value)
+            if abs(S.value / np.trapezoid(want, waves).to(u.W / u.m ** 2).value - 1) < 1e-6:
+                report.ok(f"Today Earth gets {S.value:,.0f} W/m2 between {waves[0].value:.0f} and {waves[-1].value:,.0f} nm; "
+                          f"all wavelengths together, sigma T**4 (R/d)**2 = {total.value:,.0f} W/m2.")
+            else:
+                report.bad(f"solar_constant is {S:.1f}; it should be the integral of F_earth over waves.")
+            """;
+
+    static final String PLANETS_FLUX = """
+            # sim["planet_au"]: each planet's distance from the Sun now
+            sunlight = {}
+            for name, d_au in sim["planet_au"].items():
+                d = d_au * u.AU
+                # sigma_sb T**4 (R_sun / d)**2, in W / m2:
+                sunlight[name] = ____
+                print(f"{name:8s} {d_au:6.3f} AU  {sunlight[name]:9.2f}")
+            """;
+    static final String PLANETS_CHECK = """
+            sun = need("sunlight")
+            if not isinstance(sun, dict):
+                raise Fail("sunlight should be a dictionary: planet -> flux.")
+            names, dist, vals, wrong = [], [], [], []
+            for name, d_au in sim["planet_au"].items():
+                if name not in sun:
+                    raise Fail(f"sunlight has no entry for {name}: fill in the blank inside the loop.")
+                S = quantity(sun[name], u.W / u.m ** 2, f"sunlight['{name}']")
+                want = (const.sigma_sb * (5772 * u.K) ** 4 * (const.R_sun / (d_au * u.AU)) ** 2).to(u.W / u.m ** 2)
+                if abs((S / want).decompose().value - 1) > 1e-3:
+                    wrong.append(name)
+                names.append(name)
+                dist.append(d_au)
+                vals.append(S.value)
+            report.data.update(names=names, au=dist, W=vals)
+            if wrong:
+                report.bad("These don't match sigma_sb T**4 (R_sun / d)**2: " + ", ".join(wrong))
+            else:
+                report.ok(f"From {vals[0]:,.0f} W/m2 at Mercury to {vals[-1]:.2f} W/m2 at Neptune, "
+                          f"{vals[0] / vals[-1]:,.0f} times less: the inverse-square law.")
+            """;
+
+    final CodeCell light = cell("task 0", LIGHT, LIGHT_CHECK, "d / c");
+    final CodeCell planck = cell("task 1", PLANCK, PLANCK_CHECK,
+            "(2 * h * c**2 / wavelengths**5) / (np.exp(h * c / (wavelengths * k_B * temperature)) - 1)");
+    final CodeCell spot = cell("task 1b", SPOT, SPOT_CHECK,
+            "planck_lambda(3900 * u.K, waves)",
+            "planck_lambda(3900 * u.K, 500 * u.nm) / planck_lambda(5772 * u.K, 500 * u.nm)",
+            "(3900 / 5772)**4");
+    final CodeCell peak = cell("task 2", PEAK, PEAK_CHECK, "np.argmax(B_sun)", "b_wien / (5772 * u.K)");
+    final CodeCell wien = cell("task 2b", WIEN_CELL, WIEN_CHECK, "(b_wien / (T * u.K)).to(u.um)");
+    final CodeCell nu = cell("task 3", NU, NU_CHECK,
+            "(2 * h * frequencies**3 / c**2) / (np.exp(h * frequencies / (k_B * temperature)) - 1)",
+            "freqs[np.argmax(B_nu)]");
+    final CodeCell flux = cell("task 4", FLUX, FLUX_CHECK, "planck_lambda(5772 * u.K, waves) * np.pi * u.sr * (R_sun / d)**2");
+    final CodeCell planets = cell("task 4b", PLANETS_FLUX, PLANETS_CHECK,
+            "(sigma_sb * (5772 * u.K)**4 * (R_sun / d)**2).to(u.W / u.m**2)");
+
+    /** Every cell, in lesson order (for tests). */
+    List<CodeCell> cells() { return List.of(light, planck, spot, peak, wien, nu, flux, planets); }
 
     // ------------------------------------------------------------------ chart helpers
 
-    /** A round tick step that gives about n ticks over span. */
     static double niceStep(double span, int n) {
         double raw = span / n, p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / p;
         return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
@@ -186,6 +385,10 @@ final class BlackbodyProject extends LessonKit {
     static double[] niceTicks(double lo, double hi, int n) {
         double st = niceStep(hi - lo, n);
         return ticks(Math.ceil(lo / st - 1e-9) * st, hi, st);
+    }
+    /** Drop a tick at the right end, where its label would be clipped. */
+    static double[] clear(double[] t, double lo, double hi) {
+        return java.util.Arrays.stream(t).filter(x -> x < hi - 0.03 * (hi - lo)).toArray();
     }
     /** Tick labels for values in units of 10^e. */
     static String[] scaled(double[] t, int e) {
@@ -196,8 +399,10 @@ final class BlackbodyProject extends LessonKit {
         return s;
     }
     static int exp10(double x) { return (int) Math.floor(Math.log10(x)); }
+    static double max(double[] a) { double m = 0; for (double x : a) if (x > m) m = x; return m; }
+    /** Room above a curve's peak for the axis title and labels. */
+    static final double HEADROOM = 1.3;
 
-    /** The visible band, as a rainbow behind the curves. */
     static void visibleBand(Graphics2D g, Plot p) {
         for (int nm = 380; nm < 750; nm += 5) {
             if (nm + 5 < p.x0 || nm > p.x1) continue;
@@ -210,178 +415,163 @@ final class BlackbodyProject extends LessonKit {
         int h = (b.height - 10) / 2;
         return new Rectangle[]{new Rectangle(b.x, b.y, b.width, h), new Rectangle(b.x, b.y + h + 10, b.width, h)};
     }
-    /** Linear B_λ axes over [lo, hi] nm up to ymax, labelled in units of 10^e. */
-    static Plot bLamAxes(Graphics2D g, Rectangle b, double lo, double hi, double ymax) {
+    /** Linear axes over [lo, hi] nm up to ymax, the y axis labelled in units of 10^e. */
+    static Plot nmAxes(Graphics2D g, Rectangle b, double lo, double hi, double ymax, String yName) {
         Plot p = new Plot(b, lo, hi, false, 0, ymax, false);
         visibleBand(g, p);
         int e = exp10(ymax);
         double[] xt = clear(niceTicks(lo, hi, 5), lo, hi), yt = niceTicks(0, ymax, 4);
-        p.axes(g, "λ (nm)", "Bλ (10" + LessonStudio.sup(e) + " W m⁻² nm⁻¹ sr⁻¹)", xt, labels(xt, "%.0f"), yt, scaled(yt, e));
+        p.axes(g, "λ (nm)", yName.replace("#", "10" + LessonStudio.sup(e)), xt, labels(xt, "%.0f"), yt, scaled(yt, e));
         return p;
     }
-    /** Drop a tick at the right end, where its label would be clipped. */
-    static double[] clear(double[] t, double lo, double hi) {
-        return java.util.Arrays.stream(t).filter(x -> x < hi - 0.03 * (hi - lo)).toArray();
+    /** "Run your code" in an inset that has nothing of the student's to draw yet. */
+    static void waiting(Graphics2D g, Rectangle b, CodeCell c) {
+        String msg = c.running ? "Running your code…"
+                : c.result == null ? "Run your code: its result is drawn here."
+                : c.result.unavailable() ? "Python isn't available (see the panel)."
+                : c.result.error() != null ? "Your code stopped with an error (see the panel)."
+                : "Not quite yet: see the checks in the panel.";
+        insetText(g, b, DIM, msg);
     }
-    /** Room above a curve's peak for the axis title and labels. */
-    static final double HEADROOM = 1.3;
 
-    // ------------------------------------------------------------------ insets
+    // ------------------------------------------------------------------ insets (drawn from the student's results)
 
-    /** Task 1: what the student's function plots, the right line or the notebook's buggy one. */
-    void functionInset(Graphics2D g, Rectangle b) {
-        double peak = WIEN / temp * 1e9, hi = Math.max(3000, Math.ceil(5 * peak / 500) * 500);
-        double[] nm = linspace(100, hi, 400), ok = bLamOn(nm, temp), bad = new double[nm.length];
-        for (int i = 0; i < nm.length; i++) bad[i] = bLamBug(nm[i], temp);
-        double ymax = HEADROOM * (bug ? bad[argmax(bad)] : ok[argmax(ok)]);
-        Plot p = bLamAxes(g, b, 100, hi, ymax);
-        if (bug) {
-            p.curve(g, nm, ok, alpha(GREEN, 150), 1.4f);
-            p.curve(g, nm, bad, BAD, 2.4f);
-            int k = argmax(bad);
-            p.label(g, nm[k], bad[k], "your line", BAD, 6, -4);
-            p.label(g, peak, bLam(peak, temp), "Planck", GREEN, 6, -4);
-        } else {
-            p.curve(g, nm, ok, starColor(temp), 2.4f);
-            p.vline(g, peak, alpha(Color.WHITE, 130));
-            p.label(g, peak, bLam(peak, temp), String.format("peak ≈ %.0f nm", peak), Color.WHITE, 6, -4);
+    void planckInset(Graphics2D g, Rectangle b) {
+        PythonKernel.Result r = planck.result;
+        double[] nm = r == null ? null : r.arr("nm"), mine = r == null ? null : r.arr("B"), ref = r == null ? null : r.arr("ref");
+        if (nm == null || mine == null || ref == null) { waiting(g, b, planck); return; }
+        double ymax = HEADROOM * Math.max(max(ref), Math.min(max(mine), 4 * max(ref)));
+        Plot p = nmAxes(g, b, 100, 3000, ymax, "Bλ (# W m⁻² nm⁻¹ sr⁻¹)");
+        p.curve(g, nm, ref, alpha(GREEN, 170), 1.4f);
+        p.curve(g, nm, mine, planck.passed() ? SUN_C : BAD, 2.4f);
+        double pk = WIEN / T_SUN * 1e9;
+        p.label(g, 1600, 0.75 * max(ref) * HEADROOM / 1.3, planck.passed() ? "your planck_lambda = Planck's law" : "yours (red), Planck's (green)",
+                planck.passed() ? SUN_C : BAD, 0, 0);
+        if (planck.passed()) p.vline(g, pk, alpha(Color.WHITE, 120));
+    }
+
+    void spotInset(Graphics2D g, Rectangle b) {
+        PythonKernel.Result r = spot.result;
+        double[] nm = r == null ? null : r.arr("nm"), ph = r == null ? null : r.arr("phot"), sp = r == null ? null : r.arr("spot");
+        if (nm == null || ph == null || sp == null || sp.length != nm.length) { waiting(g, b, spot); return; }
+        Plot p = nmAxes(g, b, nm[0], nm[nm.length - 1], HEADROOM * max(ph), "Bλ (# W m⁻² nm⁻¹ sr⁻¹)");
+        p.curve(g, nm, ph, SUN_C, 2.2f);
+        p.curve(g, nm, sp, ORANGE, 2.2f);
+        p.vline(g, 500, alpha(GREEN, 170));
+        p.label(g, 1300, 0.6 * max(ph), "photosphere, 5772 K", SUN_C, 0, 0);
+        p.label(g, 1300, 0.6 * max(ph), "sunspot, 3900 K", ORANGE, 0, 14);
+    }
+
+    void peakInset(Graphics2D g, Rectangle b) {
+        PythonKernel.Result r = peak.result;
+        double[] nm = r == null ? null : r.arr("nm"), B = r == null ? null : r.arr("B");
+        if (nm == null || B == null || nm.length < 2) { waiting(g, b, peak); return; }
+        Plot p = nmAxes(g, b, nm[0], nm[nm.length - 1], HEADROOM * max(B), "Bλ (# W m⁻² nm⁻¹ sr⁻¹)");
+        p.curve(g, nm, B, SUN_C, 2f);
+        double pk = r.num("peak"), w = r.num("wien");
+        if (!Double.isNaN(w) && w > nm[0] && w < nm[nm.length - 1]) {
+            p.vline(g, w, alpha(GREEN, 200));
+            p.label(g, w, 0.35 * max(B), String.format("Wien: %.1f nm", w), GREEN, 6, 0);
+        }
+        if (!Double.isNaN(pk)) {
+            int k = 0;
+            for (int i = 1; i < nm.length; i++) if (Math.abs(nm[i] - pk) < Math.abs(nm[k] - pk)) k = i;
+            p.dot(g, nm[k], B[k], 4, ORANGE);
+            p.label(g, nm[k], B[k], String.format("argmax: %.1f nm", pk), ORANGE, 7, -5);
         }
     }
 
-    /** Task 1 questions: two blackbodies on one plot. */
-    void twoTempInset(Graphics2D g, Rectangle b) {
-        double hot = Math.max(temp, temp2), cool = Math.min(temp, temp2);
-        double hi = Math.max(3000, Math.ceil(4 * WIEN / cool * 1e9 / 500) * 500);
-        double[] nm = linspace(100, hi, 400);
-        double ymax = HEADROOM * bLam(WIEN / hot * 1e9, hot);
-        Plot p = bLamAxes(g, b, 100, hi, ymax);
-        double[][] ts = {{temp, 0}, {temp2, 1}};
-        for (double[] t : ts) {
-            Color c = t[1] == 0 ? ORANGE : ACCENT;
-            p.curve(g, nm, bLamOn(nm, t[0]), c, 2.2f);
-            double pk = WIEN / t[0] * 1e9;
-            if (pk < hi) { p.vline(g, pk, alpha(c, 150)); p.label(g, pk, bLam(pk, t[0]), String.format("%,.0f K", t[0]), c, 6, -4); }
-        }
-    }
-
-    /** Task 2: the grid, its argmax, and the log of measured peaks against Wien's law. */
     void wienInset(Graphics2D g, Rectangle b) {
-        Rectangle[] r = split(b);
-        int n = GRID_N[gridK];
-        double[] nm = linspace(lamLo, lamHi, n), bl = bLamOn(nm, temp);
-        int k = argmax(bl);
-        Plot p = bLamAxes(g, r[0], lamLo, lamHi, HEADROOM * bl[k]);
-        p.curve(g, nm, bl, starColor(temp), 1.8f);
-        if (n <= 200) for (int i = 0; i < n; i++) p.dot(g, nm[i], bl[i], 1.4, alpha(INK, 160));
-        double wien = WIEN / temp * 1e9;
-        if (wien > lamLo && wien < lamHi) p.vline(g, wien, alpha(GREEN, 170));
-        p.dot(g, nm[k], bl[k], 4, ORANGE);
-        p.label(g, nm[k], bl[k], String.format("argmax: %.1f nm", nm[k]), ORANGE, 7, -5);
-
-        Plot q = new Plot(r[1], 2000, 12000, false, 0, 1600, false);
-        double[] xt = {2000, 4000, 6000, 8000, 10000}, yt = {0, 400, 800, 1200, 1600};
-        q.axes(g, "T (K)", "peak λ (nm)", xt, labels(xt, "%.0f"), yt, labels(yt, "%.0f"));
-        double[] ts = linspace(2000, 12000, 200), wl = new double[ts.length];
-        for (int i = 0; i < ts.length; i++) wl[i] = WIEN / ts[i] * 1e9;
-        q.curve(g, ts, wl, GREEN, 1.8f);
-        q.label(g, 7000, WIEN / 7000 * 1e9, "Wien: b / T", GREEN, 4, -8);
-        for (double[] o : wienLog) if (o[1] <= 1600) q.dot(g, o[0], o[1], 3.4, ACCENT);
-        if (nm[k] <= 1600) q.dot(g, temp, nm[k], 4.2, ORANGE);
+        PythonKernel.Result r = wien.result;
+        double[] T = r == null ? null : r.arr("temps"), um = r == null ? null : r.arr("um");
+        if (T == null || um == null || T.length != um.length || T.length == 0) { waiting(g, b, wien); return; }
+        Plot p = new Plot(b, 30, 10000, true, 0.2, 200, true);
+        p.axes(g, "T (K)", "λmax (µm)", new double[]{30, 100, 1000}, new String[]{"30", "100", "1000"},
+                new double[]{1, 10, 100}, new String[]{"1", "10", "100"});
+        double[] ts = new double[60], wl = new double[60];
+        for (int i = 0; i < 60; i++) { ts[i] = 30 * Math.pow(10000 / 30.0, i / 59.0); wl[i] = WIEN / ts[i] * 1e6; }
+        p.curve(g, ts, wl, alpha(GREEN, 170), 1.4f);
+        // The visible band, for scale.
+        g.setColor(alpha(Color.WHITE, 30));
+        g.fill(new Rectangle2D.Double(p.plotLeft(), p.py(0.75), p.plotRight() - p.plotLeft(), p.py(0.38) - p.py(0.75)));
+        p.label(g, 30, 0.5, "visible", DIM, 4, 4);
+        List<?> names = r.data().get("names") instanceof List<?> l ? l : List.of();
+        for (int i = 0; i < T.length; i++) {
+            p.dot(g, T[i], um[i], 3.6, i == 0 ? SUN_C : ACCENT);
+            if (i < names.size() && (i == 0 || i == 3 || i == 5 || i == 8))
+                p.label(g, T[i], um[i], String.valueOf(names.get(i)), i == 0 ? SUN_C : ACCENT, 6, -4);
+        }
     }
 
-    /** Task 3: B_λ against λ and B_ν against ν, each with its own peak. */
     void nuInset(Graphics2D g, Rectangle b) {
-        Rectangle[] r = split(b);
-        double[] nm = linspace(100, 3000, 1000), bl = bLamOn(nm, temp), nu = new double[nm.length], bn = new double[nm.length];
-        for (int i = 0; i < nm.length; i++) { nu[i] = C / (nm[i] * 1e-9); bn[i] = bNu(nu[i], temp); }
-        int kl = argmax(bl), kn = argmax(bn);
-        double cOverNu = C / nu[kn] * 1e9;
-        Plot p = bLamAxes(g, r[0], 100, 3000, HEADROOM * bl[kl]);
+        PythonKernel.Result r = nu.result;
+        double[] nm = r == null ? null : r.arr("nm"), bl = r == null ? null : r.arr("Blam"),
+                 hz = r == null ? null : r.arr("nu"), bn = r == null ? null : r.arr("Bnu");
+        if (nm == null || bl == null || hz == null || bn == null || nm.length < 2) { waiting(g, b, nu); return; }
+        Rectangle[] rr = split(b);
+        double lo = Math.min(nm[0], nm[nm.length - 1]), hi = Math.max(nm[0], nm[nm.length - 1]);
+        Plot p = nmAxes(g, rr[0], lo, hi, HEADROOM * max(bl), "Bλ (# W m⁻² nm⁻¹ sr⁻¹)");
         p.curve(g, nm, bl, ACCENT, 2f);
-        p.vline(g, nm[kl], alpha(ACCENT, 200));
-        p.label(g, nm[kl], bl[kl], String.format("λpeak %.0f nm", nm[kl]), ACCENT, 6, -4);
-        p.vline(g, cOverNu, alpha(PINK, 220));
-        p.label(g, cOverNu, 0.55 * bl[kl], String.format("c / νpeak = %.0f nm", cOverNu), PINK, 6, 0);
-
-        double[] nu14 = new double[nu.length];
-        for (int i = 0; i < nu.length; i++) nu14[i] = nu[i] / 1e14;
-        int e = exp10(HEADROOM * bn[kn]);
-        Plot q = new Plot(r[1], 0, 30, false, 0, HEADROOM * bn[kn], false);
-        double[] xt = {0, 5, 10, 15, 20, 25}, yt = niceTicks(0, HEADROOM * bn[kn], 4);
-        q.axes(g, "ν (10¹⁴ Hz)", "Bν (10" + LessonStudio.sup(e) + " W m⁻² Hz⁻¹ sr⁻¹)", xt, labels(xt, "%.0f"), yt, scaled(yt, e));
-        q.curve(g, nu14, bn, PINK, 2f);
-        q.vline(g, nu14[kn], alpha(PINK, 200));
-        q.label(g, nu14[kn], bn[kn], String.format("νpeak %.2f × 10¹⁴ Hz", nu14[kn]), PINK, 6, -4);
-    }
-
-    /**
-     * Task 4: observed spectra with their blackbodies, scaled the notebook's way (median to median)
-     * or, with {@code physical}, as π B (R/d)² for the chosen radius and distance.
-     */
-    void spectrumInset(Graphics2D g, Rectangle b, boolean physical) {
-        List<SdssSpectra.Spectrum> all = spectra();
-        if (all.isEmpty()) { insetText(g, b, BAD, "No spectra found in assets/spectra."); return; }
-        List<Integer> show = new ArrayList<>();
-        if (allStars && !physical) for (int i = 0; i < all.size(); i++) show.add(i); else show.add(Math.min(star, all.size() - 1));
-        // The axes follow the observed spectra; a model that is far too bright runs off the top.
-        double ymax = 0;
-        double[][] models = new double[all.size()][];
-        for (int i : show) {
-            SdssSpectra.Spectrum s = all.get(i);
-            double[] m = bLamOn(s.nm(), s.teff());
-            double k = physical ? Math.PI * sq(radius * R_SUN / (distPc * PC)) : medianScale(s);
-            for (int j = 0; j < m.length; j++) m[j] *= k;
-            models[i] = m;
-            for (int j = 0; j < m.length; j++) if (s.ivar()[j] > 0) ymax = Math.max(ymax, s.flux()[j]);
+        double lp = r.num("lam_peak"), cn = r.num("c_over_nu");
+        if (!Double.isNaN(lp)) { p.vline(g, lp, alpha(ACCENT, 200)); p.label(g, lp, 0.9 * max(bl), String.format("λpeak %.0f nm", lp), ACCENT, 6, 0); }
+        if (!Double.isNaN(cn) && cn > lo && cn < hi) {
+            p.vline(g, cn, alpha(PINK, 220));
+            p.label(g, cn, 0.55 * max(bl), String.format("c / νpeak = %.0f nm", cn), PINK, 6, 0);
         }
-        ymax *= HEADROOM;
-        Plot p = new Plot(b, 380, 925, false, 0, ymax, false);
-        visibleBand(g, p);
+        double[] h14 = new double[hz.length];
+        for (int i = 0; i < hz.length; i++) h14[i] = hz[i] / 1e14;
+        double xmax = Math.ceil(max(h14) / 5) * 5, ymax = HEADROOM * max(bn);
         int e = exp10(ymax);
-        double[] xt = {400, 500, 600, 700, 800, 900}, yt = niceTicks(0, ymax, 4);
-        p.axes(g, "λ (nm)", "Fλ (10" + LessonStudio.sup(e) + " W m⁻² nm⁻¹)", xt, labels(xt, "%.0f"), yt, scaled(yt, e));
-        if (lines) {
-            g.setFont(LessonStudio.uiFont(Font.PLAIN, 9.5f));
-            for (int i = 0; i < LINE_NM.length; i++) {
-                g.setColor(alpha(Color.WHITE, 55));
-                g.setStroke(new BasicStroke(1f));
-                g.draw(new Line2D.Double(p.px(LINE_NM[i]), p.plotTop() + 25 + 10 * (i % 3), p.px(LINE_NM[i]), p.plotBottom()));
-                g.setColor(DIM);
-                String id = LINE_ID[i];
-                float x = (float) (p.px(LINE_NM[i]) - g.getFontMetrics().stringWidth(id) / 2.0);
-                g.drawString(id, Math.max((float) p.plotLeft(), Math.min(x, (float) p.plotRight() - g.getFontMetrics().stringWidth(id))),
-                        (float) (p.plotTop() + 22 + 10 * (i % 3)));
-            }
-        }
-        for (int i : show) {
-            SdssSpectra.Spectrum s = all.get(i);
-            Color c = show.size() == 1 ? OBS_C : SERIES[i % SERIES.length];
-            p.curve(g, s.nm(), s.flux(), alpha(c, show.size() == 1 ? 230 : 150), 0.9f);
-        }
-        for (int i : show) {
-            SdssSpectra.Spectrum s = all.get(i);
-            p.curve(g, s.nm(), models[i], show.size() == 1 ? ORANGE : SERIES[i % SERIES.length], 2.2f);
+        Plot q = new Plot(rr[1], 0, xmax, false, 0, ymax, false);
+        double[] xt = clear(ticks(0, xmax, 5), 0, xmax), yt = niceTicks(0, ymax, 4);
+        q.axes(g, "ν (10¹⁴ Hz)", "Bν (10" + LessonStudio.sup(e) + " W m⁻² Hz⁻¹ sr⁻¹)", xt, labels(xt, "%.0f"), yt, scaled(yt, e));
+        q.curve(g, h14, bn, PINK, 2f);
+        double np = r.num("nu_peak");
+        if (!Double.isNaN(np)) {
+            q.vline(g, np / 1e14, alpha(PINK, 200));
+            q.label(g, np / 1e14, 0.9 * max(bn), String.format("νpeak %.2f × 10¹⁴ Hz", np / 1e14), PINK, 6, 0);
         }
     }
 
-    /** Task 5: each spectrum's peak against its temperature, over Wien's law. */
-    void observedWienInset(Graphics2D g, Rectangle b) {
-        List<SdssSpectra.Spectrum> all = spectra();
-        Plot p = new Plot(b, 4800, 6200, false, 380, 680, false);
-        double[] xt = {4800, 5200, 5600, 6000}, yt = {400, 450, 500, 550, 600, 650};
-        p.axes(g, "Teff (K)", "peak λ (nm)", xt, labels(xt, "%.0f"), yt, labels(yt, "%.0f"));
-        double[] ts = linspace(4800, 6200, 100), wl = new double[ts.length];
-        for (int i = 0; i < ts.length; i++) wl[i] = WIEN / ts[i] * 1e9;
-        p.curve(g, ts, wl, GREEN, 2f);
-        p.label(g, 6000, WIEN / 6000 * 1e9, "Wien's law", GREEN, -10, -10);
-        for (int i = 0; i < all.size(); i++) {
-            SdssSpectra.Spectrum s = all.get(i);
-            double pk = peakOf(s, smooth), w = WIEN / s.teff() * 1e9;
-            g.setColor(alpha(SERIES[i % SERIES.length], 150));
-            g.setStroke(new BasicStroke(1f));
-            g.draw(new Line2D.Double(p.px(s.teff()), p.py(pk), p.px(s.teff()), p.py(w)));
-            p.dot(g, s.teff(), pk, 4, SERIES[i % SERIES.length]);
+    void fluxInset(Graphics2D g, Rectangle b) {
+        PythonKernel.Result r = flux.result;
+        double[] nm = r == null ? null : r.arr("nm"), F = r == null ? null : r.arr("F");
+        if (nm == null || F == null || F.length != nm.length || nm.length < 2) { waiting(g, b, flux); return; }
+        double hi = Math.min(3000, nm[nm.length - 1]);
+        Plot p = nmAxes(g, b, nm[0], hi, HEADROOM * max(F), "Fλ (# W m⁻² nm⁻¹)");
+        p.curve(g, nm, F, SUN_C, 2.2f);
+        double S = r.num("S");
+        if (!Double.isNaN(S)) p.label(g, 0.55 * hi, 0.75 * max(F), String.format("area = %,.0f W/m²", S), SUN_C, 0, 0);
+    }
+
+    // ------------------------------------------------------------------ the scene
+
+    void sunOnly() { host.showOnly(null); host.setOrbits(false, false); host.setTime(DAY); }
+    static double[] nearSun() { return new double[]{0, 0, 5 * R_SUN, 50, 25}; }
+
+    /** The Sun, Earth and the line between them, labelled with the student's number. */
+    void sunEarth(LessonStudio.R3 r, String label) {
+        double[] e = scaleV(pos(host.state("Earth")), 1 / AU);
+        r.line(v(0, 0, 0), e, alpha(SUN_C, 200), 2f, true);
+        if (label != null) r.label(scaleV(e, 0.5), label, SUN_C, 13f, 0, -14);
+    }
+
+    /** Each planet labelled from a result's (names, values) lists. */
+    void planetLabels(LessonStudio.R3 r, PythonKernel.Result res, String key, String fmt) {
+        if (res == null || !res.passed()) return;
+        double[] vals = res.arr(key);
+        List<?> names = res.data().get("names") instanceof List<?> l ? l : List.of();
+        if (vals == null) return;
+        for (int i = 0; i < names.size() && i < vals.length; i++) {
+            int k = java.util.Arrays.asList(PLANETS).indexOf(String.valueOf(names.get(i)));
+            if (k < 0 || (zone == 0) != (k < 4)) continue;
+            r.label(scaleV(pos(host.state(PLANETS[k])), 1 / AU), String.format(fmt, vals[i]), ORANGE, 12.5f, 0, 18);
         }
+    }
+
+    void dateButtons(LessonStudio.Controls c) {
+        c.button("Go to 3 January 2027 (Earth closest to the Sun)", () -> host.goToDate(2027, 1, 3));
+        c.button("Go to 5 July 2027 (Earth farthest)", () -> host.goToDate(2027, 7, 5));
     }
 
     // ------------------------------------------------------------------ the lesson
@@ -389,485 +579,316 @@ final class BlackbodyProject extends LessonKit {
     LessonStudio.LessonDef build() {
         List<LessonStudio.Step> s = new ArrayList<>();
 
-        s.add(step("Task 1: Planck's law as a function", """
+        s.add(step("Coding in the sim", """
                 This lesson is **Python Project 1**, _Investigating Blackbody Radiation_ (developed by
-                Gwen Irvine through the AST399 ROP), worked step by step in the sim. Where the notebook
-                asks you to fill in code, the sim runs the same calculation live so you can check your
-                answer against it.
+                Gwen Irvine through the AST399 ROP), rewritten around the Sun and played out in the
+                sim. You write the code: each step has a Python cell with blanks (highlighted in
+                amber) to fill in. Press **Run** (or Ctrl+Enter) and the sim runs it with real
+                Python, checks it, and draws your results into the scene.
 
-                A {k:blackbody} absorbs all light that falls on it and glows with a spectrum set only by
-                its temperature. Planck's law, per unit wavelength and per unit frequency:
+                As in the notebook, numpy (np) and astropy's units (u) and constants (c, h, k_B,
+                b_wien, sigma_sb, R_sun) are already imported. One thing is new: a dictionary called
+                **sim**, which holds live values from the simulation, such as Earth's distance from
+                the Sun right now.
+
+                Warm up with units. Light from the Sun's surface takes time to reach us: time =
+                distance / speed. Fill in the blank, run it, then use the buttons to move the clock
+                to January or July and run it again. Earth's orbit isn't a circle, so the answer
+                changes.
+                """)
+                .unit(AU)
+                .cam(() -> new double[]{0, 0, 1.3 * AU, 35, 0})
+                .enter(() -> {
+                    host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(0);
+                    PythonKernel.shared().warmUp();
+                })
+                .controls(c -> { c.code(light); dateButtons(c); })
+                .scene((r, hud, t) -> {
+                    PythonKernel.Result res = light.result;
+                    boolean ok = light.passed();
+                    sunEarth(r, ok ? String.format("light takes %.2f min (your code)", res.num("minutes")) : null);
+                    double d = len(pos(host.state("Earth"))) / AU;
+                    hud.title("Sunlight's trip to Earth", SUN_C);
+                    hud.row("date in the sim", host.dateString());
+                    hud.row("Earth–Sun distance (sim)", String.format("%.5f AU", d));
+                    hud.row("your light_time", ok ? String.format("%.3f min", res.num("minutes")) : "run your code", ok ? GREEN : DIM);
+                    if (ok && Math.abs(res.num("au") - d) > 1e-6) hud.row("(the clock has moved: run it again)", "", ORANGE);
+                    hud.formula("time = distance / speed");
+                }));
+
+        s.add(step("Task 1: Planck's law for the Sun", """
+                The Sun's surface (the {k:photosphere}) glows nearly like a {k:blackbody} at 5772 K.
+                Planck's law gives its intensity at each wavelength:
 
                 $ Bλ(T) = (2hc² / λ⁵) · 1 / (e^(hc/λkT) − 1)
+
+                Write it as a Python function of a temperature and an array of wavelengths. The
+                rest of the function is given: it converts to W m⁻² nm⁻¹ and divides by a
+                steradian, since intensity is per unit solid angle.
+
+                The check calls your function for the Sun from 100 to 3000 nm and draws your curve
+                over the true one. Watch the parentheses: if the − 1 slips inside np.exp(...), the
+                curve still looks smooth and believable, but it is e ≈ 2.7 times too high. A plot
+                that looks right can still be wrong.
+                """)
+                .unit(R_SUN)
+                .cam(BlackbodyProject::nearSun)
+                .enter(this::sunOnly)
+                .controls(c -> c.code(planck))
+                .scene((r, hud, t) -> {
+                    r.labelBelow(v(0, 0, 0), 1, "the Sun: 5772 K", SUN_C, 12.5f);
+                    hud.title("Planck's law for the Sun", SUN_C);
+                    hud.row("your planck_lambda", planck.passed() ? "matches Planck's law" : planck.result == null ? "run your code" : "not yet",
+                            planck.passed() ? GREEN : DIM);
+                    hud.formula("Bλ = (2hc² / λ⁵) / (exp(hc / λkT) − 1)");
+                    hud.inset("Your planck_lambda at 5772 K", 360, 250, this::planckInset);
+                }));
+
+        s.add(step("Task 1b: a sunspot", """
+                Use your function. A {k:sunspot} is a patch where the Sun's magnetic field holds back
+                the heat from below; its dark centre is about 3900 K, against 5772 K around it.
+
+                Compute the spot's spectrum, then compare it with the photosphere in two ways: at
+                one wavelength (500 nm, green light) and over all wavelengths together, where the
+                Stefan–Boltzmann law says the total goes as T⁴.
+
+                The two answers are different. Look at the plot to see why: the spot's curve is
+                not just a smaller copy of the photosphere's. It has also slid toward the red.
+                """)
+                .unit(R_SUN)
+                .cam(BlackbodyProject::nearSun)
+                .enter(this::sunOnly)
+                .controls(c -> c.code(spot))
+                .scene((r, hud, t) -> {
+                    r.labelBelow(v(0, 0, 0), 1, "the Sun", SUN_C, 12.5f);
+                    PythonKernel.Result res = spot.result;
+                    hud.title("A sunspot vs the photosphere", ORANGE);
+                    hud.row("at 500 nm (your ratio_500)", res != null && !Double.isNaN(res.num("r500")) ? String.format("%.3f", res.num("r500")) : "—", ORANGE);
+                    hud.row("in total (your ratio_total)", res != null && !Double.isNaN(res.num("rt")) ? String.format("%.3f", res.num("rt")) : "—", ORANGE);
+                    hud.formula("total ∝ T⁴");
+                    hud.inset("Photosphere and sunspot", 360, 250, this::spotInset);
+                }));
+
+        s.add(step("Check: are sunspots black?", """
+                In photographs of the Sun, sunspots look black.
+                """)
+                .unit(R_SUN)
+                .cam(BlackbodyProject::nearSun)
+                .enter(this::sunOnly)
+                .quiz("Are they?", 1,
+                      "No. At 3900 K a sunspot glows brightly; on its own it would outshine the full Moon many times "
+                    + "over. But in green light it gives only about 9% as much as the 5772 K surface around it, "
+                    + "so a picture exposed for the photosphere shows it as black.",
+                      "Yes: sunspots are holes where no light comes out",
+                      "No: they glow, but only about a tenth as brightly as the hotter surface around them",
+                      "Yes: they are cooler than 0 °C",
+                      "No: they are hotter than the photosphere")
+                .scene((r, hud, t) -> {
+                    r.labelBelow(v(0, 0, 0), 1, "the Sun", SUN_C, 12.5f);
+                    hud.inset("Photosphere and sunspot", 360, 250, this::spotInset);
+                }));
+
+        s.add(step("Task 2: find the Sun's peak", """
+                Where is the Sun brightest? Compute Bλ on a grid of wavelengths and let np.argmax
+                find the index of the largest value; the same index in the wavelength array is the
+                peak. Then compare with {k:Wien's law}:
+
+                $ λmax = b / T,   b = 2.898 × 10⁻³ m·K
+
+                b is b_wien in astropy. Try changing the grid: fewer points (argmax can only return
+                a grid point, so it gets less precise), or a grid that stops before the peak (then
+                argmax returns the end of the array, which isn't a peak at all).
+                """)
+                .unit(R_SUN)
+                .cam(BlackbodyProject::nearSun)
+                .enter(this::sunOnly)
+                .controls(c -> c.code(peak))
+                .scene((r, hud, t) -> {
+                    r.labelBelow(v(0, 0, 0), 1, "the Sun: 5772 K", SUN_C, 12.5f);
+                    PythonKernel.Result res = peak.result;
+                    hud.title("The Sun's peak", SUN_C);
+                    hud.row("argmax (your grid)", res != null && !Double.isNaN(res.num("peak")) ? String.format("%.2f nm", res.num("peak")) : "—", ORANGE);
+                    hud.row("Wien's law (your wien_peak)", res != null && !Double.isNaN(res.num("wien")) ? String.format("%.2f nm", res.num("wien")) : "—", GREEN);
+                    hud.formula("λmax = b / T");
+                    hud.inset("The Sun's spectrum and its peak", 360, 250, this::peakInset);
+                }));
+
+        s.add(step("Task 2b: Wien's law across the solar system", """
+                Everything warm glows, planets included. Use a **for loop** over the measured
+                temperatures in sim["temperatures"] (the Sun's surface, the rocky planets' surfaces,
+                and the giant planets' effective temperatures), and store each one's Wien peak in a
+                dictionary, in micrometres.
+
+                Your numbers appear beside the planets. The Sun peaks in visible light; every planet
+                peaks far in the infrared, at 4 to 50 µm. Venus's 737 K surface would glow at 4 µm,
+                but its thick clouds hide it: what escapes to space comes from the cloud tops, at
+                about 230 K.
+                """)
+                .unit(AU)
+                .cam(() -> zone == 0 ? new double[]{0, 0, 1.7 * AU, 35, 0} : new double[]{0, 0, 31 * AU, 40, 0})
+                .enter(() -> { host.showOnly(null, PLANETS); host.setOrbits(true, true); host.setTime(5 * DAY); })
+                .controls(c -> {
+                    c.code(wien);
+                    c.choices("Show", new String[]{"Inner planets", "Outer planets"}, () -> zone, k -> zone = k);
+                })
+                .scene((r, hud, t) -> {
+                    planetLabels(r, wien.result, "um", "%.1f µm");
+                    hud.title("Where each body glows brightest", ACCENT);
+                    PythonKernel.Result res = wien.result;
+                    double[] um = res == null || !res.passed() ? null : res.arr("um");
+                    List<?> names = res == null ? List.of() : res.data().get("names") instanceof List<?> l ? l : List.of();
+                    if (um == null) hud.row("your peaks", "run your code", DIM);
+                    else for (int i = 0; i < um.length && i < names.size(); i++) hud.row(String.valueOf(names.get(i)), String.format("%.2f µm", um[i]), i == 0 ? SUN_C : INK);
+                    hud.formula("λmax = b / T");
+                    hud.inset("Wien's law: your points", 300, 230, this::wienInset);
+                }));
+
+        s.add(step("Check: seeing Jupiter", """
+                Your loop says Jupiter's own glow peaks near 23 µm, far beyond what eyes can see.
+                """)
+                .unit(AU)
+                .cam(() -> new double[]{0, 0, 6 * AU, 35, 0})
+                .enter(() -> { host.showOnly(null, "Earth", "Jupiter"); host.setOrbits(true, true); host.setTime(5 * DAY); })
+                .quiz("Then why can we see Jupiter in the night sky?", 2,
+                      "Jupiter reflects sunlight: about a third of the visible light that hits it bounces back. "
+                    + "Its own thermal glow is real (infrared telescopes see it), but it is invisible to us.",
+                      "Its glow peaks in the infrared but is bright enough in visible light too",
+                      "Our eyes adapt to the infrared at night",
+                      "It reflects sunlight, which peaks in the visible",
+                      "Its moons light it up")
+                .scene((r, hud, t) -> hud.inset("Wien's law: your points", 300, 230, this::wienInset)));
+
+        s.add(step("Check: make a prediction", """
+                Bλ is the Sun's brightness per unit **wavelength**. Bν is per unit **frequency**. They
+                describe the same light, linked by ν = c/λ, so |dλ/dν| = λ²/c and
+
+                $ Bν = Bλ λ² / c
+
+                Next you'll write Bν and find its peak with argmax, on frequencies made from the
+                same wavelength grid.
+                """)
+                .unit(R_SUN)
+                .cam(BlackbodyProject::nearSun)
+                .enter(this::sunOnly)
+                .quiz("Will Bν peak at the same place, so that c / νpeak = λpeak (502 nm)?", 1,
+                      "The factor λ²/c gives long wavelengths more weight, so Bν peaks at a lower frequency: "
+                    + "for the Sun, 3.39 × 10¹⁴ Hz, which is c / ν = 884 nm, in the near infrared. Where a "
+                    + "spectrum \"peaks\" depends on how you plot it.",
+                      "Yes: ν = c/λ, so the peaks must match",
+                      "No: c / νpeak is a longer wavelength than 502 nm",
+                      "No: c / νpeak is a shorter wavelength than 502 nm")
+                .scene((r, hud, t) -> r.labelBelow(v(0, 0, 0), 1, "the Sun: 5772 K", SUN_C, 12.5f)));
+
+        s.add(step("Task 3: Bλ vs Bν for the Sun", """
+                Write planck_nu, Planck's law per unit frequency:
+
                 $ Bν(T) = (2hν³ / c²) · 1 / (e^(hν/kT) − 1)
 
-                Task 1: write Bλ as a function of temperature and wavelength that returns
-                W m⁻² nm⁻¹ sr⁻¹. The inset is what it should plot from 100 to 3000 nm.
+                then find where it peaks. Was your prediction right? The upper plot is Bλ against
+                wavelength; the lower one is your Bν against frequency. The pink line on the upper
+                plot is c / νpeak, the Bν peak expressed as a wavelength.
 
-                **Watch the parentheses.** The notebook's first try put the −1 inside the
-                exponential. Switch that version on: it still draws a smooth, believable curve, but
-                about e ≈ 2.7 times too high, with its peak a few nm off. A plot that looks right can
-                still be wrong, so check a number as well.
+                Neither peak is wrong. They answer different questions: in which nanometre-wide
+                slice, or in which hertz-wide slice, does the Sun give the most power?
                 """)
                 .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); temp = 5000; bug = false; })
-                .controls(c -> {
-                    c.slider("Temperature T", 2000, 12000, () -> temp, x -> temp = x, x -> String.format("%,.0f K", x));
-                    c.toggle("The notebook's first try (−1 inside np.exp)", () -> bug, x -> bug = x);
-                    c.button("The notebook's 5000 K", () -> temp = 5000);
-                })
+                .cam(BlackbodyProject::nearSun)
+                .enter(this::sunOnly)
+                .controls(c -> c.code(nu))
                 .scene((r, hud, t) -> {
-                    pair(r, temp, 0.8, String.format("a %,.0f K blackbody", temp));
-                    double pk = WIEN / temp * 1e9;
-                    hud.title("Your function at " + String.format("%,.0f K", temp), starColor(temp));
-                    hud.row("units it returns", "W / (nm sr m²)");
-                    hud.row("Bλ at the peak (" + String.format("%.0f nm", pk) + ")", sci(bLam(pk, temp), 3) + " W m⁻² nm⁻¹ sr⁻¹", GREEN);
-                    if (bug) {
-                        double[] nm = linspace(100, 20000, 20000), bad = new double[nm.length];
-                        for (int i = 0; i < nm.length; i++) bad[i] = bLamBug(nm[i], temp);
-                        int k = argmax(bad);
-                        hud.row("the buggy line's peak (" + String.format("%.0f nm", nm[k]) + ")", sci(bad[k], 3), BAD);
-                        hud.row("too high by", String.format("%.2f×", bad[k] / bLam(pk, temp)), BAD);
-                        hud.formula("1 / exp(hc/λkT − 1)  ≠  1 / (exp(hc/λkT) − 1)");
-                    } else {
-                        hud.formula("Bλ = (2hc² / λ⁵) / (exp(hc/λkT) − 1)");
-                    }
-                    hud.inset("Bλ, 100 nm onward", 330, 230, this::functionInset);
-                }));
-
-        s.add(step("Task 1: two temperatures", """
-                Plot a second blackbody and compare. The notebook's example: 3000 K and 6000 K.
-
-                The hotter blackbody is brighter at **every** wavelength, and its peak sits at a shorter
-                wavelength, Wien's law, λmax = b / T with b = 2.898 × 10⁻³ m·K. That is why hot stars
-                look blue-white and cool ones red.
-
-                The total area under a curve, all the intensity it emits, grows much faster than T.
-                The readouts add up each area numerically; compare the ratio with (T₁ / T₂)⁴.
-
-                Our eyes see only 380–750 nm (the rainbow band). Slide the temperatures and look
-                where the peaks fall: a 3000 K star peaks in the infrared and a 12,000 K star in the
-                ultraviolet. We see only the visible slice of either curve.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); temp = 6000; temp2 = 3000; bug = false; })
-                .controls(c -> {
-                    c.slider("Temperature T₁", 2000, 12000, () -> temp, x -> temp = x, x -> String.format("%,.0f K", x));
-                    c.slider("Temperature T₂", 2000, 12000, () -> temp2, x -> temp2 = x, x -> String.format("%,.0f K", x));
-                    c.button("The notebook's pair: 6000 K and 3000 K", () -> { temp = 6000; temp2 = 3000; });
-                })
-                .scene((r, hud, t) -> {
-                    pair(r, temp, 0.8, String.format("T₁ = %,.0f K", temp));
-                    double a1 = area(temp), a2 = area(temp2);
-                    hud.title("Two blackbodies", ORANGE);
-                    hud.row("T₁: peak", String.format("%,.0f nm", WIEN / temp * 1e9), ORANGE);
-                    hud.row("T₂: peak", String.format("%,.0f nm", WIEN / temp2 * 1e9), ACCENT);
-                    hud.gap();
-                    hud.row("area under T₁ (10 nm to 1 mm)", sci(a1, 3) + " W m⁻² sr⁻¹");
-                    hud.row("σT₁⁴ / π", sci(SIGMA * Math.pow(temp, 4) / Math.PI, 3) + " W m⁻² sr⁻¹");
-                    hud.row("area ratio T₁ : T₂", String.format("%.2f", a1 / a2), GREEN);
-                    hud.row("(T₁ / T₂)⁴", String.format("%.2f", Math.pow(temp / temp2, 4)), GREEN);
-                    hud.formula("∫ Bλ dλ = σT⁴ / π");
-                    hud.inset("T₁ (orange) and T₂ (blue)", 330, 230, this::twoTempInset);
-                }));
-
-        s.add(step("Check: fill in the blank", """
-                The notebook gives you the function's shell: units are attached to the temperature
-                and wavelengths, and the result is converted to W m⁻² nm⁻¹ and divided by a
-                steradian. You write the one line that computes Bλ. Below, x stands for
-                hc / λkT, written with the function's own variables.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); temp = 5000; bug = false; })
-                .quiz("Which line belongs in the blank?", 1,
-                      "B is Planck's law. A is the notebook's first try: it runs, the units work, and the curve "
-                    + "looks fine, but it is e ≈ 2.7 times too high. Units can't catch a misplaced −1. C and D "
-                    + "fail at once with astropy units: 2hc² is W m², so dividing by λ⁴ leaves W m⁻² and "
-                    + "multiplying by λ⁵ leaves W m⁷, and neither converts to W m⁻² nm⁻¹.",
-                      "2*h*c**2 / wavelengths**5 / np.exp(x - 1)",
-                      "2*h*c**2 / wavelengths**5 / (np.exp(x) - 1)",
-                      "2*h*c**2 / wavelengths**4 / (np.exp(x) - 1)",
-                      "2*h*c**2 * wavelengths**5 / (np.exp(x) - 1)")
-                .scene((r, hud, t) -> {
-                    pair(r, 5000, 0.8, "a 5000 K blackbody");
-                    hud.inset("Bλ at 5000 K", 330, 230, this::functionInset);
-                }));
-
-        s.add(step("Check: the area under the curve", """
-                Raise a blackbody's temperature and the whole curve rises, most of all near its peak.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); temp = 6000; temp2 = 3000; })
-                .quiz("How does the area under Bλ, the total intensity, grow with T?", 2,
-                      "The area is σT⁴ / π: the Stefan–Boltzmann law. Doubling T from 3000 K to 6000 K "
-                    + "multiplies it by 2⁴ = 16.",
-                      "In proportion to T", "As T²", "As T⁴: the Stefan–Boltzmann law", "It stays the same; only the peak moves")
-                .scene((r, hud, t) -> {
-                    pair(r, temp, 0.8, "6000 K");
-                    hud.inset("6000 K and 3000 K", 330, 230, this::twoTempInset);
-                }));
-
-        s.add(step("Check: an M-dwarf sun", """
-                Suppose Earth orbited an M dwarf at **3000 K** instead of the Sun.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); temp = T_SUN; temp2 = 3000; })
-                .quiz("Would the wavelengths we call visible be different?", 1,
-                      "Visible means what our eyes detect, 380–750 nm; that is set by our eyes, not by the "
-                    + "star. The 3000 K star peaks near 970 nm, in the infrared, so less of its light would "
-                    + "fall in our visible band and the star would look orange-red. (Eyes that evolved there "
-                    + "might be tuned redder, but that is biology, not the star's spectrum.)",
-                      "Yes: visible would move to the infrared, where the star peaks",
-                      "No: visible is set by our eyes; the star would give less visible light and look redder",
-                      "No: every star peaks in the visible",
-                      "Yes: visible would move to the ultraviolet")
-                .scene((r, hud, t) -> {
-                    pair(r, 3000, 0.8, "an M dwarf, 3000 K");
-                    hud.inset("The Sun (orange) and a 3000 K star (blue)", 330, 230, this::twoTempInset);
-                }));
-
-        s.add(step("Task 2: find the peak with argmax", """
-                Now measure Wien's law instead of quoting it. Compute Bλ on a grid of wavelengths and
-                let np.argmax find the index of the largest value; the same index in the wavelength
-                array is the peak. The orange dot is what argmax picks; the green line is Wien's law,
-                λmax = b / T.
-
-                Record peaks at several temperatures (the notebook asks for at least three more) and
-                they fall on Wien's curve in the lower plot. Two things to try:
-
-                **The grid edge.** A hot or cool star may peak outside your grid. Then argmax just
-                returns the end of the array, which is not a peak at all. Adjust the minimum and
-                maximum wavelengths, as the notebook's hint says.
-
-                **The spacing.** argmax can only return a grid point, so the answer is never better
-                than the spacing between points. Try 200 points and compare.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); temp = 5000; lamLo = 100; lamHi = 3000; gridK = 1; })
-                .controls(c -> {
-                    c.slider("Temperature T", 2000, 12000, () -> temp, x -> temp = x, x -> String.format("%,.0f K", x));
-                    c.slider("Grid starts at", 50, 1000, () -> lamLo, x -> lamLo = Math.min(Math.round(x / 10) * 10, lamHi - 50), x -> String.format("%.0f nm", x));
-                    c.slider("Grid ends at", 1000, 10000, () -> lamHi, x -> lamHi = Math.max(Math.round(x / 50) * 50, lamLo + 50), x -> String.format("%,.0f nm", x));
-                    c.choices("Points in the grid", new String[]{"200", "1000", "5000"}, () -> gridK, k -> gridK = k);
-                    c.button("Record this peak", () -> wienLog.add(new double[]{temp, peakOnGrid(temp, lamLo, lamHi, GRID_N[gridK])}));
-                    c.button("Record 3000, 4000, 5000 and 6000 K on this grid", () -> {
-                        for (double T : new double[]{3000, 4000, 5000, 6000})
-                            wienLog.add(new double[]{T, peakOnGrid(T, lamLo, lamHi, GRID_N[gridK])});
-                    });
-                    c.button("Clear the log", wienLog::clear);
-                })
-                .scene((r, hud, t) -> {
-                    pair(r, temp, 0.8, String.format("%,.0f K", temp));
-                    int n = GRID_N[gridK];
-                    double[] nm = linspace(lamLo, lamHi, n);
-                    int k = argmax(bLamOn(nm, temp));
-                    double wien = WIEN / temp * 1e9;
-                    hud.title("np.argmax on your grid", ORANGE);
-                    hud.row("grid", String.format("%,.0f to %,.0f nm, %d points", lamLo, lamHi, n));
-                    hud.row("spacing between points", String.format("%.2f nm", (lamHi - lamLo) / (n - 1)));
-                    hud.row("argmax peak", String.format("%.2f nm", nm[k]), ORANGE);
-                    hud.row("Wien's law  b / T", String.format("%.2f nm", wien), GREEN);
-                    if (k == 0 || k == n - 1) hud.row("the peak is off your grid", k == 0 ? "start lower" : "end higher", BAD);
-                    else hud.row("difference", signed("%+.2f nm", nm[k] - wien));
-                    hud.row("peaks recorded", Integer.toString(wienLog.size()));
-                    hud.formula("λmax = b / T,   b = 2.898 × 10⁻³ m·K");
-                    hud.inset("Your grid (top) and your log (bottom)", 340, 360, this::wienInset);
-                }));
-
-        s.add(step("Check: argmax vs Wien", """
-                With 1000 points from 100 to 3000 nm, argmax finds the 5000 K peak at **578.98 nm**.
-                Wien's law gives **579.55 nm**.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); temp = 5000; lamLo = 100; lamHi = 3000; gridK = 1; })
-                .quiz("Why do they differ by about half a nanometre?", 1,
-                      "The grid points are (3000 − 100) / 999 = 2.90 nm apart, and argmax can only return one "
-                    + "of them; 578.98 nm is the grid point nearest the true peak. A finer grid closes the gap.",
-                      "Wien's constant is only an approximation",
-                      "argmax can only return a grid point, and they are 2.9 nm apart",
-                      "Astropy's units round the result",
-                      "A 5000 K blackbody does not follow Wien's law")
-                .scene((r, hud, t) -> {
-                    pair(r, 5000, 0.8, "5000 K");
-                    hud.inset("Your grid (top) and your log (bottom)", 340, 360, this::wienInset);
-                }));
-
-        s.add(step("Task 3: make a prediction", """
-                Bλ is brightness per unit **wavelength**; Bν is per unit **frequency**. The two describe
-                the same light, so they are linked by a change of variables. Since ν = c/λ,
-                |dλ/dν| = λ² / c, and
-
-                $ Bν = Bλ |dλ/dν| = Bλ λ² / c
-
-                The notebook builds a frequency grid from the wavelength grid, ν = c/λ, and takes
-                argmax of each.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); temp = 5000; })
-                .quiz("Will the two peaks match, so that λpeak = c / νpeak?", 1,
-                      "The factor λ² / c gives long wavelengths more weight, so Bν peaks at a lower frequency. "
-                    + "For 5000 K, Bλ peaks at 579 nm but Bν at 2.94 × 10¹⁴ Hz, which is c / ν = 1020 nm: "
-                    + "1.76 times longer. Where a spectrum \"peaks\" depends on how you plot it.",
-                      "Yes: ν = c/λ, so the peaks must match",
-                      "No: c / νpeak is a longer wavelength than λpeak",
-                      "No: c / νpeak is a shorter wavelength than λpeak")
-                .scene((r, hud, t) -> {
-                    pair(r, 5000, 0.8, "5000 K");
-                    hud.inset("Bλ at 5000 K", 330, 230, this::functionInset);
-                }));
-
-        s.add(step("Task 3: Bλ vs Bν", """
-                Here are both functions for the same blackbody, Bλ against wavelength above and Bν
-                against frequency below, with each peak found by argmax on the notebook's grid
-                (1000 points, 100–3000 nm).
-
-                The pink line on the top plot is c / νpeak: the wavelength of the Bν peak. It is
-                1.76 times longer than λpeak at every temperature, since both peaks follow a Wien
-                law of their own:
-
-                $ λmax × T = 2.898 × 10⁻³ m·K
-                $ (c / νmax) × T = 5.100 × 10⁻³ m·K
-
-                Neither one is wrong. They answer different questions: in which nanometre-wide slice,
-                or in which hertz-wide slice, does the star give the most power?
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); temp = 5000; })
-                .controls(c -> {
-                    c.slider("Temperature T", 2500, 12000, () -> temp, x -> temp = x, x -> String.format("%,.0f K", x));
-                    c.button("The notebook's 5000 K", () -> temp = 5000);
-                })
-                .scene((r, hud, t) -> {
-                    pair(r, temp, 0.8, String.format("%,.0f K", temp));
-                    double lp = peakOnGrid(temp, 100, 3000, 1000), np = nuPeakOnGrid(temp, 100, 3000, 1000);
-                    hud.title("Two peaks of one blackbody", ACCENT);
-                    hud.row("λpeak (argmax of Bλ)", String.format("%.1f nm", lp), ACCENT);
-                    hud.row("νpeak (argmax of Bν)", sci(C / (np * 1e-9), 3) + " Hz", PINK);
-                    hud.row("c / νpeak", String.format("%.1f nm", np), PINK);
-                    hud.row("ratio", String.format("%.2f", np / lp));
-                    hud.row("Wien for ν: 5.879 × 10¹⁰ Hz/K × T", sci(WIEN_NU * temp, 3) + " Hz");
+                    r.labelBelow(v(0, 0, 0), 1, "the Sun: 5772 K", SUN_C, 12.5f);
+                    PythonKernel.Result res = nu.result;
+                    hud.title("Two peaks of one Sun", ACCENT);
+                    hud.row("λpeak (argmax of Bλ)", res != null && !Double.isNaN(res.num("lam_peak")) ? String.format("%.1f nm", res.num("lam_peak")) : "—", ACCENT);
+                    hud.row("your νpeak", res != null && !Double.isNaN(res.num("nu_peak")) ? sci(res.num("nu_peak"), 3) + " Hz" : "—", PINK);
+                    hud.row("c / νpeak", res != null && !Double.isNaN(res.num("c_over_nu")) ? String.format("%.1f nm", res.num("c_over_nu")) : "—", PINK);
                     hud.formula("Bν = Bλ λ² / c");
-                    hud.inset("Bλ (top) and Bν (bottom)", 340, 360, this::nuInset);
+                    hud.inset("Bλ (top) and your Bν (bottom)", 360, 380, this::nuInset);
                 }));
 
-        s.add(step("Task 4: real stars", """
-                Now real data: eight spectra from the **Sloan Digital Sky Survey**, the same files the
-                notebook reads. Each one is Fλ, the flux that reached the telescope, from 382 to
-                922 nm. Over each spectrum the notebook draws a blackbody at the star's temperature,
-                scaled so the two have the same median.
+        s.add(step("Task 4: sunlight at Earth", """
+                Bλ is an {k:intensity}: power per square metre per steradian **at the Sun's surface**.
+                What reaches Earth is a {k:flux}. Two steps get you there:
 
-                The shapes agree well: these stars are close to blackbodies. The differences are
-                where the physics is. The narrow notches are {k:absorption lines}: atoms and ions in
-                the star's cooler outer layers absorb particular wavelengths (hydrogen's Balmer lines,
-                sodium, magnesium, calcium). The lines crowd together in the blue, and below 420 nm
-                the cooler stars fall 10–15% short of their blackbodies.
+                $ Fλ = π Bλ(T) (R(Sun) / d)²
 
-                A star isn't one temperature either. Each wavelength escapes from a different depth,
-                and where the gas is more transparent we see deeper, hotter layers. Between 450 and
-                520 nm every one of these spectra bulges 5–10% above its blackbody.
+                Integrating the intensity over all the directions it leaves the surface gives a
+                factor of π sr. Spreading that light from the Sun's radius out to Earth's distance
+                dilutes it by (R(Sun)/d)². d comes live from the sim.
 
-                A real detail behind the file names: SDSS compared each spectrum with a library of
-                bright, well-studied stars (ELODIE). Each HD number is the library star that matched
-                best; the star SDSS actually observed is a faint one with no name.
+                Then add up Fλ over wavelength with np.trapezoid to get the {k:solar constant}, the
+                sunlight on each square metre facing the Sun. Satellites measure 1361 W/m² at 1 AU.
+                Try January and July: Earth is 3% closer in January.
                 """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); allStars = false; lines = true; })
+                .unit(AU)
+                .cam(() -> new double[]{0, 0, 1.3 * AU, 35, 0})
+                .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(0); })
+                .controls(c -> { c.code(flux); dateButtons(c); })
+                .scene((r, hud, t) -> {
+                    PythonKernel.Result res = flux.result;
+                    boolean ok = flux.passed();
+                    sunEarth(r, ok ? String.format("%,.0f W/m² (your code)", res.num("S")) : null);
+                    double d = len(pos(host.state("Earth"))) / AU;
+                    hud.title("Sunlight at Earth", SUN_C);
+                    hud.row("date / distance (sim)", host.dateString() + "   " + String.format("%.4f AU", d));
+                    hud.row("your solar_constant", ok ? String.format("%,.1f W/m²", res.num("S")) : "run your code", ok ? GREEN : DIM);
+                    if (ok) hud.row("all wavelengths: σT⁴ (R(Sun)/d)²", String.format("%,.1f W/m²", res.num("total")));
+                    hud.row("measured, at 1 AU", String.format("%,.0f W/m²", TSI), ACCENT);
+                    if (ok && Math.abs(res.num("au") - d) > 1e-6) hud.row("(the clock has moved: run it again)", "", ORANGE);
+                    hud.formula("Fλ = π Bλ (R(Sun) / d)²");
+                    hud.inset("Your Fλ at Earth", 360, 250, this::fluxInset);
+                }));
+
+        s.add(step("Check: January vs July", """
+                Earth is 0.983 AU from the Sun in early January and 1.017 AU in early July.
+                """)
+                .unit(AU)
+                .cam(() -> new double[]{0, 0, 1.3 * AU, 35, 0})
+                .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(0); })
+                .quiz("How much stronger is sunlight at Earth in January?", 1,
+                      "Flux goes as 1/d², so the ratio is (1.017 / 0.983)² = 1.07: about 7% more, roughly "
+                    + "1408 against 1317 W/m². It isn't why we have seasons: the northern winter comes in "
+                    + "January anyway, because of Earth's tilt.",
+                      "About 3.5%, the same as the change in distance",
+                      "About 7%, since flux goes as 1/d²",
+                      "About 14%, since flux goes as 1/d⁴",
+                      "No difference: the solar constant is constant")
+                .scene((r, hud, t) -> sunEarth(r, null)));
+
+        s.add(step("Task 4b: sunlight at every planet", """
+                Last, a loop over the planets. For each one, take its distance from the Sun right now
+                (sim["planet_au"]) and compute the sunlight it receives, using the Stefan–Boltzmann
+                law for the whole spectrum at once:
+
+                $ F = σT⁴ (R(Sun) / d)²
+
+                Your values appear beside the planets. Neptune, 30 times farther than Earth, gets
+                900 times less: 1.5 W/m², about what a 100-watt incandescent bulb gives at 2.3
+                metres.
+                """)
+                .unit(AU)
+                .cam(() -> zone == 0 ? new double[]{0, 0, 1.7 * AU, 35, 0} : new double[]{0, 0, 31 * AU, 40, 0})
+                .enter(() -> { host.showOnly(null, PLANETS); host.setOrbits(true, true); host.setTime(5 * DAY); })
                 .controls(c -> {
-                    c.choices("Spectrum", starLabels(), () -> star, k -> star = k);
-                    c.toggle("All eight at once (the notebook's for loop)", () -> allStars, x -> allStars = x);
-                    c.toggle("Mark the absorption lines", () -> lines, x -> lines = x);
+                    c.code(planets);
+                    c.choices("Show", new String[]{"Inner planets", "Outer planets"}, () -> zone, k -> zone = k);
                 })
                 .scene((r, hud, t) -> {
-                    SdssSpectra.Spectrum sp = spec();
-                    if (sp == null) { hud.title("No spectra found in assets/spectra", BAD); return; }
-                    pair(r, sp.teff(), 0.8, String.format("an SDSS star matched to %s (%s), %,.0f K", sp.name(), sp.spType(), sp.teff()));
-                    if (allStars) {
-                        hud.title("All eight spectra", ACCENT);
-                        List<SdssSpectra.Spectrum> all = spectra();
-                        for (int i = 0; i < all.size(); i++)
-                            hud.row(all.get(i).name() + "  (" + all.get(i).spType() + ")", String.format("%,.0f K", all.get(i).teff()), SERIES[i % SERIES.length]);
-                    } else {
-                        hud.title("SDSS spectrum " + sp.plate() + "-" + sp.mjd() + "-" + sp.fiber(), ACCENT);
-                        hud.row("best-matching library star", sp.name() + "  (" + sp.spType() + ")");
-                        hud.row("its temperature", String.format("%,.0f K", sp.teff()), ORANGE);
-                        hud.row("log g / [Fe/H]", String.format("%.2f / %s", sp.logg(), signed("%+.2f", sp.feh())));
-                        hud.row("scale median(F) / median(B)", sci(medianScale(sp), 3) + " sr", ACCENT);
-                    }
-                    hud.formula("Fλ ≈ (scale) × Bλ(T)");
-                    hud.inset(allStars ? "Eight spectra and their blackbodies" : "Observed (blue) and scaled blackbody (orange)",
-                            440, 300, (g, b) -> spectrumInset(g, b, false));
-                }));
-
-        s.add(step("Intensity vs flux: how far away?", """
-                Why does the blackbody need scaling at all? Bλ is an {k:intensity}: power per square
-                metre per steradian **at the star's surface**. A telescope measures {k:flux}.
-                Integrating the intensity over the outgoing directions gives the surface flux πBλ, and
-                spreading it from radius R out to distance d dilutes it by (R/d)²:
-
-                $ Fλ = π Bλ(T) (R / d)²
-
-                Both factors are the same at every wavelength, so they change the height, not the
-                shape. The notebook's scale factor is therefore π(R/d)², and it holds the star's
-                distance. Pick a radius (these are Sun-like stars) and solve for d.
-
-                Check your answer: all eight stars lie within 13′ of the centre of **M67**, an old
-                open cluster whose Gaia parallax puts it about 860 pc away. Dust along the way dims
-                the light a little, which makes the distance come out slightly too large.
-
-                R/d is also the star's angular radius: a few micro-arcseconds, millions of times too
-                small for any telescope to resolve. We can't measure these stars' intensity, only
-                their flux.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(radius))
-                .enter(() -> { sunOnly(); allStars = false; radius = 1; distPc = 300; })
-                .controls(c -> {
-                    c.choices("Spectrum", starLabels(), () -> star, k -> star = k);
-                    c.slider("Star's radius", 0.5, 2, () -> radius, x -> radius = x, x -> String.format("%.2f solar radii", x));
-                    c.slider("Distance", 2, 3.6, () -> log10(distPc), x -> distPc = Math.pow(10, x),
-                            x -> String.format("%,.0f pc", Math.pow(10, x)));
-                    c.button("Solve: d = R / √(scale / π)", () -> {
-                        SdssSpectra.Spectrum sp = spec();
-                        if (sp != null) distPc = clamp(radius * R_SUN / Math.sqrt(medianScale(sp) / Math.PI) / PC, 100, 3981);
-                    });
-                })
-                .scene((r, hud, t) -> {
-                    SdssSpectra.Spectrum sp = spec();
-                    if (sp == null) { hud.title("No spectra found in assets/spectra", BAD); return; }
-                    pair(r, sp.teff(), radius, String.format("%,.0f K, %.2f solar radii", sp.teff(), radius));
-                    double theta = Math.sqrt(medianScale(sp) / Math.PI), dFit = radius * R_SUN / theta / PC;
-                    double model = Math.PI * sq(radius * R_SUN / (distPc * PC));
-                    double lo = Double.MAX_VALUE, hi = 0;
-                    for (SdssSpectra.Spectrum o : spectra()) {
-                        double d = radius * R_SUN / Math.sqrt(medianScale(o) / Math.PI) / PC;
-                        lo = Math.min(lo, d); hi = Math.max(hi, d);
-                    }
-                    hud.title("Matched to " + sp.name() + ", " + String.format("%,.0f K", sp.teff()), ACCENT);
-                    hud.row("your model π(R/d)²", sci(model, 3) + " sr");
-                    hud.row("observed median(F) / median(B)", sci(medianScale(sp), 3) + " sr");
-                    hud.row("observed ÷ your model", String.format("%.2f", medianScale(sp) / model),
-                            Math.abs(Math.log(medianScale(sp) / model)) < 0.05 ? GOOD : ORANGE);
-                    hud.gap();
-                    hud.row("angular radius R/d", String.format("%.1f µas", theta / ARCSEC * 1e6));
-                    hud.row("distance for this radius", String.format("%,.0f pc", dFit), GREEN);
-                    hud.row("all eight at this radius", String.format("%,.0f to %,.0f pc", lo, hi), GREEN);
-                    hud.row("M67, from Gaia", "≈ " + String.format("%.0f", M67_PC) + " pc", ACCENT);
-                    hud.formula("Fλ = π Bλ(T) (R / d)²");
-                    hud.inset("Observed (blue) and π B (R/d)² (orange)", 440, 300, (g, b) -> spectrumInset(g, b, true));
-                }));
-
-        s.add(step("Check: twice as far", """
-                Take one of the stars and move it to twice the distance, keeping its radius and
-                temperature.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(1))
-                .enter(() -> { sunOnly(); allStars = false; radius = 1; })
-                .quiz("What happens to its observed spectrum?", 2,
-                      "Fλ = πBλ(T)(R/d)²: doubling d divides the flux by 4 at every wavelength. The shape and "
-                    + "the peak stay put, because temperature alone sets them. This is why the notebook can "
-                    + "compare shapes after scaling by the median.",
-                      "It shifts to longer wavelengths", "It halves at every wavelength",
-                      "It drops to a quarter at every wavelength, same shape",
-                      "Its intensity Bλ drops to a quarter")
-                .scene((r, hud, t) -> {
-                    SdssSpectra.Spectrum sp = spec();
-                    if (sp != null) pair(r, sp.teff(), 1, String.format("%,.0f K", sp.teff()));
-                }));
-
-        s.add(step("Task 5: Wien's law from real spectra", """
-                Last, measure each star's peak with argmax, as in Task 2, and plot it against the
-                library temperature, with Wien's law over a grid of temperatures.
-
-                The points follow the trend (hotter stars peak bluer) but scatter, most of them to
-                the **blue** side of Wien's curve. Two reasons. The top of a blackbody is very flat,
-                so a few percent of noise, or a gap between absorption lines, moves argmax by tens of
-                nanometres. And the real spectra bulge above their blackbodies between 450 and
-                520 nm (Task 4), which pulls the peak blueward. Smoothing over 5 nm removes the noise
-                but not the bulge.
-
-                Fitting a blackbody to **all** of each spectrum, not just its peak, gives the
-                temperatures in the last column. They are steadier, but up to about 400 K cooler
-                than the library values: the lines take light unevenly, most of it in the blue.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); smooth = false; })
-                .controls(c -> c.toggle("Smooth each spectrum over 5 nm before argmax", () -> smooth, x -> smooth = x))
-                .scene((r, hud, t) -> {
-                    List<SdssSpectra.Spectrum> all = spectra();
-                    if (all.isEmpty()) { hud.title("No spectra found in assets/spectra", BAD); return; }
-                    pair(r, 5500, 0.8, "eight Sun-like stars in M67");
-                    hud.title("Peak (" + (smooth ? "5-nm smoothed" : "argmax") + ") · Wien · blackbody fit", ACCENT);
-                    for (int i = 0; i < all.size(); i++) {
-                        SdssSpectra.Spectrum sp = all.get(i);
-                        double pk = peakOf(sp, smooth), w = WIEN / sp.teff() * 1e9;
-                        hud.row(String.format("%s  %,.0f K", sp.name(), sp.teff()),
-                                String.format("%.0f nm · %.0f nm · %,.0f K", pk, w, fitT(sp)), SERIES[i % SERIES.length]);
-                    }
-                    hud.formula("λmax = b / T");
-                    hud.inset("Measured peaks and Wien's law", 340, 260, this::observedWienInset);
-                }));
-
-        s.add(step("Check: how close?", """
-                Look at the measured peaks against Wien's curve.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); smooth = false; })
-                .quiz("How well do the real peaks follow Wien's law?", 1,
-                      "They follow the trend, within about 15%, mostly on the short-wavelength side. Noise, "
-                    + "absorption lines and an atmosphere whose temperature changes with depth all move the "
-                    + "peak of a real spectrum away from an ideal blackbody's.",
-                      "Exactly on the curve",
-                      "The trend is right, but they scatter by up to about 15%, mostly to shorter wavelengths",
-                      "They are off by about a factor of two",
-                      "There is no trend with temperature at all")
-                .scene((r, hud, t) -> {
-                    pair(r, 5500, 0.8, "eight Sun-like stars in M67");
-                    hud.inset("Measured peaks and Wien's law", 340, 260, this::observedWienInset);
-                }));
-
-        s.add(step("Check: how SDSS measured temperature", """
-                Each file gives a temperature, a spectral type, a surface gravity and a metallicity,
-                all labelled ELODIE.
-                """)
-                .unit(R_SUN)
-                .cam(() -> pairView(0.8))
-                .enter(() -> { sunOnly(); })
-                .quiz("Did SDSS find these temperatures with Wien's law?", 1,
-                      "No. The pipeline compared each whole spectrum, lines and all, with the ELODIE library of "
-                    + "real stars and kept the best match; the temperature is that library star's. Line "
-                    + "strengths pin the temperature far better than the flat top of the curve. Project 2 "
-                    + "tries the B − V colour, and the most precise method compares lines of the same atom "
-                    + "from different energy levels.",
-                      "Yes: from each spectrum's peak, with Wien's law",
-                      "No: it matched each whole spectrum, lines included, to a library of known stars",
-                      "No: it measured each star's radius and luminosity",
-                      "Yes: after smoothing the spectrum first")
-                .scene((r, hud, t) -> {
-                    SdssSpectra.Spectrum sp = spec();
-                    if (sp != null) {
-                        pair(r, sp.teff(), 0.8, sp.name());
-                        hud.inset("Observed (blue) and scaled blackbody (orange)", 440, 300, (g, b) -> spectrumInset(g, b, false));
-                    }
+                    planetLabels(r, planets.result, "W", "%,.1f W/m²");
+                    PythonKernel.Result res = planets.result;
+                    double[] W = res == null || !res.passed() ? null : res.arr("W"), au = res == null ? null : res.arr("au");
+                    hud.title("Sunlight at each planet", SUN_C);
+                    if (W == null || au == null) hud.row("your sunlight", "run your code", DIM);
+                    else for (int i = 0; i < W.length && i < PLANETS.length; i++)
+                        hud.row(PLANETS[i] + String.format("  (%.2f AU)", au[i]), String.format("%,.1f W/m²", W[i]), INK);
+                    hud.formula("F = σT⁴ (R(Sun) / d)²");
                 }));
 
         return new LessonStudio.LessonDef("Intermediate", "Project 1: Blackbody Radiation",
-                "The Python project, live: Planck, Wien, Bλ vs Bν and real SDSS spectra",
-                "Write Planck's law and catch the notebook's bug, measure Wien's law with argmax, compare "
-                + "Bλ with Bν, then lay blackbodies over eight real SDSS spectra and find out how far away "
-                + "the stars are.",
+                "Code it in Python: Planck, Wien and sunlight, from the Sun to Neptune",
+                "Write real Python inside the sim: time sunlight's trip to Earth, code Planck's law for the "
+                + "Sun, see why sunspots look dark, find the Sun's peak with argmax, run Wien's law across the "
+                + "planets, compare Bλ with Bν, and compute the sunlight reaching every planet today.",
                 new Color(255, 170, 70), s, _ -> { });
     }
 }

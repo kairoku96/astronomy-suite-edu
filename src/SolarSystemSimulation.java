@@ -442,6 +442,7 @@ public class SolarSystemSimulation extends JPanel
             SkyView sv = skyView();
             sv.limitOverride = limitMag; sv.apertureMm = apertureMm; sv.starFilter = starFilter;
         }
+        public void skyAir(double density) { skyView().airDensity = density; }
         public void skyNorthUp(boolean on) { skyView().northUp = on; }
         public double[] skyBody(String name) { return skyView().bodyInfo(name, simTimeSec); }
         public double[] skyBodyAt(String name, double t) { return skyView().bodyInfo(name, t); }

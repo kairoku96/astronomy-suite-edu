@@ -76,6 +76,11 @@ final class SkyView {
      * pupil, so it reaches 5 log₁₀(D / 7 mm) magnitudes fainter.
      */
     double apertureMm = Double.NaN;
+    /**
+     * Density of the air a lesson observes through, relative to the sky's own (1). Extinction is
+     * scattering by the air column, so it scales with the density; 0 is no air.
+     */
+    double airDensity = 1;
     /** Only stars whose B−V passes this test are drawn (a lesson's spectral-class filter); null = all. */
     java.util.function.DoublePredicate starFilter;
     /**
@@ -326,11 +331,11 @@ final class SkyView {
      */
     private double spriteLimit() { return Double.isNaN(apertureMm) ? limitMag : Math.min(limitMag, 7.5); }
 
-    /** Extinction (mag) at apparent altitude {@code alt}: k·(X − 1) with Rozenberg's airmass. */
-    private static double extinction(double alt) {
+    /** Extinction (mag) at apparent altitude {@code alt}: k·(X − 1) with Rozenberg's airmass, k ∝ air density. */
+    private double extinction(double alt) {
         double s = Math.sin(Math.max(alt, -0.02));
         double X = 1.0 / (s + 0.025 * Math.exp(-11 * s));
-        return 0.25 * (X - 1);
+        return 0.25 * airDensity * (X - 1);
     }
 
     // ---------------------------------------------------------------- projection
@@ -1440,7 +1445,7 @@ final class SkyView {
     Object[] snapshot() {
         return new Object[]{latDeg, lonDeg, placeName, zone, viewAz, viewAlt, fovDeg, showConstLines, showConstNames,
                 showStarNames, showAltAzGrid, showEqGrid, showEcliptic, showGround, showAtmosphere, selectedName,
-                lessonMode, limitOverride, apertureMm, starFilter, northUp};
+                lessonMode, limitOverride, apertureMm, starFilter, northUp, airDensity};
     }
     void restore(Object[] s) {
         int k = 0;
@@ -1452,6 +1457,7 @@ final class SkyView {
         lessonMode = (Boolean) s[k++]; limitOverride = (Double) s[k++]; apertureMm = (Double) s[k++];
         starFilter = (java.util.function.DoublePredicate) s[k++];
         northUp = (Boolean) s[k++];
+        airDensity = (Double) s[k++];
         bgKey = ""; riseSetKey = ""; frameT = Double.NaN;
     }
 

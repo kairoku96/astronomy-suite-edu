@@ -59,6 +59,7 @@ final class AppWindow {
             if (t.key() != null) s.put(t.key(), t.get().getAsBoolean());
         }
         s.put("ui.size", panel.uiSize.name());
+        if (panel.lessonStudio != null) s.put("lessons.course", panel.lessonStudio.courseCode());
         s.put("time.scale", panel.timeScale);
         Rectangle r = frame.getRootPane().getClientProperty(NORMAL_BOUNDS) instanceof Rectangle nb ? nb : frame.getBounds();
         s.put("window.x", r.x);
@@ -469,12 +470,21 @@ final class AppWindow {
         studioItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_L, InputEvent.CTRL_DOWN_MASK));
         studioItem.addActionListener(_ -> panel.lessonStudio.showPicker());
         educationMenu.add(studioItem);
-        String[] lessonLabels = LessonStudio.menuLabels();
-        for (int li = 0; li < lessonLabels.length; li++) {
-            final int lessonIndex = li;
-            JMenuItem it = new JMenuItem("    " + lessonLabels[li]);
-            it.addActionListener(_ -> panel.lessonStudio.startLesson(lessonIndex));
-            educationMenu.add(it);
+        // The course bundle the picker opens on: -Dsss.course, else the one used last.
+        if (System.getProperty("sss.course") == null)
+            panel.lessonStudio.setCourse(LessonStudio.courseIndex(settings.get("lessons.course", "AST221")));
+        for (int ci = 0; ci < LessonStudio.COURSES.size(); ci++) {
+            final int courseIndex = ci;
+            LessonStudio.Course course = LessonStudio.COURSES.get(ci);
+            JMenu courseMenu = new JMenu(course.code() + ":  " + course.name());
+            String[] lessonLabels = LessonStudio.menuLabels(ci);
+            for (int li = 0; li < lessonLabels.length; li++) {
+                final int lessonIndex = li;
+                JMenuItem it = new JMenuItem((li + 1) + ".  " + lessonLabels[li]);
+                it.addActionListener(_ -> panel.lessonStudio.startLesson(courseIndex, lessonIndex));
+                courseMenu.add(it);
+            }
+            educationMenu.add(courseMenu);
         }
         educationMenu.addSeparator();
 

@@ -49,9 +49,9 @@ public final class LessonStudio extends JPanel {
     //  Public entry points
     // =====================================================================
 
-    /** "Level · Title" for each lesson, for the main window's Education menu. */
-    static String[] menuLabels() {
-        List<LessonDef> ls = buildLessons(null);
+    /** "Level · Title" for each lesson of a course, for the main window's Education menu. */
+    static String[] menuLabels(int course) {
+        List<LessonDef> ls = courseLessons(buildLessons(null), course);
         String[] out = new String[ls.size()];
         for (int i = 0; i < out.length; i++) out[i] = ls.get(i).level + "  ·  " + ls.get(i).title;
         return out;
@@ -140,31 +140,139 @@ public final class LessonStudio extends JPanel {
         LessonDef(String level, String title, String subtitle, String blurb, Color accent,
                   List<Step> steps, DoubleConsumer tick) {
             this.level = level; this.title = title; this.subtitle = subtitle; this.blurb = blurb;
-            this.accent = accent; this.tick = tick;
-            // Steps beyond the course slides so far are kept, but hidden unless asked for.
-            this.steps = SHOW_BEYOND_SLIDES ? steps : steps.stream().filter(s -> !s.beyondSlides).toList();
+            this.accent = accent; this.tick = tick; this.steps = steps;
         }
         int quizCount() { int n = 0; for (Step s : steps) if (s.quiz != null) n++; return n; }
+
+        /** This lesson as a course uses it: only the steps it keeps, under its own title if it gives one. */
+        LessonDef forCourse(String courseCode, Entry e) {
+            List<Step> kept = steps.stream().filter(e.keep()).toList();
+            if (e.keep() instanceof Titled t)
+                for (String name : t.titles())
+                    if (steps.stream().noneMatch(s -> s.title.equals(name)))
+                        throw new IllegalStateException(courseCode + ": \"" + title + "\" has no step \"" + name + "\"");
+            return new LessonDef(level, e.title() != null ? e.title() : title, e.subtitle() != null ? e.subtitle() : subtitle,
+                    e.blurb() != null ? e.blurb() : blurb, accent, kept, tick);
+        }
     }
 
-    /** The lessons, in the order of the AST221 course they follow (see docs/LESSON_PLAN.md). */
+    // =====================================================================
+    //  Courses: each one bundles the lessons it uses, in its own order, with the
+    //  steps that match its slides (docs/LESSON_PLAN.md, docs/LESSON_PLAN_AST101.md)
+    // =====================================================================
+
     /** Show the steps that go beyond the AST221 slides (Days 2–8) as well: -Dsss.lessons.all=true. */
     static final boolean SHOW_BEYOND_SLIDES = Boolean.getBoolean("sss.lessons.all");
 
+    /** Catalogue positions of the lessons in {@link #buildLessons}. */
+    static final int SKY = 0, ANGULAR = 1, TELESCOPE = 2, ORBITS = 3, WEIGH = 4, LIGHT = 5, BLACKBODY = 6,
+            PROJECT1 = 7, MAGNITUDE = 8, PARALLAX = 9, WOBBLE = 10, TITAN = 11;
+
+    /** Every lesson with all of its steps; courses pick from these. */
     static List<LessonDef> buildLessons(Host host) {
         return List.of(
-                new SkyLesson(host).build(),            // Day 3: coordinates and planning observations
-                new AngularLesson(host).build(),        // Days 2, 4: angular size and solid angle
-                new TelescopeLesson(host).build(),      // Day 2: telescopes
-                new OrbitLesson(host).build(),          // Day 7: Kepler I and II
-                new WeighLesson(host).build(),          // Day 7: Kepler III and Newton
-                new LightLesson(host).build(),          // Day 4: radiative quantities
-                new BlackbodyLesson(host).build(),      // Day 5: blackbody radiation
-                new BlackbodyProject(host).build(),     // Python project 1: blackbody radiation and SDSS spectra
-                new MagnitudeLesson(host).build(),      // Day 6: magnitudes and spectra
-                new ParallaxLesson(host).build(),       // Day 7: parallax
-                new WobbleLesson(host).build(),         // Days 7, 8: binaries and the Sun's wobble
-                new TitanLesson(host).build());         // final project rehearsal
+                new SkyLesson(host).build(),
+                new AngularLesson(host).build(),
+                new TelescopeLesson(host).build(),
+                new OrbitLesson(host).build(),
+                new WeighLesson(host).build(),
+                new LightLesson(host).build(),
+                new BlackbodyLesson(host).build(),
+                new BlackbodyProject(host).build(),
+                new MagnitudeLesson(host).build(),
+                new ParallaxLesson(host).build(),
+                new WobbleLesson(host).build(),
+                new TitanLesson(host).build());
+    }
+
+    /** One lesson of a course: which catalogue lesson, the steps it keeps, and an optional new title, subtitle and blurb. */
+    record Entry(int lesson, Predicate<Step> keep, String title, String subtitle, String blurb) {
+        Entry(int lesson, Predicate<Step> keep) { this(lesson, keep, null, null, null); }
+    }
+    /** Keeps the steps with these titles; a title no step has is an error at start-up. */
+    record Titled(String... titles) implements Predicate<Step> {
+        public boolean test(Step s) { return java.util.Arrays.asList(titles).contains(s.title); }
+    }
+    static final Predicate<Step> ALL_STEPS = _ -> true;
+    /** AST221: everything but the steps beyond its slides, unless -Dsss.lessons.all=true. */
+    static final Predicate<Step> AST221_SLIDES = s -> SHOW_BEYOND_SLIDES || !s.beyondSlides;
+
+    record Course(String code, String name, String blurb, List<Entry> entries) { }
+
+    static final List<Course> COURSES = List.of(
+            new Course("AST101", "Exploring the Solar System",
+                    "The sky, orbits, light, telescopes and planets, with light math. The lessons follow the AST101 "
+                  + "slides in order and keep the steps that match them.",
+                    List.of(
+                            new Entry(ANGULAR, new Titled("Angular size", "A planet's tiny disc", "Check: the Moon's angular size"),  // Day 3
+                                    null, "Angular size: why the Moon can cover the Sun",
+                                    "Watch the Moon exactly cover the Sun over Niagara Falls, find an angular size from an "
+                                  + "object's size and distance, and see how tiny Jupiter's disc is through a telescope."),
+                            new Entry(SKY, new Titled("Altitude and azimuth", "The pole star sits at your latitude"),               // Day 5
+                                    null, "Altitude, azimuth and the celestial pole",
+                                    "Stand on the UTM campus under the real evening sky, find things by altitude and azimuth, "
+                                  + "and see that the celestial pole's altitude is your latitude (try other places)."),
+                            new Entry(ORBITS, ALL_STEPS),                                                                           // Days 6, 9–11
+                            new Entry(PARALLAX, new Titled("Parallax: Earth's orbit as a baseline"),                                 // Day 9
+                                    "Stellar Parallax", "The shift Tycho looked for",
+                                    "Watch nearby stars shift as the real Earth goes around the Sun: the parallax that Tycho "
+                                  + "searched for and could not see, and why it is so small."),
+                            new Entry(WEIGH, ALL_STEPS),                                                                            // Day 10
+                            new Entry(LIGHT, new Titled("Luminosity: a star's total power", "Wrap it in a Gaussian bubble",          // Day 22
+                                    "Flux: the same light, spread thinner", "Check: moving Earth out", "Check: a bigger bubble"),
+                                    "Luminosity & Flux", "How much sunlight each planet gets",
+                                    "Hide every planet, wrap the real Sun in a bubble and count the light crossing it, then "
+                                  + "watch the same light spread thinner with distance: the inverse-square law behind each "
+                                  + "planet's sunlight."),
+                            new Entry(BLACKBODY, new Titled("The Sun is (nearly) a blackbody", "Stefan–Boltzmann: hot stars are fierce",  // Days 13, 22, 32
+                                    "How warm is each planet?", "An eccentric orbit: Mars's seasons of distance",
+                                    "Around a different star", "Check: the Sun's colour"),
+                                    null, "Thermal light, colour and planet temperatures",
+                                    "The Sun as a blackbody, why hotter means bluer and brighter, each planet's temperature "
+                                  + "from its live distance and albedo, Mars between perihelion and aphelion, and the "
+                                  + "Earth-like zone around a cooler star."),
+                            new Entry(MAGNITUDE, new Titled("Where absorption lines come from"),                                     // Day 14
+                                    "Spectral Lines", "Fingerprints of the elements",
+                                    "Electrons jumping between the energy levels of hydrogen make the dark Balmer lines in "
+                                  + "Vega's spectrum, at the same wavelengths hot hydrogen glows."),
+                            new Entry(TELESCOPE, new Titled("A bigger bucket for light", "Check: a 1-second exposure",              // Days 15, 17
+                                    "Diffraction and seeing", "Check: resolving the binary"),
+                                    null, "Collecting area, resolution and the atmosphere",
+                                    "Open up a telescope's mirror until Neptune appears, see the image a telescope really "
+                                  + "delivers of Pluto and Charon from space, Mississauga or Mauna Kea, and thin or thicken "
+                                  + "the air to watch the seeing change."),
+                            new Entry(WOBBLE, new Titled("The Sun orbits too", "Radial velocity: the Doppler wobble",                 // Days 11, 30–31
+                                    "Transits and eclipses", "Check: which star is heavier?"),
+                                    null, "Finding exoplanets: radial velocity and transits",
+                                    "Watch the real Sun circle the solar system's centre of mass, the Doppler wobble Jupiter "
+                                  + "gives it, and the dip in sunlight when a planet passes in front."))),
+            new Course("AST221", "Astrophysics I: Planets, Sun and Stars",
+                    "The first half of the course (Days 2–8), its first Python project and a rehearsal of the Titan "
+                  + "final project.",
+                    List.of(
+                            new Entry(SKY, AST221_SLIDES),          // Day 3: coordinates and planning observations
+                            new Entry(ANGULAR, AST221_SLIDES),      // Days 2, 4: angular size and solid angle
+                            new Entry(TELESCOPE, AST221_SLIDES),    // Day 2: telescopes
+                            new Entry(ORBITS, AST221_SLIDES),       // Day 7: Kepler I and II
+                            new Entry(WEIGH, AST221_SLIDES),        // Day 7: Kepler III and Newton
+                            new Entry(LIGHT, AST221_SLIDES),        // Day 4: radiative quantities
+                            new Entry(BLACKBODY, AST221_SLIDES),    // Day 5: blackbody radiation
+                            new Entry(PROJECT1, AST221_SLIDES),     // Python project 1: blackbody radiation
+                            new Entry(MAGNITUDE, AST221_SLIDES),    // Day 6: magnitudes and spectra
+                            new Entry(PARALLAX, AST221_SLIDES),     // Day 7: parallax
+                            new Entry(WOBBLE, AST221_SLIDES),       // Days 7, 8: binaries and the Sun's wobble
+                            new Entry(TITAN, AST221_SLIDES))));     // final project rehearsal
+
+    /** Index of the course with this code (case-insensitive), or the default (AST221). */
+    static int courseIndex(String code) {
+        for (int i = 0; i < COURSES.size(); i++) if (COURSES.get(i).code().equalsIgnoreCase(code)) return i;
+        return COURSES.size() - 1;
+    }
+
+    /** A course's lessons, built from the catalogue. */
+    static List<LessonDef> courseLessons(List<LessonDef> catalogue, int course) {
+        Course c = COURSES.get(course);
+        return c.entries().stream().map(e -> catalogue.get(e.lesson()).forCourse(c.code(), e)).toList();
     }
 
     // =====================================================================
@@ -173,11 +281,15 @@ public final class LessonStudio extends JPanel {
     //  3-D stage instead ({@link #paintStage}), forwarding mouse and keys here.
     // =====================================================================
 
-    static final int PANEL_W = 420;
+    static final int PANEL_W = 420, CODE_PANEL_W = 600;
 
     private final CardLayout cards = new CardLayout();
     private final Host host;
-    private final List<LessonDef> lessons;
+    private final List<LessonDef> catalogue;
+    /** The course whose bundle the picker shows (-Dsss.course=AST101 at start-up), and its lessons. */
+    private int course = courseIndex(System.getProperty("sss.course", "AST221"));
+    private List<LessonDef> lessons;
+    private final WidthTracker pickerList = new WidthTracker();
     private final Overlay overlay = new Overlay();
     private final JComponent canvas;                       // the simulation panel the lesson runs in
     private final Consumer<Boolean> onActiveChange;        // told when a lesson starts / ends
@@ -204,7 +316,8 @@ public final class LessonStudio extends JPanel {
     LessonStudio(JComponent canvas, Host host, Consumer<Boolean> onActiveChange) {
         this.canvas = canvas;
         this.host = host;
-        this.lessons = buildLessons(host);
+        this.catalogue = buildLessons(host);
+        this.lessons = courseLessons(catalogue, course);
         this.onActiveChange = onActiveChange;
         setLayout(cards);
         setBackground(PANEL_BG);
@@ -313,6 +426,24 @@ public final class LessonStudio extends JPanel {
         revalidateHost();
     }
 
+    String courseCode() { return COURSES.get(course).code(); }
+
+    /** Switches the picker to another course's bundle (leaving any lesson in progress). */
+    void setCourse(int c) {
+        c = Math.max(0, Math.min(COURSES.size() - 1, c));
+        if (c == course && lessons != null) return;
+        if (lesson != null) exitLesson();
+        course = c;
+        lessons = courseLessons(catalogue, course);
+        fillPicker();
+    }
+
+    /** Starts lesson {@code i} (0-based) of course {@code c}. */
+    void startLesson(int c, int i) {
+        setCourse(c);
+        startLesson(i);
+    }
+
     void startLesson(int i) {
         boolean wasActive = lesson != null;
         lesson = lessons.get(Math.max(0, Math.min(lessons.size() - 1, i)));
@@ -335,6 +466,7 @@ public final class LessonStudio extends JPanel {
         lesson = null;
         stepIdx = -1;
         controls = null;
+        setPreferredSize(new Dimension(PANEL_W, 10));
         cards.show(this, "picker");
         onActiveChange.accept(false);
         revalidateHost();
@@ -357,6 +489,7 @@ public final class LessonStudio extends JPanel {
             // Every step starts from the plain heliocentric view and the naked eye; it sets up the rest.
             host.setBarycentric(false);
             host.skyOptics(Double.NaN, Double.NaN, null);
+            host.skyAir(1);
             host.skyNorthUp(false);
             host.sky(s.sky);
         }
@@ -372,9 +505,15 @@ public final class LessonStudio extends JPanel {
         controlsBox.removeAll();
         controls = null;
         if (s.controls != null) {
-            controls = new Controls(controlsBox);
+            Controls cs = new Controls(controlsBox);
+            cs.changed = () -> { canvas.repaint(); cs.sync(); revalidate(); };
+            controls = cs;
             s.controls.accept(controls);
         }
+        // Code needs room: the panel widens on steps with a code cell.
+        boolean coding = controls != null && !controls.cells.isEmpty();
+        setPreferredSize(new Dimension(coding ? CODE_PANEL_W : PANEL_W, 10));
+        revalidateHost();
         rebuildQuiz(s);
 
         prevBtn.setEnabled(i > 0);
@@ -457,6 +596,10 @@ public final class LessonStudio extends JPanel {
         StringBuilder b = new StringBuilder(1024);
         if (lesson == null || stepIdx < 0) {
             b.append("Lesson Studio: no lesson running").append(isVisible() ? " (the lesson list is open)." : ".").append('\n');
+            b.append("Course bundle: ").append(courseCode()).append(" (").append(COURSES.get(course).name())
+             .append("); other courses: ");
+            for (Course c : COURSES) if (c != COURSES.get(course)) b.append(c.code()).append(' ');
+            b.append('\n');
             b.append("Available lessons: ");
             for (int i = 0; i < lessons.size(); i++)
                 b.append(i == 0 ? "" : "; ").append(i + 1).append(". ").append(lessons.get(i).title)
@@ -465,7 +608,7 @@ public final class LessonStudio extends JPanel {
         }
         Step s = step();
         int li = lessons.indexOf(lesson) + 1;
-        b.append("LESSON IN PROGRESS: lesson ").append(li).append(" of ").append(lessons.size()).append(", \"")
+        b.append(courseCode()).append(" LESSON IN PROGRESS: lesson ").append(li).append(" of ").append(lessons.size()).append(", \"")
          .append(lesson.title).append("\" (").append(lesson.level).append(": ").append(lesson.subtitle).append(")\n");
         b.append("Step ").append(stepIdx + 1).append(" of ").append(lesson.steps.size()).append(": \"").append(s.title).append("\"")
          .append(s.sky ? " - shown in the Sky from Earth view" : " - shown in the 3-D Solar System view").append('\n');
@@ -555,23 +698,11 @@ public final class LessonStudio extends JPanel {
         head.add(close, BorderLayout.EAST);
         card.add(head, BorderLayout.NORTH);
 
-        WidthTracker list = new WidthTracker();
+        WidthTracker list = pickerList;
         list.setOpaque(false);
         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
         list.setBorder(new EmptyBorder(4, 16, 16, 16));
-        RichText intro = new RichText(13.5f);
-        intro.setBox(null, DIM, 0);
-        intro.setMarkup("Pick a lesson. It runs on the live solar system: each step shows just the "
-                + "bodies it needs, sets the clock and flies the camera there, and draws its explanations "
-                + "right into the scene. Drag to look around, use the sliders, and check yourself as you go.");
-        list.add(intro);
-        list.add(Box.createVerticalStrut(14));
-        for (int i = 0; i < lessons.size(); i++) {
-            JComponent tile = lessonTile(lessons.get(i), i);
-            tile.setAlignmentX(LEFT_ALIGNMENT);
-            list.add(tile);
-            list.add(Box.createVerticalStrut(14));
-        }
+        fillPicker();
         JScrollPane sp = new JScrollPane(list);
         sp.setBorder(null);
         sp.setOpaque(false);
@@ -579,6 +710,58 @@ public final class LessonStudio extends JPanel {
         sp.getVerticalScrollBar().setUnitIncrement(16);
         card.add(sp, BorderLayout.CENTER);
         return card;
+    }
+
+    /** The picker's contents for the current course: the course switch, the course's blurb and its lesson tiles. */
+    private void fillPicker() {
+        WidthTracker list = pickerList;
+        list.removeAll();
+        RichText intro = new RichText(13.5f);
+        intro.setBox(null, DIM, 0);
+        intro.setMarkup("Pick a course, then a lesson. Each runs on the live solar system: each step shows just the "
+                + "bodies it needs, sets the clock and flies the camera there, and draws its explanations "
+                + "right into the scene. Drag to look around, use the sliders, and check yourself as you go.");
+        list.add(intro);
+        list.add(Box.createVerticalStrut(12));
+        JPanel sw = new JPanel(new GridLayout(1, COURSES.size(), 8, 0));
+        sw.setOpaque(false);
+        ButtonGroup bg = new ButtonGroup();
+        for (int i = 0; i < COURSES.size(); i++) {
+            final int k = i;
+            Course c = COURSES.get(i);
+            JToggleButton b = new JToggleButton(c.code());
+            b.setFont(uiFont(Font.BOLD, 14f));
+            b.setFocusable(false);
+            b.setToolTipText(c.name());
+            b.setSelected(i == course);
+            if (i == course) { b.setBackground(new Color(44, 98, 170)); b.setForeground(Color.WHITE); }
+            b.addActionListener(_ -> setCourse(k));
+            bg.add(b);
+            sw.add(b);
+        }
+        sw.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+        list.add(sw);
+        list.add(Box.createVerticalStrut(12));
+        Course c = COURSES.get(course);
+        RichText name = new RichText(17f);
+        name.setBox(null, INK, 0);
+        name.setMarkup("**" + c.code() + ": " + c.name() + "**");
+        RichText blurb = new RichText(13f);
+        blurb.setBox(null, new Color(160, 174, 200), 0);
+        blurb.setMarkup(c.blurb() + " " + lessons.size() + " lessons.");
+        list.add(name);
+        list.add(Box.createVerticalStrut(4));
+        list.add(blurb);
+        list.add(Box.createVerticalStrut(14));
+        for (int i = 0; i < lessons.size(); i++) {
+            JComponent tile = lessonTile(lessons.get(i), i);
+            tile.setAlignmentX(LEFT_ALIGNMENT);
+            list.add(tile);
+            list.add(Box.createVerticalStrut(14));
+        }
+        for (Component j : list.getComponents()) if (j instanceof JComponent jc) jc.setAlignmentX(LEFT_ALIGNMENT);
+        list.revalidate();
+        list.repaint();
     }
 
     private JComponent lessonTile(LessonDef L, int index) {
@@ -709,7 +892,10 @@ public final class LessonStudio extends JPanel {
                 char ch = t.charAt(i);
                 boolean open = ch == '{' && i + 2 < t.length() && t.charAt(i + 2) == ':' && TERM.containsKey(t.charAt(i + 1));
                 boolean boldMark = ch == '*' && i + 1 < t.length() && t.charAt(i + 1) == '*';
-                if (open || boldMark || ch == '_' || (ch == '}' && term != null)) {
+                // _italic_ marks sit at word edges; an underscore inside a word (b_wien, R_sun) is literal.
+                boolean italMark = ch == '_' && !(i > 0 && i + 1 < t.length()
+                        && Character.isLetterOrDigit(t.charAt(i - 1)) && Character.isLetterOrDigit(t.charAt(i + 1)));
+                if (open || boldMark || italMark || (ch == '}' && term != null)) {
                     if (b.length() > 0) {
                         out.add(new Run(b.toString(), (bold || term != null ? Font.BOLD : 0) | (ital ? Font.ITALIC : 0), term));
                         b.setLength(0);
@@ -983,6 +1169,161 @@ public final class LessonStudio extends JPanel {
                 return name + ": " + (k >= 0 && k < labels.length ? labels[k] : "(none)") + "   [choices: " + String.join(", ", labels) + "]";
             });
         }
+        /** The step's code cells, and a hook the studio sets so a finished run repaints the scene. */
+        final List<CodeCell> cells = new ArrayList<>();
+        Runnable changed = () -> { };
+
+        /**
+         * A Python code cell: an editor (Tab indents, Ctrl+Enter runs, blanks highlighted), Run and
+         * Reset, then the check's verdict, anything the code printed, and its error if it had one.
+         */
+        void code(CodeCell cell) {
+            cells.add(cell);
+            Font mono = new Font(Font.MONOSPACED, Font.PLAIN, 13);
+            for (String f : new String[]{"Cascadia Mono", "Consolas", "Menlo", "DejaVu Sans Mono"})
+                if (new Font(f, Font.PLAIN, 13).getFamily().equals(f)) { mono = new Font(f, Font.PLAIN, 13); break; }
+            final Font monoF = mono;
+            JTextArea ed = new JTextArea(cell.text);
+            ed.setFont(monoF);
+            ed.setTabSize(4);
+            ed.setMargin(new Insets(8, 10, 8, 10));
+            ed.setBackground(new Color(11, 15, 27));
+            ed.setForeground(new Color(222, 230, 245));
+            ed.setCaretColor(Color.WHITE);
+            ed.setSelectionColor(new Color(50, 80, 140));
+            Runnable highlight = () -> {
+                ed.getHighlighter().removeAllHighlights();
+                String t = ed.getText();
+                var paint = new javax.swing.text.DefaultHighlighter.DefaultHighlightPainter(new Color(150, 100, 20));
+                for (int i = t.indexOf(CodeCell.BLANK); i >= 0; i = t.indexOf(CodeCell.BLANK, i + 1)) {
+                    try { ed.getHighlighter().addHighlight(i, i + CodeCell.BLANK.length(), paint); } catch (Exception ignored) { }
+                }
+            };
+            highlight.run();
+            ed.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+                void edit() { if (!syncing) { cell.text = ed.getText(); SwingUtilities.invokeLater(highlight); } }
+                public void insertUpdate(javax.swing.event.DocumentEvent e) { edit(); }
+                public void removeUpdate(javax.swing.event.DocumentEvent e) { edit(); }
+                public void changedUpdate(javax.swing.event.DocumentEvent e) { }
+            });
+            ed.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_TAB, 0), "indent");
+            ed.getActionMap().put("indent", new AbstractAction() {
+                public void actionPerformed(ActionEvent e) { ed.replaceSelection("    "); }
+            });
+            ed.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK), "run");
+            ed.getActionMap().put("run", new AbstractAction() {
+                public void actionPerformed(ActionEvent e) { cell.run(changed); }
+            });
+            JScrollPane sp = new JScrollPane(ed, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                    ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+            sp.setBorder(BorderFactory.createLineBorder(PANEL_EDGE));
+            sp.setAlignmentX(LEFT_ALIGNMENT);
+            int lines = (int) cell.text.lines().count() + 1, lh = ed.getFontMetrics(monoF).getHeight();
+            int h = Math.min(lines, 24) * lh + 34;
+            sp.setPreferredSize(new Dimension(200, h));
+            sp.setMaximumSize(new Dimension(Integer.MAX_VALUE, h));
+            box.add(caption("YOUR CODE  ·  PYTHON"));
+            box.add(Box.createVerticalStrut(4));
+            box.add(sp);
+            box.add(Box.createVerticalStrut(8));
+
+            JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+            row.setOpaque(false);
+            row.setAlignmentX(LEFT_ALIGNMENT);
+            JButton run = new JButton("Run");
+            run.setFont(uiFont(Font.BOLD, 13f));
+            run.setBackground(new Color(44, 98, 170));
+            run.setForeground(Color.WHITE);
+            run.setFocusable(false);
+            run.setToolTipText("Run the cell (Ctrl+Enter)");
+            run.addActionListener(_ -> cell.run(changed));
+            JButton reset = new JButton("Reset");
+            reset.setFont(uiFont(Font.PLAIN, 12f));
+            reset.setFocusable(false);
+            reset.setToolTipText("Go back to the starting code");
+            reset.addActionListener(_ -> {
+                cell.reset();
+                syncing = true;
+                try { ed.setText(cell.text); } finally { syncing = false; }
+                highlight.run();
+                changed.run();
+            });
+            JLabel py = new JLabel();
+            py.setFont(uiFont(Font.PLAIN, 11f));
+            py.setForeground(DIM);
+            row.add(run);
+            row.add(Box.createHorizontalStrut(8));
+            row.add(reset);
+            row.add(Box.createHorizontalStrut(12));
+            row.add(py);
+            row.setMaximumSize(new Dimension(Integer.MAX_VALUE, run.getPreferredSize().height + 2));
+            box.add(row);
+            box.add(Box.createVerticalStrut(8));
+
+            JPanel out = new JPanel();
+            out.setOpaque(false);
+            out.setLayout(new BoxLayout(out, BoxLayout.Y_AXIS));
+            out.setAlignmentX(LEFT_ALIGNMENT);
+            box.add(out);
+            box.add(Box.createVerticalStrut(10));
+
+            int[] shown = {-1};
+            Runnable sy = () -> {
+                String st = PythonKernel.shared().status();
+                String pyText = cell.running ? "running…" : st == null ? "" : st.length() > 60 ? "" : st;
+                if (!pyText.equals(py.getText())) py.setText(pyText);
+                run.setEnabled(!cell.running);
+                if (shown[0] == cell.version) return;
+                shown[0] = cell.version;
+                if (!ed.getText().equals(cell.text)) {
+                    syncing = true;
+                    try { ed.setText(cell.text); } finally { syncing = false; }
+                    highlight.run();
+                }
+                out.removeAll();
+                PythonKernel.Result r = cell.result;
+                if (r != null) {
+                    if (r.unavailable()) out.add(outText(r.problem(), new Color(62, 28, 28), new Color(255, 201, 201), false, monoF));
+                    if (r.error() != null) out.add(outText(r.error(), new Color(62, 28, 28), new Color(255, 201, 201), true, monoF));
+                    List<Object[]> checks = r.checks();
+                    if (!checks.isEmpty()) {
+                        StringBuilder b = new StringBuilder();
+                        for (Object[] c : checks) b.append(b.length() > 0 ? "\n" : "").append((Boolean) c[0] ? "Passed:  " : "Not yet:  ").append(c[1]);
+                        out.add(outText(b.toString(), r.passed() ? new Color(23, 58, 38) : new Color(58, 44, 20),
+                                r.passed() ? new Color(191, 245, 207) : new Color(255, 222, 170), false, monoF));
+                    }
+                    if (!r.stdout().isBlank()) {
+                        JLabel cap = caption("PRINTED");
+                        cap.setAlignmentX(LEFT_ALIGNMENT);
+                        out.add(Box.createVerticalStrut(6));
+                        out.add(cap);
+                        out.add(outText(r.stdout().stripTrailing(), new Color(11, 15, 27), new Color(200, 210, 228), true, monoF));
+                    }
+                }
+                out.revalidate();
+                out.repaint();
+            };
+            syncers.add(sy);
+            syncing = true; sy.run(); syncing = false;
+            describers.add(() -> "Python code cell (the student's code now):\n" + cell.text.strip()
+                    + "\n  last run: " + cell.summary()
+                    + "\n  a working version (for tutoring only; guide, don't hand it over):\n" + cell.solution.strip());
+        }
+
+        private static JTextArea outText(String text, Color bg, Color fg, boolean mono, Font monoF) {
+            JTextArea a = new JTextArea(text);
+            a.setEditable(false);
+            a.setLineWrap(true);
+            a.setWrapStyleWord(!mono);
+            a.setFont(mono ? monoF.deriveFont(12f) : uiFont(Font.PLAIN, 13f));
+            a.setBackground(bg);
+            a.setForeground(fg);
+            a.setBorder(new EmptyBorder(8, 10, 8, 10));
+            a.setAlignmentX(LEFT_ALIGNMENT);
+            a.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
+            return a;
+        }
+
         void button(String name, Runnable r) {
             describers.add(() -> "button: " + name);
             JButton b = new JButton(name);
@@ -1068,6 +1409,8 @@ public final class LessonStudio extends JPanel {
         void skyNorthUp(boolean on);
         /** Naked-eye limit (NaN = the sky's own), telescope aperture in mm (NaN = none), B−V filter (null = all stars). */
         void skyOptics(double limitMag, double apertureMm, DoublePredicate starFilter);
+        /** Air density relative to the sky's own (1 = normal, 0 = no air); extinction scales with it. */
+        void skyAir(double density);
         /** {alt°, az°, RA h, Dec °, V mag, diameter ″, distance AU, B−V} of a body or named star, or null. */
         double[] skyBody(String name);
         double[] skyBodyAt(String name, double t);
@@ -2830,6 +3173,16 @@ public final class LessonStudio extends JPanel {
             for (int k = 0; k < steps.size(); k++) {
                 goStep(k);
                 for (int fr = 0; fr < 150; fr++) simFrame.accept(1 / 30.0);   // the sim's frame also ticks the lesson
+                // -Dsss.lessonshot.solve=true: fill each code cell with its working version and run it first.
+                if (Boolean.getBoolean("sss.lessonshot.solve") && controls != null && !controls.cells.isEmpty()) {
+                    for (CodeCell c : controls.cells) {
+                        c.text = c.solution;
+                        c.runBlocking();
+                        if (!c.passed()) System.err.println("  L" + (li + 1) + " step " + (k + 1) + " " + c.id + ": " + c.summary());
+                    }
+                    goStep(k);
+                    for (int fr = 0; fr < 30; fr++) simFrame.accept(1 / 30.0);
+                }
                 Step st = steps.get(k);
                 if (st.quiz != null) { st.quiz.solved = true; rebuildQuiz(st); }
                 shot(root, String.format("%s/L%d_step%02d.png", dir, li + 1, k + 1));

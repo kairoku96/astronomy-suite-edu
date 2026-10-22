@@ -22,7 +22,12 @@ final class TelescopeLesson extends LessonKit {
     int band;                              // 0 = V 550 nm, 1 = K 2.2 µm
     int site = 1;                          // 0 = space, 1 = Mississauga, 2 = Mauna Kea, 3 = Mauna Kea + AO
     static final String[] SITES = {"In space", "Mississauga", "Mauna Kea", "Mauna Kea + AO"};
-    static final double[] SEEING = {0, 2.0, 0.55, 0};       // median seeing at 500 nm (″), from the slides
+    static final double[] SEEING = {0, 2.0, 0.55, 0.55};    // median seeing at 500 nm (″) in each site's own air, from the slides
+    /** Each site's air density relative to sea level (the standard atmosphere at 150 m and 4,205 m). */
+    static final double[] SITE_RHO = {0, 0.985, 0.654, 0.654};
+    double rho = SITE_RHO[1];              // air density, × sea level
+    /** Keck-like AO: deformable-mirror actuator spacing (m) and its other wavefront errors (m rms: lag, noise, calibration). */
+    static final double AO_PITCH = 0.5, AO_OTHER = 200e-9;
     double logB = Math.log10(25);          // interferometer baseline, log10(m)
     int wave;                              // 0 = 1 mm, 1 = 21 cm, 2 = 550 nm
     static final String[] WAVES = {"1 mm", "21 cm", "550 nm"};
@@ -51,23 +56,82 @@ final class TelescopeLesson extends LessonKit {
         return new double[]{Math.hypot(dE, dN), Math.toDegrees(Math.atan2(dE, dN)), Math.pow(10, -0.4 * (c[4] - p[4]))};
     }
 
-    /** FWHM (″) of the seeing disc at this wavelength (Kolmogorov turbulence: ∝ λ^−1/5), 0 if none. */
+    /**
+     * FWHM (″) of the seeing disc at this wavelength, 0 with no air. Turbulence mixes warmer and cooler
+     * air, and the refractive index goes as n − 1 ∝ density, so Cn² ∝ ρ² and the Fried length
+     * r₀ ∝ (∫Cn² dh)^−3/5 ∝ ρ^−6/5 λ^6/5. The seeing ≈ 0.98 λ / r₀ then goes as ρ^6/5 λ^−1/5.
+     */
     double seeing() {
-        // Adaptive optics corrects well only in the infrared; in visible light this model leaves the seeing.
-        double s = site == 3 && band == 0 ? SEEING[2] : SEEING[site];
-        return s * Math.pow(lambda() / 500e-9, -0.2);
+        if (site == 0 || rho <= 0) return 0;
+        return SEEING[site] * Math.pow(rho / SITE_RHO[site], 1.2) * Math.pow(lambda() / 500e-9, -0.2);
     }
+    /** Fried length r₀ (m) at this wavelength: the size of a patch of steady air (infinite with none). */
+    double r0() { return 0.98 * lambda() / (seeing() * ARCSEC); }
+    /**
+     * Strehl ratio, the share of the light left in the diffraction-limited core: exp(−σ²) for a wavefront
+     * error σ² (Maréchal). Uncorrected σ² = 1.03 (D/r₀)^5/3 (Noll); AO leaves its fitting error
+     * 0.28 (d/r₀)^5/3 for actuators d apart, plus its other errors. Maréchal holds only while S ≳ 10%
+     * (σ² ≲ 2.3); past that no coherent core survives and the image is all halo, so S is 0.
+     */
+    double strehl() {
+        if (seeing() == 0) return 1;
+        double D = apertureMm() / 1000, r0 = r0();
+        double var = 1.03 * Math.pow(D / r0, 5.0 / 3);
+        if (site == 3)
+            var = Math.min(var, 0.28 * Math.pow(Math.min(D, AO_PITCH) / r0, 5.0 / 3) + sq(2 * Math.PI * AO_OTHER / lambda()));
+        return var > 2.3 ? 0 : Math.exp(-var);
+    }
+    String strehlText() { double S = strehl(); return S == 0 ? "under 10%" : String.format("%.0f%%", 100 * S); }
+    /** λ / D in arcseconds. */
+    double lambdaOverD() { return lambda() / (apertureMm() / 1000) / ARCSEC; }
     /** Rayleigh limit 1.22 λ / D in arcseconds. */
-    double rayleigh() { return 1.22 * lambda() / (apertureMm() / 1000) / ARCSEC; }
-    /** Effective image FWHM (″): diffraction (1.03 λ/D) and seeing added in quadrature. */
-    double fwhm() { return Math.hypot(1.03 * lambda() / (apertureMm() / 1000) / ARCSEC, seeing()); }
-    boolean resolved(double sepArcsec) { return sepArcsec > Math.max(rayleigh(), seeing()); }
+    double rayleigh() { return 1.22 * lambdaOverD(); }
+    /** FWHM (″) of the seeing halo: diffraction (1.03 λ/D) and seeing added in quadrature. */
+    double fwhm() { return Math.hypot(1.03 * lambdaOverD(), seeing()); }
+    /** FWHM (″) of the whole image, core and halo, measured from the PSF. */
+    double imageFwhm() {
+        double half = psf(0) / 2, step = Math.min(lambdaOverD(), fwhm()) / 100;
+        for (double th = step; th < 3 * fwhm(); th += step) if (psf(th) < half) return 2 * th;
+        return fwhm();
+    }
+    /**
+     * Resolved when the brightness between the stars dips to at most 75% of the fainter one's: the
+     * Rayleigh criterion's 26% dip for two equal Airy patterns, applied to whatever image the air leaves.
+     */
+    boolean resolved(double sep, double ratio) {
+        double ax = -0.5 * sep, bx = 0.5 * sep, lo = Double.MAX_VALUE;
+        double fa = psf(0) + ratio * psf(sep), fb = psf(sep) + ratio * psf(0);
+        for (int i = 1; i < 100; i++) {
+            double u = ax + sep * i / 100;
+            lo = Math.min(lo, psf(u - ax) + ratio * psf(bx - u));
+        }
+        return lo <= 0.75 * Math.min(fa, fb);
+    }
 
-    /** One point source's image at angle θ (″) from it: Airy if diffraction-limited, else a seeing Gaussian. */
+    /** One point source's image at angle θ (″) from it, per unit flux: an Airy core holding the Strehl ratio, the rest in a seeing halo. */
     double psf(double th) {
-        if (seeing() == 0) return airy(Math.PI * (apertureMm() / 1000) * th * ARCSEC / lambda());
-        double s = fwhm() / 2.3548;
-        return Math.exp(-0.5 * th * th / (s * s));
+        double ld = lambdaOverD(), S = strehl(), out = 0;
+        if (S > 0) out += S * airy(Math.PI * th / ld) / (4 / Math.PI * ld * ld);
+        if (S < 1) {
+            double s = fwhm() / 2.3548;
+            out += (1 - S) * Math.exp(-0.5 * th * th / (s * s)) / (2 * Math.PI * s * s);
+        }
+        return out;
+    }
+
+    /** Light lost to the air toward Pluto (fraction): V extinction k·X with k ∝ ρ (0.25 mag per air mass in Mississauga). */
+    double airLoss() {
+        double s = Math.sin(Math.toRadians(Math.max(host.skyBody("Pluto")[0], 1)));
+        double X = 1.0 / (s + 0.025 * Math.exp(-11 * s));
+        return 1 - Math.pow(10, -0.4 * 0.25 * rho / SITE_RHO[1] * X);
+    }
+
+    String densityText(double x) {
+        if (x < 0.005) return "0  (no air)";
+        String t = String.format("%.2f× sea level", x);
+        // Height in the standard atmosphere with this density: ρ/ρ₀ = (1 − 2.2558×10⁻⁵ h)^4.2559.
+        if (x < 0.995) return t + String.format("  (%.1f km up)", (1 - Math.pow(x, 1 / 4.2559)) / 2.2558e-5 / 1000);
+        return t;
     }
 
     private BufferedImage img;
@@ -76,7 +140,7 @@ final class TelescopeLesson extends LessonKit {
     void imageInset(Graphics2D g, Rectangle b) {
         double[] pr = pair();
         double sep = pr[0], pa = Math.toRadians(pr[1]), ratio = pr[2];
-        double fieldArc = Math.max(4 * sep, 3 * fwhm());
+        double fieldArc = Math.max(4 * sep, 3 * imageFwhm());
         int N = 120;
         if (img == null) img = new BufferedImage(N, N, BufferedImage.TYPE_INT_RGB);
         double ex = Math.sin(pa), ny = Math.cos(pa);     // companion offset direction (east = left, north = up)
@@ -121,7 +185,7 @@ final class TelescopeLesson extends LessonKit {
         g.draw(new Line2D.Double(x0 + 6, y0 + side + 12, x0 + 6 + barPx, y0 + side + 12));
         g.drawString(angle(bar), (float) (x0 + 10 + barPx), (float) (y0 + side + 16));
         g.setFont(LessonStudio.uiFont(Font.BOLD, 11.5f));
-        boolean res = resolved(sep);
+        boolean res = resolved(sep, ratio);
         g.setColor(res ? GREEN : PERI_C);
         g.drawString(res ? "resolved: two stars" : "not resolved: one blob", x0 + 6, y0 + side + 34);
         g.setColor(DIM);
@@ -262,11 +326,23 @@ final class TelescopeLesson extends LessonKit {
                 (AO) bends a deformable mirror to undo it, restoring the diffraction limit. It works best in
                 the infrared.
 
+                The smear comes from pockets of warmer and cooler air, which bend light by slightly
+                different amounts. Air bends light in proportion to its density ρ, so the same turbulence
+                in denser air blurs more. The {k:Fried length} r₀, the size of a patch of steady air,
+                shrinks as ρ^(−6/5), and the seeing grows as
+
+                $ seeing ≈ 0.98 λ / r₀  ∝  ρ^(6/5)
+
+                A telescope smaller than r₀ hardly notices the air. One much bigger is limited by it,
+                and only a small share of its light, the {k:Strehl ratio}, stays in the sharp core.
+
                 The inset is the image of the real **Pluto and Charon** tonight (never more than 0.9″
                 apart), or of the
                 slides' binary star: two stars 1 AU apart at 10 pc, 0.1″ apart.
 
-                > Change the aperture, wavelength and site. When does the blob split into two?
+                > Change the aperture, wavelength and site. When does the blob split into two? Then thin
+                the air toward 0 (space), or thicken it past sea level, and watch the image and the
+                Strehl ratio.
                 """)
                 .sky("Pluto", () -> new double[]{0, 0, 0.03})
                 .enter(() -> {
@@ -277,12 +353,18 @@ final class TelescopeLesson extends LessonKit {
                     host.skyNorthUp(true);
                     if (logD < 2) logD = 3;
                 })
-                .live(() -> host.skyOptics(6.5, Math.max(apertureMm(), 1500), null))
+                .live(() -> {
+                    host.skyOptics(6.5, Math.max(apertureMm(), 1500), null);
+                    host.skyAir(rho / SITE_RHO[1]);
+                })
                 .controls(c -> {
                     c.choices("Target", new String[]{"Pluto & Charon", "Binary at 10 pc"}, () -> target, k -> target = k);
                     apertureSlider(c);
                     c.choices("Wavelength", new String[]{"V  550 nm", "K  2.2 µm"}, () -> band, k -> band = k);
-                    c.choices("Site", SITES, () -> site, k -> site = k);
+                    c.choices("Site", SITES, () -> site, k -> { site = k; rho = SITE_RHO[k]; });
+                    // Space has no air: thickening it from 0 puts the telescope under Mississauga's.
+                    c.slider("Air density", 0, 2, () -> site == 0 ? 0 : rho, x -> { rho = x; if (site == 0 && x > 0.005) site = 1; },
+                            this::densityText);
                 })
                 .scene((r, hud, t) -> {
                     double[] pr = pair();
@@ -291,10 +373,16 @@ final class TelescopeLesson extends LessonKit {
                     hud.row("separation", angle(pr[0]), SUN_C);
                     hud.row("aperture D  /  wavelength λ", apertureText(apertureMm()) + "  /  " + (band == 0 ? "550 nm" : "2.2 µm"));
                     hud.row("diffraction limit 1.22 λ/D", angle(rayleigh()), ACCENT);
-                    hud.row("seeing at " + SITES[site], site == 0 ? "none (no air)" : seeing() == 0 ? "corrected by AO" : angle(seeing()), ACCENT);
-                    hud.row("image size (FWHM)", angle(fwhm()));
-                    hud.row("verdict", resolved(pr[0]) ? "resolved" : "not resolved", resolved(pr[0]) ? GREEN : PERI_C);
+                    hud.row("air density", densityText(site == 0 ? 0 : rho));
+                    hud.row("seeing at " + SITES[site], seeing() == 0 ? "none (no air)" : angle(seeing()), ACCENT);
+                    if (seeing() > 0) hud.row("Fried length r₀", r0() < 1 ? String.format("%.0f cm", 100 * r0()) : String.format("%.2f m", r0()));
+                    hud.row("light in the sharp core (Strehl)" + (site == 3 ? ", with AO" : ""), strehlText(), ACCENT);
+                    hud.row("image size (FWHM)", angle(imageFwhm()));
+                    hud.row("light lost to the air", String.format("%.0f%%", 100 * (site == 0 ? 0 : airLoss())));
+                    boolean res = resolved(pr[0], pr[2]);
+                    hud.row("verdict", res ? "resolved" : "not resolved", res ? GREEN : PERI_C);
                     hud.formula("θ = 1.22 λ / D");
+                    hud.formula("seeing ∝ ρ^(6/5) λ^(−1/5)");
                     hud.inset("What the telescope delivers", 300, 340, this::imageInset);
                 }));
 
@@ -310,6 +398,7 @@ final class TelescopeLesson extends LessonKit {
                     host.skyLayers(false, false, false, true);
                     host.skyNorthUp(true);
                     target = 1;
+                    rho = SITE_RHO[site];
                 })
                 .live(() -> host.skyOptics(6.5, Math.max(apertureMm(), 1500), null))
                 .controls(c -> {
@@ -326,7 +415,8 @@ final class TelescopeLesson extends LessonKit {
                 .scene((r, hud, t) -> {
                     hud.title("Binary: 0.1″", ACCENT);
                     hud.row("diffraction limit 1.22 λ/D", angle(rayleigh()), ACCENT);
-                    hud.row("seeing", site == 0 ? "none" : seeing() == 0 ? "corrected by AO" : angle(seeing()));
+                    hud.row("seeing", seeing() == 0 ? "none" : angle(seeing()));
+                    if (site == 3) hud.row("light in the sharp core (Strehl), with AO", strehlText());
                     hud.inset("What the telescope delivers", 300, 340, this::imageInset);
                 }));
 

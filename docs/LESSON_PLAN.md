@@ -110,7 +110,7 @@ from the slide problems, so the set also works as term-test practice.
 | 5 | **Weighing the Solar System**: Kepler III, Newton's form, weighing the Sun, Jupiter and Pluto | Beginner → Intermediate | S–M | 7 | Built |
 | 6 | **Luminosity, Flux & Intensity** | Intermediate | — | 4 | Existed |
 | 7 | **Hot Bodies Glow**: Planck and Wien for the Sun, Stefan–Boltzmann, planet temperatures, the M-dwarf what-if | Intermediate | M | 5 | Built |
-| 8 | **Project 1: Blackbody Radiation** (Python project 1): Planck's law as a function, Wien by argmax, Bλ vs Bν, real SDSS spectra, distance from π(R/d)² | Intermediate | M | 5 | Built |
+| 8 | **Project 1: Blackbody Radiation** (Python project 1, coded in the sim): Planck's law for the Sun, a sunspot, Wien by argmax and across the planets, Bλ vs Bν, sunlight at every planet | Intermediate | L | 4, 5 | Built |
 | 9 | **How Bright?**: magnitudes, Vega, absolute magnitude, the Sun moved to 10 pc, B−V colour | Beginner → Intermediate | S | 6 | Built |
 | 10 | **Measuring Distance**: parallax from Earth's orbit, parsec, proper-motion spiral, Gaia's reach | Intermediate | M | 7 | Built |
 | 11 | **The Sun Wobbles Too**: centre of mass, astrometric wobble, radial-velocity curve, sin i, transits, binary-star masses | Advanced | M | 7, 8 | Built |
@@ -127,8 +127,10 @@ from the slide problems, so the set also works as term-test practice.
 ### What changed while building
 
 - **Seeing and adaptive optics** went into Telescope Power after all, as an image simulator
-  (Airy pattern, or a seeing disc that scales as λ^−1/5) of the real Pluto–Charon pair; AO
-  is treated as correcting only in the infrared.
+  of the real Pluto–Charon pair: an Airy core holding the Strehl ratio exp(−σ²) and a seeing halo
+  (∝ λ^−1/5). An air-density slider scales the turbulence (Cn² ∝ ρ², so r₀ ∝ ρ^−6/5 and the seeing
+  ∝ ρ^6/5) and the extinction (∝ ρ). AO leaves its fitting error 0.28 (d/r₀)^5/3 for 0.5 m actuator
+  spacing plus 200 nm of other errors, so it works in K (Strehl ≈ 0.67 on Mauna Kea) and not in V.
 - **The Bohr model** got a short step in How Bright?, with an energy-level diagram beside
   Vega (the strongest Balmer lines), rather than a full lesson.
 - **Spectral classes** come from each star's B − V colour, since the catalogue has no
@@ -136,10 +138,12 @@ from the slide problems, so the set also works as term-test practice.
 - **Parallax** uses catalogued parallaxes and proper motions for five named stars, with
   Earth's position from the simulation.
 - **Starlink** and **filter integration** stay out, as planned.
-- **Python Project 1** (blackbody radiation) became lesson 8. It follows the notebook's five
-  tasks and reads the same eight SDSS spectra, so **F_λ vs F_ν** is taught after all, as its
-  Task 3. The spectra turned out to be stars of the open cluster M67 (the HD names are SDSS's
-  ELODIE template matches), which gives the intensity-vs-flux step a distance to check.
+- **Python Project 1** (blackbody radiation) became lesson 8, a coding lesson. Students fill in
+  real Python cells inside the sim (run by the Python on their computer, with numpy and astropy),
+  and each task is about the solar system: light time from the live Earth–Sun distance, Planck's
+  law for the Sun, a sunspot, the Sun's peak by argmax and Wien's law, Wien across the planets,
+  B_λ vs B_ν (so **F_λ vs F_ν** is taught after all), and the sunlight reaching Earth and every
+  planet today. The notebook's SDSS stars were dropped in favour of the Sun.
 
 - **Steps beyond the slides are hidden by default:** the seasons check (lesson 4), planet
   equilibrium temperatures, albedo and habitable zones (three steps of lesson 7), planets'

@@ -38,6 +38,10 @@ are within about 1 km of NASA's.
   *above* the project root); override with `-PjoglDir=…` / `-PgluegenDir=…`.
 - FlatLaf is fetched automatically (from Maven Central) by the Gradle build; a
   bundled copy is also in `libs/` for the PowerShell script.
+- **Python 3 with numpy and astropy**, only for the coding lesson (Project 1): its code cells run
+  on the computer's own Python (`py -3`, `python` or `python3`, or `-Dsss.python=<path>`).
+  Install the packages with `python -m pip install numpy astropy`. Without them the rest of the
+  app works and the cells say what is missing.
 
 ## Running
 
@@ -83,6 +87,13 @@ underlined letter opens a menu.
 ## Lesson Studio
 
 Open **Education → Lessons...** (or pick a lesson directly from the Education menu).
+
+The lessons come in **course bundles**: pick **AST101** (*Exploring the Solar System*) or **AST221**
+(*Astrophysics I*) at the top of the lesson list, or from the course submenus of the Education menu. A
+bundle has its own lessons in its own order, and keeps only the steps that match that course's slides.
+AST101 uses ten of the lessons, without the steps that need RA/Dec, magnitudes, solid angle or
+integrals; `docs/LESSON_PLAN_AST101.md` maps it to the AST101 slides and lists the topics still without
+a lesson. The app remembers the last course you picked.
 Lessons run on the live simulation. A lesson panel docks on the right, and each
 step reconfigures the real solar system to demonstrate its idea: it shows only the
 bodies it needs, sets the clock (and sometimes the date), flies the camera there,
@@ -94,7 +105,7 @@ double-click returns to the step's view). The panel holds the narration, sliders
 and "check yourself" questions. **Esc** or **← Lessons** restores the simulation
 exactly as you left it: visibility, date, time speed and camera.
 
-The twelve lessons follow the first half of a first astrophysics course (UTM's AST221,
+The AST221 bundle's twelve lessons follow the first half of a first astrophysics course (UTM's AST221,
 Days 2–8, plus its first Python project and a rehearsal of its Titan final project); `docs/LESSON_PLAN.md` maps each
 course topic to a lesson and rates how well it fits a solar-system simulation. Steps that go beyond those slides are hidden by default (marked † below): the seasons
 check, planet temperatures and habitable zones, planets' changing brightness, and aliasing.
@@ -104,12 +115,12 @@ Start with `-Dsss.lessons.all=true` to show them too.
 | - | ----- | ------ | ----------- |
 | 1 | Beginner | **Reading the Sky** | On the real sky over the UTM campus (Sept 21, 2026): altitude and azimuth, the celestial pole at your latitude (try other places), RA / Dec, sidereal time and hour angle, and planning an observation of the real Saturn near opposition (rise, transit, set, 90° − \|φ − δ\|). |
 | 2 | Beginner | **How Big Does It Look?** | The 2024 total eclipse over Niagara Falls (Sun and Moon both ~0.53°), the thin wedge θ = D/d makes at the Moon, the Sun's solid angle from every planet, and Jupiter's 47″ disc through a tracking telescope. |
-| 3 | Intermediate | **Telescope Power** | Open the aperture and watch Neptune and then Triton appear (m = 5 + 5 log D/7 mm); see the image a telescope really delivers of the real Pluto–Charon pair (Airy pattern, seeing in Mississauga or on Mauna Kea, adaptive optics); build an Earth-sized interferometer. |
+| 3 | Intermediate | **Telescope Power** | Open the aperture and watch Neptune and then Triton appear (m = 5 + 5 log D/7 mm); see the image a telescope really delivers of the real Pluto–Charon pair (Airy pattern, seeing in Mississauga or on Mauna Kea, adaptive optics), and thin or thicken the air with a density slider (seeing ∝ ρ^6/5, the Fried length and Strehl ratio, light lost to extinction); build an Earth-sized interferometer. |
 | 4 | Beginner | **Orbits That Stretch** | Watch the real inner planets, stretch a what-if orbit beside Earth's (both foci, d₁ + d₂ = 2a), follow the real Mercury through perihelion q = a(1−e) and aphelion Q = a(1+e) with equal-time wedges (Kepler's 2nd law), then fly to Venus, Earth, Mars, Pluto and Halley's Comet (plus a seasons check†). |
 | 5 | Intermediate | **Weighing the Solar System** | P² = a³ on the eight planets with their measured periods, weigh the Sun from Earth's year, Jupiter from the traced orbits of its four moons (1.90 × 10²⁷ kg), and Pluto + Charon from their real dance about a barycentre outside Pluto. |
 | 6 | Intermediate | **Luminosity, Flux & Intensity** | With every planet hidden, wrap the real Sun in a Gaussian bubble and count light packets crossing it (always L, for any size or shape), watch one bundle of light spread over 1, 4, 9 tiles (inverse-square law), build 4πr² as a Riemann sum of r² sinθ Δθ Δφ patches, see why a star's surface brightness (intensity) doesn't change with distance, and integrate F = ∫ I cosθ dΩ = πI (R/d)². |
 | 7 | Intermediate | **Hot Bodies Glow** | Planck curves and Wien's law for the Sun, a what-if star beside it (Stefan–Boltzmann), each planet's equilibrium temperature from its live distance against the measured one†, Mars between perihelion and aphelion†, and the Earth-like zone around an M dwarf†. |
-| 8 | Intermediate | **Project 1: Blackbody Radiation** | The AST221 Python project, step by step: write Planck's law (and catch the notebook's misplaced-parenthesis bug), measure Wien's law with argmax on a wavelength grid, compare the peaks of Bλ and Bν, lay blackbodies over eight real SDSS spectra (read from the original FITS files), and turn the scale factor π(R/d)² into the stars' distance, checked against the cluster M67 they belong to. |
+| 8 | Intermediate | **Project 1: Blackbody Radiation** | A coding lesson: the AST221 Python project rewritten around the Sun, with fill-in-the-blank Python cells that run inside the sim and draw their results into the scene. Time sunlight's trip from the live Earth–Sun distance, code Planck's law for the Sun (the checks catch the notebook's misplaced-parenthesis bug), see why sunspots look dark, find the Sun's peak with argmax and Wien's law, loop Wien's law over the planets, compare Bλ with Bν, and compute the sunlight reaching Earth and every planet today. |
 | 9 | Intermediate | **How Bright?** | Magnitudes on the real winter sky (with light pollution), Vega as the zero point, Mars brightening toward its Feb 2027 opposition†, absolute magnitude, B − V colour, the naked-eye stars filtered by spectral class, and the Bohr atom's Balmer lines. |
 | 10 | Intermediate | **Measuring Distance** | Earth's real orbit as the baseline: the true-scale parallactic ellipses of α Centauri, Barnard's Star, 61 Cygni, Sirius and Vega, the parsec, three years of proper motion plus parallax, and how far Hipparcos and Gaia reach. |
 | 11 | Advanced | **The Sun Wobbles Too** | The Sun's real path about the barycentre from the N-body integration, seen astrometrically from 10 pc; its radial-velocity curve at any inclination and Jupiter's minimum mass from it; real transits of Jupiter and Earth with their light curves; binary-star mass checks. |
@@ -127,9 +138,9 @@ directions projected the way the planetarium projects the sky, and a telescope s
 view tracks its target like a clock drive. Shared helpers for the lessons in their own
 files (`*Lesson.java`) are in `LessonKit.java`.
 
-Developer flags: `-Dsss.lesson=N` starts lesson N at start-up (0 = just open the lesson list);
+Developer flags: `-Dsss.course=AST101` picks the course bundle (default AST221) for the flags below; `-Dsss.lesson=N` starts lesson N of it at start-up (0 = just open the lesson list);
 `-Dsss.lessonshot=<dir>` renders every step of every lesson to PNGs head-less and exits
-(add `-Dsss.lessonshot.only=3,5` for just those lessons);
+(add `-Dsss.lessonshot.only=3,5` for just those lessons, and `-Dsss.lessonshot.solve=true` to fill and run each code cell first);
 `-Dsss.missionshot=<dir>[,id…]` renders every timeline event of the missions (e.g.
 `out/m,apollo11`) head-less and exits.
 
@@ -674,7 +685,8 @@ src/Astro.java                   time scales (ΔT), precession, nutation, sidere
 src/StarCatalog.java             Yale Bright Star Catalogue, constellations, Milky Way map
 src/SkyView.java                 Sky from Earth: the planetarium view
 src/LessonStudio.java            lessons: docked panel, 3-D stage, software 3-D renderer
-src/SdssSpectra.java             SDSS spectra for the Project 1 lesson (a small FITS table reader)
+src/PythonKernel.java            the Python process behind lesson code cells (harness, checks, JSON)
+src/CodeCell.java                one fill-in-the-blank Python cell of a lesson step
 src/GLSphereRenderer.java        GPU sphere shader for textured planets
 src/tools/ScreenGrab.java        screenshot helper
 src/tools/FetchMissions.java     downloads + compresses spacecraft tracks from JPL Horizons
@@ -683,7 +695,6 @@ assets/textures/                 planet / moon / sun texture maps
 assets/sky/                      star catalogue, constellation data, Milky Way map
 assets/moon/                     the ELP/MPP02 lunar series (35 901 terms)
 assets/missions/                 spacecraft tracks (*.trk.gz)
-assets/spectra/                  eight SDSS stellar spectra of M67 stars (spec-*.fits.gz)
 libs/                            bundled FlatLaf look-and-feel
 build.gradle / settings.gradle   Gradle build (./gradlew run)
 run2d.ps1                        Windows build + launch script
