@@ -214,12 +214,14 @@ public final class LessonStudio extends JPanel {
                                     "Watch the Moon exactly cover the Sun over Niagara Falls, measure the sky with your hand, "
                                   + "see why some eclipses are total and others annular, and zoom from the naked eye to a "
                                   + "telescope to find Jupiter's tiny disc."),
-                            new Entry(SKY, new Titled("Altitude and azimuth", "The pole star sits at your latitude"),               // Day 5
+                            new Entry(SKY, new Titled("Altitude and azimuth", "The pole star sits at your latitude",                // Day 5
+                                    "Check: reading altitude and azimuth", "Check: the pole star in Reykjavík"),
                                     null, "Altitude, azimuth and the celestial pole",
                                     "Stand on the UTM campus under the real evening sky, find things by altitude and azimuth, "
                                   + "and see that the celestial pole's altitude is your latitude (try other places)."),
                             new Entry(ORBITS, ALL_STEPS),                                                                           // Days 6, 9–11
-                            new Entry(PARALLAX, new Titled("Parallax: Earth's orbit as a baseline"),                                 // Day 9
+                            new Entry(PARALLAX, new Titled("Parallax: Earth's orbit as a baseline",                                  // Day 9
+                                    "Check: a star twice as far", "Check: why Tycho saw no shift"),
                                     "Stellar Parallax", "The shift Tycho looked for",
                                     "Watch nearby stars shift as the real Earth goes around the Sun: the parallax that Tycho "
                                   + "searched for and could not see, and why it is so small."),
@@ -237,7 +239,8 @@ public final class LessonStudio extends JPanel {
                                     "The Sun as a blackbody, why hotter means bluer and brighter, each planet's temperature "
                                   + "from its live distance and albedo, Mars between perihelion and aphelion, and the "
                                   + "Earth-like zone around a cooler star."),
-                            new Entry(MAGNITUDE, new Titled("Where absorption lines come from"),                                     // Day 14
+                            new Entry(MAGNITUDE, new Titled("Where absorption lines come from", "Check: why only certain colours?",    // Day 14
+                                    "Check: a fingerprint", "Check: the strongest hydrogen lines"),
                                     "Spectral Lines", "Fingerprints of the elements",
                                     "Electrons jumping between the energy levels of hydrogen make the dark Balmer lines in "
                                   + "Vega's spectrum, at the same wavelengths hot hydrogen glows."),

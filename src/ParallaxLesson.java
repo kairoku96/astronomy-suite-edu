@@ -296,6 +296,44 @@ final class ParallaxLesson extends LessonKit {
                     hud.inset("True scale, one year", 230, 230, (g, b) -> ellipseInset(g, b, 0.9, true));
                 }));
 
+        s.add(step("Check: a star twice as far", """
+                α Centauri A, 4.4 light-years away, shifts **0.75″** either way over a year. Picture a
+                second star exactly **twice as far** away, 8.7 light-years.
+                """)
+                .only("AST101")
+                .unit(AU)
+                .cam(() -> camGoal)
+                .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(15 * DAY); star = 0; frame(); sample(); })
+                .quiz("How big is the second star's shift?", 2,
+                      "Twice as far, half the shift: 0.75″ / 2 ≈ 0.37″. The same 300-million-km baseline looks half "
+                    + "as wide from twice as far away. (Sirius, at 8.6 light-years, really does shift 0.38″.)",
+                      "1.5″", "0.75″", "About 0.37″", "About 0.19″")
+                .scene((r, hud, t) -> {
+                    draw3d(r, true);
+                    hud.inset("α Centauri A, true scale", 230, 230, (g, b) -> ellipseInset(g, b, 0.9, true));
+                }));
+
+        s.add(step("Check: why Tycho saw no shift", """
+                Tycho Brahe measured star positions to about 1 arcminute (60″) and found no yearly
+                shift at all.
+                """)
+                .only("AST101")
+                .unit(AU)
+                .cam(() -> camGoal)
+                .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(15 * DAY); star = 0; frame(); sample(); })
+                .quiz("What does the missing shift really tell us?", 1,
+                      "Tycho took it to mean that Earth stands still. But Earth does move: even the nearest star's shift is "
+                    + "0.75″, 80 times smaller than he could measure, because the stars are far more distant than anyone "
+                    + "then imagined. The shift was finally measured in 1838, by telescope.",
+                      "Earth doesn't move around the Sun", "The stars are much farther away than Tycho thought",
+                      "The stars move along with Earth", "Parallax only works for planets")
+                .scene((r, hud, t) -> {
+                    draw3d(r, true);
+                    hud.title("The numbers", PINK);
+                    hud.row("Tycho could measure", "about 60″");
+                    hud.row("the nearest star's shift", "0.75″", PINK);
+                }));
+
         s.add(step("The parsec", """
                 Parallax defines astronomy's unit of distance. A star whose parallax is **1
                 arcsecond** is 1 {k:parsec} (parallax-second) away: the distance at which 1 AU

@@ -104,11 +104,19 @@ abstract class LessonKit {
     }
     /** Signed number with a real minus sign. */
     static String signed(String fmt, double x) { return String.format(fmt, x).replace('-', '−'); }
-    /** About four significant figures, with thousands separators: 0.05801, 1.000, 140.7, 27,205. */
-    static String sig(double x) {
-        double m = Math.abs(x);
-        return m >= 1000 ? String.format("%,.0f", x) : m >= 100 ? String.format("%.1f", x)
-                : m >= 10 ? String.format("%.2f", x) : m >= 1 ? String.format("%.3f", x) : String.format("%.4f", x);
+    /**
+     * Four significant figures, with thousands separators: 0.05801, 1.000, 140.7, 27,205. The digits
+     * are chosen after rounding, so a value hovering at a power of ten (Earth's a = 0.99998 … 1.00002)
+     * always reads 1.000 rather than flipping between 1.000 and 1.0000.
+     */
+    static String sig(double x) { return sig(x, x); }
+    /** {@code x} with the decimals four significant figures of {@code ref} would get: a live value stays put. */
+    static String sig(double x, double ref) {
+        double m = Math.abs(ref);
+        if (m == 0) return "0.000";
+        int d = Math.max(0, 3 - (int) Math.floor(Math.log10(m)));
+        if (d > 0 && Math.round(m * Math.pow(10, d)) >= 10000) d--;      // rounds up into the next decade
+        return d == 0 ? String.format("%,.0f", x) : String.format("%." + d + "f", x);
     }
 
     // ------------------------------------------------------------------ the sky (east-north-up directions)

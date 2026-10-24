@@ -181,6 +181,61 @@ final class SkyLesson extends LessonKit {
                     hud.formula("altitude of the celestial pole = observer's latitude");
                 }));
 
+        // AST101 checks: the course stops before RA, Dec and sidereal time, so these test the two steps it keeps.
+        s.add(step("Check: reading altitude and azimuth", """
+                Same evening on the UTM campus, facing west. A bright planet hangs **due west**,
+                exactly **halfway** up from the horizon to the zenith.
+                """)
+                .only("AST101")
+                .sky(() -> view)
+                .enter(() -> {
+                    atUtm(); evening(); host.setTime(0);
+                    host.skyLayers(true, false, true, true);
+                    view = new double[]{270, 35, 110};
+                })
+                .quiz("What are the planet's altitude and azimuth?", 0,
+                      "Altitude is measured up from the horizon, so halfway to the zenith (90°) is 45°. Azimuth goes "
+                    + "around from north through east: N 0°, E 90°, S 180°, W 270°. So altitude 45°, azimuth 270°.",
+                      "Altitude 45°, azimuth 270°", "Altitude 270°, azimuth 45°",
+                      "Altitude 45°, azimuth 90°", "Altitude 90°, azimuth 270°")
+                .scene((r, hud, t) -> {
+                    double[] w0 = enu(270, 0), z = v(0, 0, 1);
+                    arc(r, w0, z, alpha(INK, 150), 1.6f, true);
+                    r.label(w0, "W", INK, 13f, 0, 18);
+                    r.label(z, "zenith", INK, 12f, 0, -14);
+                    r.dot(z, 4, INK);
+                    r.ring(enu(270, 45), 11, SUN_C, 2f);
+                    r.label(enu(270, 45), "the planet", SUN_C, 12.5f, 0, -22);
+                    hud.title("Facing west", ACCENT);
+                    placeRows(hud);
+                }));
+
+        s.add(step("Check: the pole star in Reykjavík", """
+                From Mississauga, at latitude **43.5° N**, the north celestial pole (next to Polaris)
+                stands 43.5° above the northern horizon. Now you fly to Reykjavík, Iceland, at
+                latitude **64° N**.
+                """)
+                .only("AST101")
+                .sky(() -> view)
+                .enter(() -> {
+                    setPlace(0); nightAtPlace(); host.setTime(0);
+                    host.skyLayers(true, false, true, true);
+                    view = new double[]{0, 40, 110};
+                })
+                .quiz("How high above the northern horizon is the pole in Reykjavík?", 1,
+                      "The altitude of the celestial pole always equals your latitude, so in Reykjavík it is 64° up: "
+                    + "higher than in Mississauga, and more stars are circumpolar. Keep going north and it climbs to "
+                    + "90°, straight overhead at the North Pole.",
+                      "43.5°, the same as in Mississauga", "About 64°", "About 26° (90° − 64°)", "Straight overhead, 90°")
+                .scene((r, hud, t) -> {
+                    double[] ncp = host.skyEnuRaDec(0, 90);
+                    arc(r, enu(0, 0), ncp, PERI_C, 3f, false);
+                    r.ring(ncp, 9, SUN_C, 2.2f);
+                    r.label(ncp, "north celestial pole: 43.5° up in Mississauga", SUN_C, 12.5f, 0, -22);
+                    hud.title("The celestial pole", ACCENT);
+                    placeRows(hud);
+                }));
+
         s.add(step("Right ascension and declination", """
                 Altitude and azimuth change all night and depend on where you stand. Astronomers
                 also need a grid fixed to the **stars**: Earth's latitude and longitude, projected

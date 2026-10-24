@@ -101,8 +101,9 @@ final class WeighLesson extends LessonKit {
                     hud.row("planet   a (AU)   P (yr)", "a³          P²          a³ / P²", DIM);
                     for (int i = 0; i < 8; i++) {
                         double a = host.planetA(host.planet(PLANETS[i])) / AU, a3 = a * a * a, p2 = P_YR[i] * P_YR[i];
-                        hud.row(String.format("%s   %s   %s", PLANETS[i], sig(a), sig(P_YR[i])),
-                                String.format("%s   %s   %.3f", sig(a3), sig(p2), a3 / p2));
+                        // Digits come from the measured period, so the live a never flickers between 1.000 and 0.9999.
+                        hud.row(String.format("%s   %s   %s", PLANETS[i], sig(a, Math.cbrt(p2)), sig(P_YR[i])),
+                                String.format("%s   %s   %.3f", sig(a3, p2), sig(p2), a3 / p2));
                     }
                     hud.formula("P² = a³   (P in years, a in AU)");
                     hud.inset("Period vs distance (log-log)", 250, 210, (g, b) -> {
