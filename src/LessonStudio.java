@@ -119,8 +119,14 @@ public final class LessonStudio extends JPanel {
         boolean beyondSlides;
         /** The one course that shows this step (its own version of a shared step), or null for all. */
         String course;
+        /** The point (scene units; east-north-up on sky steps) the hint is about: it pulses as the step opens. */
+        Supplier<double[]> watch;
+        /** For a check: the title of the step it reviews, offered as a link back. */
+        String reviews;
         Step(String title, String html) { this.title = title; this.html = html; }
         Step only(String courseCode) { course = courseCode; return this; }
+        Step watch(Supplier<double[]> p) { watch = p; return this; }
+        Step reviews(String stepTitle) { reviews = stepTitle; return this; }
         Step cam(Supplier<double[]> s) { cam = s; return this; }
         Step cam(String body, Supplier<double[]> s) { follow = body; cam = s; return this; }
         Step sky(Supplier<double[]> view) { sky = true; skyCam = view; return this; }
@@ -170,7 +176,8 @@ public final class LessonStudio extends JPanel {
 
     /** Catalogue positions of the lessons in {@link #buildLessons}. */
     static final int SKY = 0, ANGULAR = 1, TELESCOPE = 2, ORBITS = 3, WEIGH = 4, LIGHT = 5, BLACKBODY = 6,
-            PROJECT1 = 7, MAGNITUDE = 8, PARALLAX = 9, WOBBLE = 10, TITAN = 11;
+            PROJECT1 = 7, MAGNITUDE = 8, PARALLAX = 9, WOBBLE = 10, TITAN = 11,
+            MOON = 12, RETROGRADE = 13, SCALE = 14, JUPITER_MOONS = 15, KIRKWOOD = 16;
 
     /** Every lesson with all of its steps; courses pick from these. */
     static List<LessonDef> buildLessons(Host host) {
@@ -186,7 +193,12 @@ public final class LessonStudio extends JPanel {
                 new MagnitudeLesson(host).build(),
                 new ParallaxLesson(host).build(),
                 new WobbleLesson(host).build(),
-                new TitanLesson(host).build());
+                new TitanLesson(host).build(),
+                new MoonLesson(host).build(),
+                new RetrogradeLesson(host).build(),
+                new ScaleLesson(host).build(),
+                new JupiterMoonsLesson(host).build(),
+                new KirkwoodLesson(host).build());
     }
 
     /** One lesson of a course: which catalogue lesson, the steps it keeps, and an optional new title, subtitle and blurb. */
@@ -214,12 +226,15 @@ public final class LessonStudio extends JPanel {
                                     "Watch the Moon exactly cover the Sun over Niagara Falls, measure the sky with your hand, "
                                   + "see why some eclipses are total and others annular, and zoom from the naked eye to a "
                                   + "telescope to find Jupiter's tiny disc."),
+                            new Entry(SCALE, ALL_STEPS),                                                                            // Days 3–4
                             new Entry(SKY, new Titled("Altitude and azimuth", "The pole star sits at your latitude",                // Day 5
                                     "Check: reading altitude and azimuth", "Check: the pole star in Reykjavík"),
                                     null, "Altitude, azimuth and the celestial pole",
                                     "Stand on the UTM campus under the real evening sky, find things by altitude and azimuth, "
                                   + "and see that the celestial pole's altitude is your latitude (try other places)."),
+                            new Entry(MOON, ALL_STEPS),                                                                             // Day 7
                             new Entry(ORBITS, ALL_STEPS),                                                                           // Days 6, 9–11
+                            new Entry(RETROGRADE, ALL_STEPS),                                                                       // Day 9
                             new Entry(PARALLAX, new Titled("Parallax: Earth's orbit as a baseline",                                  // Day 9
                                     "Check: a star twice as far", "Check: why Tycho saw no shift"),
                                     "Stellar Parallax", "The shift Tycho looked for",
@@ -250,6 +265,8 @@ public final class LessonStudio extends JPanel {
                                     "Open up a telescope's mirror until Neptune appears, see the image a telescope really "
                                   + "delivers of Pluto and Charon from space, Mississauga or Mauna Kea, and thin or thicken "
                                   + "the air to watch the seeing change."),
+                            new Entry(JUPITER_MOONS, ALL_STEPS),                                                                    // Days 25–27
+                            new Entry(KIRKWOOD, ALL_STEPS),                                                                         // Day 28
                             new Entry(WOBBLE, new Titled("The Sun orbits too", "Radial velocity: the Doppler wobble",                 // Days 11, 30–31
                                     "Transits and eclipses", "Check: which star is heavier?"),
                                     null, "Finding exoplanets: radial velocity and transits",
@@ -579,6 +596,24 @@ public final class LessonStudio extends JPanel {
             fb.setMarkup(q.solved ? "**Correct!** " + q.explain
                                   : "**Not quite.** Look at the scene again and try another answer.");
             quizBox.add(fb);
+        }
+        // "Reviews step 3: …", a link back to the step this check is about (when this course has it).
+        int back = -1;
+        for (int k = 0; s.reviews != null && k < lesson.steps.size(); k++) if (lesson.steps.get(k).title.equals(s.reviews)) back = k;
+        if (back >= 0) {
+            final int target = back;
+            JLabel link = new JLabel("<html>Reviews step " + (back + 1) + ": " + s.reviews + "&nbsp;&nbsp;<u>go back</u></html>");
+            link.setFont(uiFont(Font.PLAIN, 12f));
+            link.setForeground(DIM);
+            link.setAlignmentX(LEFT_ALIGNMENT);
+            link.setBorder(new EmptyBorder(8, 2, 0, 0));
+            link.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            link.addMouseListener(new MouseAdapter() {
+                @Override public void mouseClicked(MouseEvent e) { goStep(target); }
+                @Override public void mouseEntered(MouseEvent e) { link.setForeground(ACCENT); }
+                @Override public void mouseExited(MouseEvent e) { link.setForeground(DIM); }
+            });
+            quizBox.add(link);
         }
     }
 
@@ -1207,6 +1242,7 @@ public final class LessonStudio extends JPanel {
             box.add(Box.createVerticalStrut(10));
             syncers.add(() -> {
                 int k = get.getAsInt();
+                if (k < 0 || k >= bs.length) { if (bg.getSelection() != null) bg.clearSelection(); return; }   // none of them
                 for (int i = 0; i < bs.length; i++) if (bs[i].isSelected() != (i == k)) bs[i].setSelected(i == k);
             });
             describers.add(() -> {
@@ -1500,6 +1536,19 @@ public final class LessonStudio extends JPanel {
         }
         void reaim() { lastGoal = null; }
 
+        /** Three rings swelling out from the step's {@link Step#watch} point as the step opens. */
+        private void pulseWatch(Step s) {
+            if (s.watch == null) return;
+            double age = simT - stepShownT;
+            if (age > 3.4) return;
+            double[] p = s.watch.get();
+            if (p == null) return;
+            for (int k = 0; k < 3; k++) {
+                double f = (age - 0.25 - 0.9 * k) / 1.3;
+                if (f > 0 && f < 1) r3.ring(p, 10 + 48 * f, alpha(SUN_C, (int) (235 * (1 - f))), 2.6f * (float) (1 - 0.5 * f));
+            }
+        }
+
         /** Sky steps: scene points are east-north-up directions, projected as the planetarium draws them. */
         private final R3.Projector skyProj = new R3.Projector() {
             private final double[] d = new double[3];
@@ -1533,6 +1582,7 @@ public final class LessonStudio extends JPanel {
             if (sun != null) r3.occluder(sun[0], sun[1], sun[2], sun[3] / u);
             hud.clear();
             if (s.scene != null) s.scene.draw(r3, hud, simT);
+            pulseWatch(s);
             r3.render(g);
             hud.paint(g, w, h);
             g.dispose();
@@ -2294,6 +2344,7 @@ public final class LessonStudio extends JPanel {
                 Watch the distance readout as the real Mercury swings in. Slow time down to catch it at
                 perihelion.
                 """)
+                .watch(() -> mercury.at(0))
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Mercury"); host.setOrbits(true, true); timeFor(mercury, 14); })
                 .cam(frame(mercury, 32, 0))
@@ -2320,6 +2371,7 @@ public final class LessonStudio extends JPanel {
                 So perihelion and aphelion tell you everything about the orbit's size and shape:
                 **a = (q + Q) / 2** and **e = (Q − q) / (Q + q)**. For Mercury, Q is about 1.5 times q.
                 """)
+                .watch(() -> mercury.at(Math.PI))
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Mercury"); host.setOrbits(true, true); timeFor(mercury, 14); })
                 .cam(frame(mercury, 38, 180))
@@ -2351,6 +2403,7 @@ public final class LessonStudio extends JPanel {
                 > Drag "Mercury's day" to walk it around the orbit yourself: every wedge is the same
                 5.5 days, but near the Sun those days carry it much farther.
                 """)
+                .watch(() -> mercury.now())
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Mercury"); host.setOrbits(true, true); timeFor(mercury, 16); })
                 .cam(frame(mercury, 20, 0))
@@ -2401,6 +2454,7 @@ public final class LessonStudio extends JPanel {
             s.add(new Step("Check: where is it fastest?", """
                 Mercury again, with its equal-time dots.
                 """)
+                .reviews("Fast near the Sun, slow far away")
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Mercury"); host.setOrbits(true, true); timeFor(mercury, 16); })
                 .cam(frame(mercury, 20, 0))
@@ -2418,6 +2472,7 @@ public final class LessonStudio extends JPanel {
                 The violet path is a comet's orbit, with semi-major axis **a = 10 AU** and eccentricity
                 **e = 0.9**. Earth is shown on its real orbit.
                 """)
+                .reviews("Perihelion: Mercury's closest point")
                 .unit(AUm)
                 .enter(() -> {
                     host.showOnly(null, "Earth", "Jupiter", "Saturn"); host.setOrbits(true, true);
@@ -2438,6 +2493,7 @@ public final class LessonStudio extends JPanel {
             s.add(new Step("Check: distance and the seasons", """
                 The simulation is set to **January 3, 2026**. Here is Earth on its real orbit that day.
                 """)
+                .reviews("Real orbits in our Solar System")
                 .beyondSlides()                 // seasons aren't in the AST221 slides
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.goToDate(2026, 1, 3); host.setTime(0); })
@@ -2922,6 +2978,7 @@ public final class LessonStudio extends JPanel {
             s.add(new Step("Check: moving Earth out", """
                 Earth receives F = 1361 W/m² from the Sun at 1 AU.
                 """)
+                .reviews("Flux: the same light, spread thinner")
                 .unit(UNIT_M)
                 .enter(() -> { sunOnly(UNIT_M); setMode(BUNDLE, 48); detAU = 2; })
                 .cam(() -> around(1.7, 2.0, 68, 18))
@@ -2934,6 +2991,7 @@ public final class LessonStudio extends JPanel {
             s.add(new Step("Check: a bigger bubble", """
                 This Gaussian bubble is 3 solar radii across. Now imagine doubling its radius.
                 """)
+                .reviews("Wrap it in a Gaussian bubble")
                 .unit(R_SUN)
                 .enter(() -> { sunOnly(R_SUN); setMode(ISO, 60); bubbleRs = 3; lumpy = false; })
                 .cam(() -> nearSun(0, 7, 58, 25))

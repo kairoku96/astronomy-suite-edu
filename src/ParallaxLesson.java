@@ -235,6 +235,7 @@ final class ParallaxLesson extends LessonKit {
                 so you can see the effect. The inset is the real thing, at true scale: an ellipse
                 only **1.5″** across, p = 0.75″ either side of the star's average position.
                 """)
+                .watch(() -> scaleV(unitWorld(star), D_VIS))
                 .only("AST221")
                 .unit(AU)
                 .cam(() -> camGoal)
@@ -273,6 +274,7 @@ final class ParallaxLesson extends LessonKit {
                 effect. The inset is the real loop at true scale. Pick farther stars: their loops
                 shrink.
                 """)
+                .watch(() -> scaleV(unitWorld(star), D_VIS))
                 .only("AST101")
                 .unit(AU)
                 .cam(() -> camGoal)
@@ -300,6 +302,7 @@ final class ParallaxLesson extends LessonKit {
                 α Centauri A, 4.4 light-years away, shifts **0.75″** either way over a year. Picture a
                 second star exactly **twice as far** away, 8.7 light-years.
                 """)
+                .reviews("Parallax: Earth's orbit as a baseline")
                 .only("AST101")
                 .unit(AU)
                 .cam(() -> camGoal)
@@ -317,6 +320,7 @@ final class ParallaxLesson extends LessonKit {
                 Tycho Brahe measured star positions to about 1 arcminute (60″) and found no yearly
                 shift at all.
                 """)
+                .reviews("Parallax: Earth's orbit as a baseline")
                 .only("AST101")
                 .unit(AU)
                 .cam(() -> camGoal)
@@ -429,6 +433,7 @@ final class ParallaxLesson extends LessonKit {
         s.add(step("Check: a star at 25 pc", """
                 A star lies **25 parsecs** away.
                 """)
+                .reviews("The parsec")
                 .unit(AU)
                 .cam(() -> camGoal)
                 .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(15 * DAY); star = 0; frame(); sample(); })

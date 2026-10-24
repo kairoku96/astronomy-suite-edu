@@ -134,6 +134,7 @@ final class AngularLesson extends LessonKit {
                 > The field is 2.5° wide. Time runs at 3 seconds per second; slide it to replay the
                 eclipse.
                 """)
+                .watch(() -> host.skyEnu("Sun"))
                 .only("AST221")
                 .sky(() -> view)
                 .enter(() -> {
@@ -182,6 +183,7 @@ final class AngularLesson extends LessonKit {
                 up beside the Sun at arm's length: your little finger is about 1° wide, twice the
                 Sun. Slide the time to replay the eclipse.
                 """)
+                .watch(() -> host.skyEnu("Sun"))
                 .only("AST101")
                 .sky(() -> eclipseHand ? new double[]{view[0], view[1] - 7, 26} : view)
                 .enter(() -> {
@@ -238,6 +240,7 @@ final class AngularLesson extends LessonKit {
                 > Pick an eclipse. Switch to "Down the line" to look along the cone from the
                 ground. The inset is what you'd see there.
                 """)
+                .watch(() -> scaleV(pos(host.state("Moon")), 1 / KM))
                 .only("AST101")
                 .unit(KM)
                 .cam("Earth", () -> camGoal)
@@ -398,6 +401,7 @@ final class AngularLesson extends LessonKit {
 
                 > Zoom out with the scroll wheel to see how small Jupiter is to the naked eye.
                 """)
+                .watch(() -> host.skyEnu("Jupiter"))
                 .only("AST221")
                 .sky("Jupiter", () -> new double[]{0, 0, 0.1})
                 .enter(() -> {
@@ -437,6 +441,7 @@ final class AngularLesson extends LessonKit {
                 circle is how big the full Moon would look. The four dots in a line are Jupiter's
                 Galilean moons, at their real places that night.
                 """)
+                .watch(() -> host.skyEnu("Jupiter"))
                 .only("AST101")
                 .sky("Jupiter", () -> new double[]{0, 0, FIELDS[field]})
                 .enter(() -> {
@@ -478,6 +483,7 @@ final class AngularLesson extends LessonKit {
                 From the slides: the Moon has diameter **3.5 × 10³ km** and distance
                 **3.8 × 10⁵ km**.
                 """)
+                .reviews("A radian is huge; sky angles are tiny")
                 .only("AST221")
                 .unit(KM)
                 .cam("Earth", () -> camGoal)
@@ -498,6 +504,7 @@ final class AngularLesson extends LessonKit {
                 From the slides: the Moon has diameter **3.5 × 10³ km** and distance
                 **3.8 × 10⁵ km**.
                 """)
+                .reviews("Angular size")
                 .only("AST101")
                 .unit(KM)
                 .cam("Earth", () -> camGoal)
@@ -518,6 +525,7 @@ final class AngularLesson extends LessonKit {
         s.add(step("Check: the Sun's solid angle", """
                 From the slides: the Sun has radius **7 × 10⁵ km** and is **1.5 × 10⁸ km** away.
                 """)
+                .reviews("Solid angle: how much sky the Sun covers")
                 .unit(AU)
                 .cam(() -> camGoal)
                 .enter(() -> {

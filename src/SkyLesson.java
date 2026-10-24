@@ -100,6 +100,7 @@ final class SkyLesson extends LessonKit {
                 > The orange grid marks every 15° of altitude and 30° of azimuth. Drag to look
                 around; scroll to zoom; double-click to come back.
                 """)
+                .watch(() -> host.skyEnu("Saturn"))
                 .sky(() -> view)
                 .enter(() -> {
                     atUtm(); evening(); host.setTime(120);
@@ -144,6 +145,7 @@ final class SkyLesson extends LessonKit {
                 > Pick a different place and watch the pole move. Each is shown at 9 pm local time
                 (the North Pole in December: at the equinox the Sun skims its horizon all day).
                 """)
+                .watch(() -> host.skyEnuRaDec(0, 90))
                 .sky(() -> view)
                 .enter(() -> {
                     setPlace(place); nightAtPlace(); host.setTime(900);
@@ -186,6 +188,7 @@ final class SkyLesson extends LessonKit {
                 Same evening on the UTM campus, facing west. A bright planet hangs **due west**,
                 exactly **halfway** up from the horizon to the zenith.
                 """)
+                .reviews("Altitude and azimuth")
                 .only("AST101")
                 .sky(() -> view)
                 .enter(() -> {
@@ -215,6 +218,7 @@ final class SkyLesson extends LessonKit {
                 stands 43.5° above the northern horizon. Now you fly to Reykjavík, Iceland, at
                 latitude **64° N**.
                 """)
+                .reviews("The pole star sits at your latitude")
                 .only("AST101")
                 .sky(() -> view)
                 .enter(() -> {
@@ -396,6 +400,7 @@ final class SkyLesson extends LessonKit {
                 Same evening, 9 pm. The slides ask about a star with **RA = 15h35m02s**. That is
                 **Alphecca**, the brightest star in Corona Borealis, marked here in the west.
                 """)
+                .reviews("Sidereal time and hour angle")
                 .sky(() -> view)
                 .enter(() -> {
                     atUtm(); evening(); host.setTime(0);
@@ -424,6 +429,7 @@ final class SkyLesson extends LessonKit {
         s.add(step("Check: how high will Saturn get?", """
                 Saturn has declination δ ≈ +2.6°, and Mississauga is at latitude φ = 43.5° N.
                 """)
+                .reviews("Planning: can I see Saturn tonight?")
                 .sky(() -> view)
                 .enter(() -> {
                     atUtm(); evening(); host.setTime(0);

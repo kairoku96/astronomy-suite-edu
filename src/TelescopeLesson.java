@@ -259,6 +259,7 @@ final class TelescopeLesson extends LessonKit {
                 hunt for its moon **Triton** (magnitude 13.5). The star catalogue here stops near
                 magnitude 7, so only the planets and moons show the gain.
                 """)
+                .watch(() -> host.skyEnu("Neptune"))
                 .only("AST221")
                 .sky("Neptune", () -> field == 0 ? new double[]{-6, 3, 30} : new double[]{0, 0, 0.04})
                 .enter(() -> {
@@ -312,6 +313,7 @@ final class TelescopeLesson extends LessonKit {
                 at the faintest a dark site shows the eye, so only the planets and moons show the
                 gain.)
                 """)
+                .watch(() -> host.skyEnu("Neptune"))
                 .only("AST101")
                 .sky("Neptune", () -> field == 0 ? new double[]{-6, 3, 30} : new double[]{0, 0, 0.04})
                 .enter(() -> {
@@ -349,6 +351,7 @@ final class TelescopeLesson extends LessonKit {
                 photons for about **1/30 s**. A camera on a **1-m telescope** takes a **1-second**
                 exposure.
                 """)
+                .reviews("A bigger bucket for light")
                 .sky("Neptune", () -> new double[]{-6, 3, 30})
                 .enter(() -> {
                     host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
@@ -510,6 +513,7 @@ final class TelescopeLesson extends LessonKit {
                 33 light-years away, so **0.1″** apart. Use the image on the right to test each
                 telescope.
                 """)
+                .reviews("Diffraction and seeing")
                 .only("AST101")
                 .sky("Pluto", () -> new double[]{0, 0, 0.03})
                 .enter(() -> {
@@ -545,6 +549,7 @@ final class TelescopeLesson extends LessonKit {
                 The slides' question: a binary at **10 pc** with the two stars **1 AU** apart, so
                 0.1″ apart. Use the image on the right to test each telescope.
                 """)
+                .reviews("Diffraction and seeing")
                 .only("AST221")
                 .sky("Pluto", () -> new double[]{0, 0, 0.03})
                 .enter(() -> {
@@ -620,6 +625,7 @@ final class TelescopeLesson extends LessonKit {
                 From the slides: a radio interferometer the size of the Earth, at **λ = 1 mm**, with
                 Earth's radius taken as **6000 km**.
                 """)
+                .reviews("Interferometry: a telescope as big as the Earth")
                 .unit(MM)
                 .cam("Earth", () -> camGoal)
                 .enter(() -> {

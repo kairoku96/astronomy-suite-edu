@@ -431,6 +431,7 @@ final class MagnitudeLesson extends LessonKit {
                 Starlight passing through hydrogen gas comes out with a few thin dark lines: a few
                 exact colours are missing, and every other colour gets through.
                 """)
+                .reviews("Where absorption lines come from")
                 .only("AST101")
                 .sky(() -> new double[]{285, 55, 120})
                 .enter(() -> {
@@ -452,6 +453,7 @@ final class MagnitudeLesson extends LessonKit {
                 (blue-green). A star's spectrum shows dark lines at exactly **656 nm** and
                 **486 nm**.
                 """)
+                .reviews("Where absorption lines come from")
                 .only("AST101")
                 .sky(() -> new double[]{285, 55, 120})
                 .enter(() -> {
@@ -475,6 +477,7 @@ final class MagnitudeLesson extends LessonKit {
                 Four stars, from cool to hot. Remember that a star's temperature decides which
                 jumps its hydrogen atoms can make.
                 """)
+                .reviews("Where absorption lines come from")
                 .only("AST101")
                 .sky(() -> new double[]{285, 55, 120})
                 .enter(() -> {

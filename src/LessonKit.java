@@ -102,6 +102,32 @@ abstract class LessonKit {
         if (a >= 60) return angle(arcsec);
         return String.format(a >= 1 ? "%.2f″" : a >= 0.01 ? "%.3f″" : "%.4f″", arcsec);
     }
+    /**
+     * A sphere lit from one side, seen from the observer: a disc of radius {@code r} px with a fraction
+     * {@code lit} of its face lit, the lit limb on the right when {@code litRight}. The terminator is an
+     * ellipse of half-width |2·lit − 1|·r, bulging into the dark side past half (gibbous) and into the
+     * lit side before (crescent).
+     */
+    static void phaseDisc(Graphics2D g, double cx, double cy, double r, double lit, boolean litRight, Color bright) {
+        g.setColor(new Color(40, 42, 50));
+        g.fill(new java.awt.geom.Ellipse2D.Double(cx - r, cy - r, 2 * r, 2 * r));
+        double w = Math.abs(2 * lit - 1) * r;
+        java.awt.geom.Area a = new java.awt.geom.Area(new java.awt.geom.Rectangle2D.Double(litRight ? cx : cx - r, cy - r, r, 2 * r));
+        a.intersect(new java.awt.geom.Area(new java.awt.geom.Ellipse2D.Double(cx - r, cy - r, 2 * r, 2 * r)));
+        java.awt.geom.Area t = new java.awt.geom.Area(new java.awt.geom.Ellipse2D.Double(cx - w, cy - r, 2 * w, 2 * r));
+        if (lit >= 0.5) a.add(t); else a.subtract(t);
+        g.setColor(bright);
+        g.fill(a);
+        g.setColor(new Color(255, 255, 255, 50));
+        g.setStroke(new BasicStroke(1f));
+        g.draw(new java.awt.geom.Ellipse2D.Double(cx - r, cy - r, 2 * r, 2 * r));
+    }
+
+    /** Ecliptic longitude (°, 0–360) of a world-frame vector (world = {ye, −xe, ze}). */
+    static double eclLon(double[] w) { double l = Math.toDegrees(Math.atan2(w[0], -w[1])); return l < 0 ? l + 360 : l; }
+    /** Ecliptic latitude (°) of a world-frame vector. */
+    static double eclLat(double[] w) { return Math.toDegrees(Math.asin(clamp(w[2] / len(w), -1, 1))); }
+
     /** Signed number with a real minus sign. */
     static String signed(String fmt, double x) { return String.format(fmt, x).replace('-', '−'); }
     /**
