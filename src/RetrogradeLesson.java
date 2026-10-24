@@ -55,6 +55,22 @@ final class RetrogradeLesson extends LessonKit {
         return add(p, scaleV(u, s));
     }
 
+    int venusView;                 // 0 = through a telescope, 1 = from above
+    LessonStudio.Step venusStep;
+
+    /**
+     * The telescope: look at the real Venus from the Earth's side at a fixed magnification (an 80″
+     * field), so the sim's rendering shows its real phase and its real change in apparent size.
+     */
+    void frameVenus() {
+        if (venusView == 1) { camGoal = new double[]{0, 0, 1.25 * AU, 10, 0}; return; }
+        double now = host.simTime();
+        double[] toEarth = sub(pos(host.stateAt("Earth", now)), pos(host.stateAt("Venus", now)));
+        double[] u = norm(toEarth);
+        camGoal = new double[]{0, 0, len(toEarth) * Math.tan(40 * ARCSEC),
+                Math.toDegrees(Math.acos(clamp(u[2], -1, 1))), Math.toDegrees(Math.atan2(u[0], u[1])), 0};
+    }
+
     /** Venus's lit fraction, angular diameter (″) and whether it is east of the Sun (an evening star). */
     double[] venus(double t) {
         double[] e = pos(host.stateAt("Earth", t)), v = pos(host.stateAt("Venus", t));
@@ -168,7 +184,7 @@ final class RetrogradeLesson extends LessonKit {
                     hud.formula("the faster inner planet overtakes the outer one");
                 }));
 
-        s.add(step("Venus has phases", """
+        s.add(venusStep = step("Venus has phases", """
                 In 1610 Galileo turned his new telescope on Venus and saw it go through **phases**
                 like the Moon, from a thin crescent to nearly full. And it changed size: a big
                 crescent when near us, a small, nearly full disc when far away.
@@ -178,23 +194,31 @@ final class RetrogradeLesson extends LessonKit {
                 **far side of the Sun**: Venus orbits the Sun. It was some of the first hard evidence
                 against an Earth-centred universe.
 
-                > Time runs at 6 days per second through Venus's 19-month cycle. The inset is Venus
-                through a small telescope, at true relative size.
+                > This is the real Venus through a telescope pointed from Earth, at a fixed
+                magnification, so you see its true change in size. Time runs at 6 days per second
+                through its 19-month cycle. Switch to "From above" to see where it is.
                 """)
                 .watch(() -> scaleV(pos(host.state("Venus")), 1 / AU))
                 .unit(AU)
-                .cam(() -> camGoal)
+                .cam("Venus", () -> camGoal)
                 .enter(() -> {
                     host.showOnly(null, "Venus", "Earth"); host.setOrbits(true, true);
                     host.goToUTC(2026, 6, 1, 0, 0);
                     host.setTime(6 * DAY);
-                    camGoal = new double[]{0, 0, 1.25 * AU, 10, 0};
+                    venusStep.follow = venusView == 0 ? "Venus" : null;
                 })
-                .controls(c -> timeSlider(c, "days", DAY, 15))
+                .live(this::frameVenus)
+                .controls(c -> {
+                    c.choices("View", new String[]{"Through a telescope", "From above"}, () -> venusView, k -> {
+                        venusView = k;
+                        venusStep.follow = k == 0 ? "Venus" : null;
+                    });
+                    timeSlider(c, "days", DAY, 15);
+                })
                 .scene((r, hud, t) -> {
                     double now = host.simTime();
                     double[] e = scaleV(pos(host.state("Earth")), 1 / AU), vv = scaleV(pos(host.state("Venus")), 1 / AU);
-                    r.line(e, vv, alpha(SUN_C, 200), 1.6f, false);
+                    if (venusView == 1) r.line(e, vv, alpha(SUN_C, 200), 1.6f, false);
                     double[] vn = venus(now);
                     boolean evening = vn[2] > 0;
                     hud.title("Venus through a telescope", ACCENT);
@@ -203,9 +227,8 @@ final class RetrogradeLesson extends LessonKit {
                     hud.row("apparent size", String.format("%.0f″", vn[1]));
                     hud.row("distance from Earth", au(vn[3] / AU));
                     hud.row("in our sky", evening ? "evening star (after sunset)" : "morning star (before dawn)");
+                    hud.row("compared with the Sun (1 AU)", vn[3] > AU ? "farther away" : "nearer");
                     hud.formula("near: big crescent;   far: small and nearly full");
-                    hud.inset("Venus at true relative size", 230, 230,
-                            (g, b) -> phaseDisc(g, b.getCenterX(), b.getCenterY(), vn[1] * 1.5, vn[0], evening, new Color(250, 240, 215)));
                 }));
 
         s.add(step("Check: when Mars goes backward", """

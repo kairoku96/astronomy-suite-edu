@@ -17,8 +17,6 @@ final class MoonLesson extends LessonKit {
 
     static final double KMU = 1e6;                                  // scene unit: 1000 km
     static final double SYNODIC = 29.530589 * DAY, SIDEREAL = 27.321662 * DAY;
-    /** Icons of the Earth and the Moon in the whole-orbit views, drawn this many times too big. */
-    static final double ICON = 10;
     /** A solar eclipse needs the new Moon within about this far (°) of the Sun line, seen from Earth. */
     static final double ECLIPSE_LIMIT = 1.5;
     static final String[] NEW_MOONS = {"Jan 18, 2026: no eclipse", "Feb 17, 2026: annular eclipse", "Aug 12, 2026: total eclipse"};
@@ -28,6 +26,8 @@ final class MoonLesson extends LessonKit {
     double tSpin0;                  // when the "same face" step started
     double[] markNoSpin;            // the near side's direction then, held fixed: the Moon if it didn't spin
     int pick;
+    int phasesView, faceView;       // phases: 0 = from Earth, 1 = from above; same face: 0 = from above, 1 = from Earth
+    LessonStudio.Step phasesStep, faceStep;
     double[] newMoonT, newMoonLat;  // every new moon of 2026 and the Moon's ecliptic latitude at each
     double[] camGoal = {0, 0, 5.2e8, 25, 0};
 
@@ -97,16 +97,14 @@ final class MoonLesson extends LessonKit {
         for (int i = 0; i < n; i++) orbitRel[i] = moonRel(orbitT0 + SIDEREAL * (i / (double) n - 0.5));
     }
 
-    /** A disc of radius {@code r} (scene units) facing the camera. */
-    double[][] faceDisc(double[] c, double r) {
-        double[] eye = scaleV(host.eye(), 1 / KMU), z = norm(sub(eye, c));
-        double[] x = norm(cross(Math.abs(z[2]) < 0.9 ? v(0, 0, 1) : v(1, 0, 0), z)), y = cross(z, x);
-        double[][] p = new double[40][];
-        for (int i = 0; i < 40; i++) {
-            double a = 2 * Math.PI * i / 40;
-            p[i] = add(c, add(scaleV(x, r * Math.cos(a)), scaleV(y, r * Math.sin(a))));
-        }
-        return p;
+    /**
+     * Look at the real Moon from the Earth's side, the sim rendering its real surface and sunlit half:
+     * a 1.5° field, so the disc keeps its true apparent size as the Moon's distance changes.
+     */
+    void frameFromEarth() {
+        double[] u = norm(scaleV(moonRel(host.simTime()), -1));
+        camGoal = new double[]{0, 0, len(moonRel(host.simTime())) * Math.tan(Math.toRadians(0.75)),
+                Math.toDegrees(Math.acos(clamp(u[2], -1, 1))), Math.toDegrees(Math.atan2(u[0], u[1])), 0};
     }
 
     /**
@@ -119,24 +117,6 @@ final class MoonLesson extends LessonKit {
         double L = 218.3164477 + 481267.88123421 * T - 1.3969713 * T + 180;
         double r = Math.toRadians(L);
         return v(Math.sin(r), -Math.cos(r), 0);                       // ecliptic (cos L, sin L, 0) in world axes
-    }
-
-    /** Half of a disc of radius {@code r} in the ecliptic plane, on the side facing {@code toward}. */
-    static double[][] halfDisc(double[] c, double[] toward, double r, boolean facing) {
-        double[] n = norm(v(toward[0], toward[1], 0)), p = v(-n[1], n[0], 0);
-        int k = 24;
-        double[][] pts = new double[k + 1][];
-        for (int i = 0; i <= k; i++) {
-            double a = -Math.PI / 2 + Math.PI * i / k, ca = Math.cos(a) * (facing ? 1 : -1), sa = Math.sin(a);
-            pts[i] = add(c, add(scaleV(n, ca * r), scaleV(p, sa * r)));
-        }
-        return pts;
-    }
-
-    /** A body as a day half and a night half, sunlight from {@code sunDir}. */
-    static void litIcon(LessonStudio.R3 r, double[] c, double[] sunDir, double rad, Color day) {
-        r.poly(halfDisc(c, sunDir, rad, true), day, null, 0, -0.02);
-        r.poly(halfDisc(c, sunDir, rad, false), new Color(45, 48, 60), new Color(120, 125, 140), 1f, -0.02);
     }
 
     /** Sunlight arrows, coming in from the Sun's side of the Earth. */
@@ -169,7 +149,7 @@ final class MoonLesson extends LessonKit {
     LessonStudio.LessonDef build() {
         List<LessonStudio.Step> s = new ArrayList<>();
 
-        s.add(step("Phases: the Moon is always half lit", """
+        s.add(phasesStep = step("Phases: the Moon is always half lit", """
                 The Sun always lights half of the Moon, the half facing it, just as it lights half
                 of the Earth. What changes through the month is how much of that lit half faces
                 **us**.
@@ -181,30 +161,43 @@ final class MoonLesson extends LessonKit {
 
                 The Moon makes no light of its own; a phase is just the Sun–Earth–Moon angle.
 
-                > The view follows the real Earth and Moon (drawn 10 times too big so you can see
-                them); time runs at 1 day per second. The inset is the Moon as you'd see it from
-                Mississauga.
+                > This is the real Moon, lit by the real Sun, seen from the Earth, at 1 day per
+                second. Switch to "From above" to see where it is in its orbit at each phase.
                 """)
                 .watch(this::moonK)
                 .unit(KMU)
-                .cam("Earth", () -> camGoal)
+                .cam("Moon", () -> camGoal)
                 .enter(() -> {
                     host.showOnly(null, "Earth"); host.setOrbits(false, true); host.setTime(DAY);
                     host.goToUTC(2026, 10, 10, 12, 0);                    // a new moon: watch a whole month of phases
-                    sampleOrbit(); frameEarth(25);
+                    sampleOrbit();
+                    phasesStep.follow = phasesView == 0 ? "Moon" : "Earth";
                 })
-                .controls(c -> timeSlider(c, "days", DAY, 3))
+                .live(() -> { if (phasesView == 0) frameFromEarth(); else frameEarth(25); })
+                .controls(c -> {
+                    c.choices("View", new String[]{"From Earth", "From above"}, () -> phasesView, k -> {
+                        phasesView = k;
+                        phasesStep.follow = k == 0 ? "Moon" : "Earth";
+                    });
+                    timeSlider(c, "days", DAY, 3);
+                })
                 .scene((r, hud, t) -> {
                     double now = host.simTime();
-                    double[] e = earth(now), ek = scaleV(e, 1 / KMU), mk = add(ek, scaleV(moonRel(now), 1 / KMU));
+                    double[] e = earth(now), ek = scaleV(e, 1 / KMU), mk = moonK();
                     double[] sun = norm(scaleV(e, -1));
-                    drawOrbit(r, ek);
-                    sunlight(r, ek, sun);
-                    litIcon(r, ek, sun, ICON * 6371 / 1000, new Color(110, 160, 230));
-                    litIcon(r, mk, sun, ICON * 1737 / 1000, new Color(235, 232, 220));
-                    r.line(ek, mk, alpha(INK, 90), 1f, true);
                     double el = elongation(now), ah = ahead(now), lit = (1 - Math.cos(Math.toRadians(el))) / 2;
-                    r.label(mk, phaseName(ah), INK, 12.5f, 0, -24);
+                    if (phasesView == 0) {
+                        double[] from = add(mk, scaleV(sun, 6)), to = add(mk, scaleV(sun, 2.4));
+                        r.arrow(from, to, new Color(255, 214, 120, 210), 2.4f);
+                        r.label(from, "sunlight", SUN_C, 12.5f, 0, -14);
+                    } else {
+                        drawOrbit(r, ek);
+                        sunlight(r, ek, sun);
+                        r.line(ek, mk, alpha(INK, 90), 1f, true);
+                        r.ring(mk, 9, alpha(INK, 200), 1.6f);
+                        r.ring(ek, 11, new Color(130, 180, 240, 200), 1.6f);
+                        r.label(mk, phaseName(ah), INK, 12.5f, 0, -24);
+                    }
                     hud.title("The Moon tonight", ACCENT);
                     hud.row("date", host.dateString());
                     hud.row("phase", phaseName(ah), ACCENT);
@@ -212,47 +205,56 @@ final class MoonLesson extends LessonKit {
                     hud.row("angle Sun–Earth–Moon", String.format("%.0f°", el));
                     hud.row("days since new moon", String.format("about %.0f", ah / 360 * 29.53));
                     hud.formula("phase = how much of the lit half faces us");
-                    hud.inset("From Earth", 200, 200, (g, b) -> phaseDisc(g, b.getCenterX(), b.getCenterY(), 70, lit, ah < 180,
-                            new Color(235, 232, 220)));
                 }));
 
-        s.add(step("The same face, always", """
+        s.add(faceStep = step("The same face, always", """
                 From Earth we always see the same face of the Moon: the "man in the Moon". That
                 does not mean it doesn't spin. It spins **exactly once per orbit**, 27.3 days for
                 each, so the same side keeps turning toward us. This is {k:synchronous rotation},
                 and Earth's tides locked the Moon into it long ago.
 
-                The red mark is the middle of the Moon's near side. The dashed mark shows where that
-                face would point if the Moon didn't spin at all: within two weeks we'd be looking
-                at its far side.
+                The red line points from the middle of the Moon's near side. The dashed line shows
+                where that face would point if the Moon didn't spin at all: within two weeks we'd be
+                looking at its far side.
 
                 The spin is perfectly steady but the orbit is not a circle, so the Moon runs a
                 little ahead and behind. The near side rocks a few degrees either way, the
                 {k:libration}, and over a month we see 59% of the Moon's surface.
+
+                > Switch to "From Earth" and watch the real Moon's craters stay put, rocking gently,
+                while the phases sweep across them.
                 """)
-                .watch(() -> add(moonK(), scaleV(nearSide(host.simTime()), ICON * 1737 / 1000 * 0.75)))
+                .watch(() -> add(moonK(), scaleV(nearSide(host.simTime()), 30)))
                 .unit(KMU)
                 .cam("Earth", () -> camGoal)
                 .enter(() -> {
                     host.showOnly(null, "Earth"); host.setOrbits(false, true); host.setTime(DAY);
                     host.goToUTC(2026, 10, 10, 12, 0);
-                    sampleOrbit(); frameEarth(18);
+                    sampleOrbit();
+                    faceStep.follow = faceView == 1 ? "Moon" : "Earth";
                     tSpin0 = host.simTime(); markNoSpin = nearSide(tSpin0);
                 })
-                .controls(c -> timeSlider(c, "days", DAY, 3))
+                .live(() -> { if (faceView == 1) frameFromEarth(); else frameEarth(18); })
+                .controls(c -> {
+                    c.choices("View", new String[]{"From above", "From Earth"}, () -> faceView, k -> {
+                        faceView = k;
+                        faceStep.follow = k == 1 ? "Moon" : "Earth";
+                    });
+                    timeSlider(c, "days", DAY, 3);
+                })
                 .scene((r, hud, t) -> {
                     double now = host.simTime();
-                    double[] e = earth(now), ek = scaleV(e, 1 / KMU), rel = moonRel(now), mk = add(ek, scaleV(rel, 1 / KMU));
-                    double[] sun = norm(scaleV(e, -1));
-                    double rm = ICON * 1737 / 1000;
-                    drawOrbit(r, ek);
-                    litIcon(r, ek, sun, ICON * 6371 / 1000, new Color(110, 160, 230));
-                    litIcon(r, mk, sun, rm, new Color(235, 232, 220));
+                    double[] e = earth(now), ek = scaleV(e, 1 / KMU), rel = moonRel(now), mk = moonK();
                     double[] near = nearSide(now);
-                    r.line(mk, add(mk, scaleV(near, rm * 1.9)), PERI_C, 3f, false);
-                    r.dot(add(mk, scaleV(near, rm * 0.75)), 4.5, PERI_C, -0.05);
-                    r.line(mk, add(mk, scaleV(markNoSpin, rm * 1.9)), alpha(INK, 170), 1.6f, true);
-                    r.label(add(mk, scaleV(markNoSpin, rm * 2.2)), "if it didn't spin", alpha(INK, 200), 11.5f, 0, 0);
+                    if (faceView == 0) {
+                        drawOrbit(r, ek);
+                        r.ring(mk, 9, alpha(INK, 200), 1.6f);
+                        r.ring(ek, 11, new Color(130, 180, 240, 200), 1.6f);
+                        r.line(mk, add(mk, scaleV(near, 120)), PERI_C, 3f, false);
+                        r.label(add(mk, scaleV(near, 132)), "near side", PERI_C, 11.5f, 0, 0);
+                        r.line(mk, add(mk, scaleV(markNoSpin, 120)), alpha(INK, 170), 1.6f, true);
+                        r.label(add(mk, scaleV(markNoSpin, 136)), "if it didn't spin", alpha(INK, 200), 11.5f, 0, 0);
+                    }
                     double spun = (now - tSpin0) / SIDEREAL * 360;
                     double toEarth = eclLon(scaleV(rel, -1)), lib = Math.IEEEremainder(eclLon(near) - toEarth, 360);
                     hud.title("Spin and orbit", ACCENT);
@@ -298,8 +300,7 @@ final class MoonLesson extends LessonKit {
                     drawOrbit(r, ek);
                     r.line(add(ek, scaleV(sun, 470)), add(ek, scaleV(sun, -170)), alpha(SUN_C, 170), 1.4f, false);
                     r.label(add(ek, scaleV(sun, 470)), "toward the Sun", SUN_C, 12f, 0, -14);
-                    r.poly(faceDisc(ek, 6.371), new Color(110, 160, 230), null, 0);               // true size here
-                    r.poly(faceDisc(mk, 1.737), new Color(200, 200, 205), null, 0);
+                    r.ring(mk, 7, alpha(INK, 200), 1.4f);                                         // the sim draws both at true size
                     // The shadow runs straight back from the Moon, away from the Sun.
                     double[] q = add(mk, scaleV(sun, -dot(sub(ek, mk), scaleV(sun, -1)) - 60));
                     r.line(mk, q, alpha(INK, 190), 1.6f, true);

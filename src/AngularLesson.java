@@ -52,46 +52,91 @@ final class AngularLesson extends LessonKit {
         return norm(add(t, add(scaleV(right, Math.tan(Math.toRadians(x))), scaleV(u, Math.tan(Math.toRadians(y))))));
     }
 
-    /** A finger (or thumb) on the sky: a rounded bar of width w from (x0, y0) to (x1, y1), degrees in the hand's frame. */
-    static double[][] finger(double[] t, double[] up, double x0, double y0, double x1, double y1, double w) {
-        double dx = x1 - x0, dy = y1 - y0, l = Math.hypot(dx, dy), ux = dx / l, uy = dy / l, nx = uy, ny = -ux, h = w / 2;
-        double cx = x1 - ux * h, cy = y1 - uy * h;      // centre of the round tip, so the tip ends at (x1, y1)
-        List<double[]> p = new ArrayList<>();
-        p.add(skyAt(t, up, x0 + nx * h, y0 + ny * h));
-        for (int i = 0; i <= 10; i++) {
-            double a = Math.PI * i / 10, ca = Math.cos(a), sa = Math.sin(a);
-            p.add(skyAt(t, up, cx + (nx * ca + ux * sa) * h, cy + (ny * ca + uy * sa) * h));
+    /**
+     * The four fingers of a right hand held up at arm's length, back toward you, in degrees on the sky
+     * (x right, y up, the little finger's tip at the origin): base centre x and y, length, width at the
+     * base and at the tip, and lean (° clockwise), little finger first. Widths follow the classic
+     * rule of thumb: the little finger about 1° across, the three middle fingers about 5°.
+     */
+    static final double[][] FINGERS = {
+            {0.15, -5.2, 5.2, 1.15, 0.95, 5},
+            {-1.45, -5.6, 7.1, 1.60, 1.35, 2},
+            {-3.20, -5.4, 7.9, 1.70, 1.45, 0},
+            {-4.95, -5.0, 7.0, 1.70, 1.40, -3}};
+
+    /** A tapering finger with a round tip, sunk a little into the palm so the outline joins smoothly. */
+    static Shape finger(double bx, double by, double len, double w0, double w1, double leanDeg) {
+        double a = Math.toRadians(leanDeg), dx = Math.sin(a), dy = Math.cos(a), px = dy, py = -dx, sink = 1.4;
+        double cx = bx + dx * (len - w1 / 2), cy = by + dy * (len - w1 / 2);
+        Path2D.Double p = new Path2D.Double();
+        p.moveTo(bx - dx * sink + px * w0 / 2, by - dy * sink + py * w0 / 2);
+        p.lineTo(cx + px * w1 / 2, cy + py * w1 / 2);
+        for (int i = 1; i <= 16; i++) {
+            double t = Math.PI * i / 16;
+            p.lineTo(cx + (px * Math.cos(t) + dx * Math.sin(t)) * w1 / 2, cy + (py * Math.cos(t) + dy * Math.sin(t)) * w1 / 2);
         }
-        p.add(skyAt(t, up, x0 - nx * h, y0 - ny * h));
-        return p.toArray(new double[0][]);
+        p.lineTo(bx - dx * sink - px * w0 / 2, by - dy * sink - py * w0 / 2);
+        p.closePath();
+        return p;
     }
+
+    /** Where finger k's centre line is, and its half-width, at height y. */
+    static double[] fingerAt(int k, double y) {
+        double[] f = FINGERS[k];
+        double along = (y - f[1]) / Math.cos(Math.toRadians(f[5]));
+        return new double[]{f[0] + Math.tan(Math.toRadians(f[5])) * (y - f[1]), (f[3] + (f[4] - f[3]) * clamp(along / f[2], 0, 1)) / 2};
+    }
+
+    /** The whole hand as one outline: fingers, palm, thumb and the web between thumb and index finger. */
+    static Area handShape() {
+        Area a = new Area();
+        for (double[] f : FINGERS) a.add(new Area(finger(f[0], f[1], f[2], f[3], f[4], f[5])));
+        Path2D.Double palm = new Path2D.Double();
+        palm.moveTo(0.78, -5.4);
+        palm.curveTo(0.95, -8.5, 0.85, -11.5, 0.2, -13.6);           // the little-finger edge, down to the heel
+        palm.curveTo(-1.0, -15.4, -4.0, -15.6, -5.6, -13.8);
+        palm.curveTo(-6.4, -12.4, -6.4, -8.5, -5.85, -5.2);          // the index-finger edge
+        palm.lineTo(-3.0, -5.9);
+        palm.closePath();
+        a.add(new Area(palm));
+        Path2D.Double web = new Path2D.Double();
+        web.moveTo(-5.7, -6.2);
+        web.curveTo(-6.6, -7.2, -7.4, -8.4, -7.6, -9.4);
+        web.lineTo(-6.0, -12.0);
+        web.closePath();
+        a.add(new Area(web));
+        a.add(new Area(finger(-5.4, -12.0, 5.9, 2.15, 1.75, -42)));      // the thumb
+        return a;
+    }
+    private static Area handShape;
 
     /**
      * Your right hand held up at arm's length, back toward you, at its true angular size: the
      * little finger is about 1° wide, three fingers about 5°, a closed fist about 10°. The tip of
-     * the little finger sits {@code below}° under {@code t}.
+     * the little finger sits {@code below}° under {@code t}. One smooth outline, so no finger shows
+     * a seam where it meets the palm.
      */
     static void hand(LessonStudio.R3 r, double[] t, double[] up, double below) {
-        Color fill = new Color(240, 196, 160, 46), edge = new Color(255, 214, 180, 175);
-        double y0 = -below;
-        // little, ring, middle, index: centre x, width, tip height above the little finger's tip
-        double[][] f = {{0, 1.0, 0}, {-1.38, 1.6, 1.8}, {-3.11, 1.7, 2.6}, {-4.89, 1.7, 1.8}};
-        for (double[] k : f) {
-            double base = y0 - 5.0 + 0.25 * -k[0];       // the knuckles rise a little toward the index finger
-            r.poly(finger(t, up, k[0], base, k[0], y0 + k[2], k[1]), fill, edge, 1.2f);
+        if (handShape == null) handShape = handShape();
+        Color fill = new Color(236, 192, 160, 64), edge = new Color(255, 222, 196, 205);
+        List<double[]> run = new ArrayList<>();
+        double[] seg = new double[6];
+        for (PathIterator it = handShape.getPathIterator(null, 0.03); !it.isDone(); it.next()) {
+            int type = it.currentSegment(seg);
+            if (type == PathIterator.SEG_MOVETO) run.clear();
+            if (type != PathIterator.SEG_CLOSE) run.add(skyAt(t, up, seg[0], seg[1] - below));
+            else if (run.size() > 2) r.poly(run.toArray(new double[0][]), fill, edge, 1.4f);
         }
-        double top = y0 - 5.0, bottom = y0 - 14.0;
-        r.poly(new double[][]{skyAt(t, up, 0.5, top), skyAt(t, up, -5.74, top + 1.4), skyAt(t, up, -6.0, bottom + 1.5),
-                skyAt(t, up, -4.6, bottom), skyAt(t, up, 0.2, bottom), skyAt(t, up, 0.55, bottom + 2)}, fill, edge, 1.2f);
-        r.poly(finger(t, up, -5.2, bottom + 3.2, -9.6, bottom + 7.6, 2.0), fill, edge, 1.2f);      // the thumb
-        Color mark = new Color(255, 225, 150, 230);
-        double ym = y0 - 1.2;
-        r.line(skyAt(t, up, -0.5, ym), skyAt(t, up, 0.5, ym), mark, 1.6f);
-        r.label(skyAt(t, up, 0.5, ym), "1°", mark, 12f, 16, 4);
-        double y5 = y0 - 3.4;
-        r.line(skyAt(t, up, -5.74, y5), skyAt(t, up, -0.58, y5), mark, 1.6f);
-        r.label(skyAt(t, up, -3.16, y5), "three fingers ≈ 5°", mark, 11.5f, 0, 16);
-        r.label(skyAt(t, up, -2.7, bottom + 4), "your hand at arm's length", new Color(255, 225, 200, 210), 11.5f, 0, 0);
+        Color mark = new Color(255, 225, 150, 235);
+        double ym = -1.3;
+        double[] lf = fingerAt(0, ym);
+        r.line(skyAt(t, up, lf[0] - lf[1], ym - below), skyAt(t, up, lf[0] + lf[1], ym - below), mark, 1.6f);
+        r.label(skyAt(t, up, lf[0] + lf[1], ym - below), "1°", mark, 12f, 16, 4);
+        double y5 = -3.6;
+        double[] ring = fingerAt(1, y5), index = fingerAt(3, y5);
+        r.line(skyAt(t, up, index[0] - index[1], y5 - below), skyAt(t, up, ring[0] + ring[1], y5 - below), mark, 1.6f);
+        r.label(skyAt(t, up, (index[0] - index[1] + ring[0] + ring[1]) / 2, y5 - below), "three fingers ≈ 5°", mark, 11.5f, 0, 16);
+        r.label(skyAt(t, up, -2.8, -11 - below), "your hand at arm's length", new Color(255, 225, 200, 215), 11.5f, 0, 0);
     }
 
     /** The sky's "up" for the hand: celestial north on an equatorial telescope, otherwise the zenith. */
@@ -558,8 +603,6 @@ final class AngularLesson extends LessonKit {
     static void eclipseInset(Graphics2D g, Rectangle b, double sunR, double moonR) {
         double cx = b.getCenterX(), cy = b.getCenterY(), pxPerDeg = b.width / 1.2;
         double rs = Math.toDegrees(sunR) * pxPerDeg, rm = Math.toDegrees(moonR) * pxPerDeg;
-        g.setColor(new Color(6, 8, 16));
-        g.fill(b);
         if (rm >= rs) {                                   // totality: only the corona shows around the Moon
             g.setPaint(new RadialGradientPaint(new Point2D.Double(cx, cy), (float) (rs * 2.2),
                     new float[]{0f, 0.45f, 1f}, new Color[]{new Color(235, 240, 255, 200), new Color(200, 215, 255, 70), new Color(200, 215, 255, 0)}));
