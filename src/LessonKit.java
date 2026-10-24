@@ -96,8 +96,20 @@ abstract class LessonKit {
         if (a >= 1e-3) return String.format("%.1f mas", arcsec * 1e3);
         return String.format("%.1f µas", arcsec * 1e6);
     }
+    /** An angle in arcseconds only (no milli- or micro-arcseconds), for AST101: 1.96″, 0.138″, 0.005″. */
+    static String arcsec(double arcsec) {
+        double a = Math.abs(arcsec);
+        if (a >= 60) return angle(arcsec);
+        return String.format(a >= 1 ? "%.2f″" : a >= 0.01 ? "%.3f″" : "%.4f″", arcsec);
+    }
     /** Signed number with a real minus sign. */
     static String signed(String fmt, double x) { return String.format(fmt, x).replace('-', '−'); }
+    /** About four significant figures, with thousands separators: 0.05801, 1.000, 140.7, 27,205. */
+    static String sig(double x) {
+        double m = Math.abs(x);
+        return m >= 1000 ? String.format("%,.0f", x) : m >= 100 ? String.format("%.1f", x)
+                : m >= 10 ? String.format("%.2f", x) : m >= 1 ? String.format("%.3f", x) : String.format("%.4f", x);
+    }
 
     // ------------------------------------------------------------------ the sky (east-north-up directions)
 

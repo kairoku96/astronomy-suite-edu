@@ -8,21 +8,24 @@ magnitudes, parsecs, intensity integrals, interferometry).
 The bundle reuses the AST221 lessons. A lesson whose kept steps change its focus gets a new title,
 subtitle and blurb for AST101 (Stellar Parallax, Spectral Lines, Luminosity & Flux). The bundle is defined
 in `LessonStudio.COURSES`, and every step is named by its title. A title that matches no step stops the
-app at start-up, so renaming a step can't silently drop it from a course.
+app at start-up, so renaming a step can't silently drop it from a course. A step marked
+`.only("AST101")` is one course's own version of a shared step: same title, so the course picks it by
+name, and the other course keeps its version (`.only("AST221")`). AST101's angular-size steps use this
+to stay in degrees.
 
 ## The bundle, in course order
 
 | # | Lesson (AST101 title) | Slide days | Steps kept |
 | - | --- | --- | --- |
-| 1 | How Big Does It Look? | 3 (angles; the Sun and Moon) | Angular size · A planet's tiny disc · Check: the Moon's angular size |
+| 1 | How Big Does It Look? | 3 (angles; the Sun and Moon) | Angular size · Same angle, different sizes · A planet's tiny disc · Check: the Moon's angular size (AST101's own degrees-only versions, with the hand at arm's length, total vs annular eclipses and field-of-view stops) |
 | 2 | Reading the Sky | 5 (the local sky) | Altitude and azimuth · The pole star sits at your latitude |
 | 3 | Orbits That Stretch | 6 (seasons), 9–11 (Kepler, energy) | all 9, including the seasons check AST221 hides |
-| 4 | **Stellar Parallax** | 9 (Tycho's search for parallax) | Parallax: Earth's orbit as a baseline |
+| 4 | **Stellar Parallax** | 9 (Tycho's search for parallax) | Parallax: Earth's orbit as a baseline (AST101's own version: no parsec; distance in light-years, set against what Tycho could measure) |
 | 5 | Weighing the Solar System | 10 (Newton's version of Kepler III) | all 7 |
 | 6 | **Luminosity & Flux** | 22 (light spreads out with distance) | Luminosity · Gaussian bubble · Flux · Check: moving Earth out · Check: a bigger bubble |
 | 7 | Hot Bodies Glow | 13 (thermal light), 22 (planet temperatures, albedo), 32 (habitable zone) | Blackbody · Stefan–Boltzmann · How warm is each planet? · Mars's seasons of distance · Around a different star · Check: the Sun's colour |
 | 8 | **Spectral Lines** | 14 (atoms and spectra) | Where absorption lines come from |
-| 9 | Telescope Power | 15 (collecting area, resolution), 17 (seeing, AO) | A bigger bucket for light · Check: a 1-second exposure · Diffraction and seeing · Check: resolving the binary |
+| 9 | Telescope Power | 15 (collecting area, resolution), 17 (seeing, AO) | A bigger bucket for light · Check: a 1-second exposure · Diffraction and seeing · Check: resolving the binary (AST101's own versions of all but the exposure check: light as "times too faint for your eye" instead of magnitudes, resolution in arcseconds instead of radians) |
 | 10 | The Sun Wobbles Too | 11 (centre of mass), 30–31 (exoplanet detection) | The Sun orbits too · Radial velocity · Transits and eclipses · Check: which star is heavier? |
 
 The steps AST221 hides as beyond its slides (seasons, planet temperatures, Mars's distance, the habitable

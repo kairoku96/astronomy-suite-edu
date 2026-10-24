@@ -117,7 +117,10 @@ public final class LessonStudio extends JPanel {
         Runnable live;
         /** Covers material the AST221 slides (Days 2–8) don't: hidden unless -Dsss.lessons.all=true. */
         boolean beyondSlides;
+        /** The one course that shows this step (its own version of a shared step), or null for all. */
+        String course;
         Step(String title, String html) { this.title = title; this.html = html; }
+        Step only(String courseCode) { course = courseCode; return this; }
         Step cam(Supplier<double[]> s) { cam = s; return this; }
         Step cam(String body, Supplier<double[]> s) { follow = body; cam = s; return this; }
         Step sky(Supplier<double[]> view) { sky = true; skyCam = view; return this; }
@@ -146,10 +149,11 @@ public final class LessonStudio extends JPanel {
 
         /** This lesson as a course uses it: only the steps it keeps, under its own title if it gives one. */
         LessonDef forCourse(String courseCode, Entry e) {
-            List<Step> kept = steps.stream().filter(e.keep()).toList();
+            List<Step> mine = steps.stream().filter(s -> s.course == null || s.course.equals(courseCode)).toList();
+            List<Step> kept = mine.stream().filter(e.keep()).toList();
             if (e.keep() instanceof Titled t)
                 for (String name : t.titles())
-                    if (steps.stream().noneMatch(s -> s.title.equals(name)))
+                    if (mine.stream().noneMatch(s -> s.title.equals(name)))
                         throw new IllegalStateException(courseCode + ": \"" + title + "\" has no step \"" + name + "\"");
             return new LessonDef(level, e.title() != null ? e.title() : title, e.subtitle() != null ? e.subtitle() : subtitle,
                     e.blurb() != null ? e.blurb() : blurb, accent, kept, tick);
@@ -204,10 +208,12 @@ public final class LessonStudio extends JPanel {
                     "The sky, orbits, light, telescopes and planets, with light math. The lessons follow the AST101 "
                   + "slides in order and keep the steps that match them.",
                     List.of(
-                            new Entry(ANGULAR, new Titled("Angular size", "A planet's tiny disc", "Check: the Moon's angular size"),  // Day 3
+                            new Entry(ANGULAR, new Titled("Angular size", "Same angle, different sizes",                            // Day 3
+                                    "A planet's tiny disc", "Check: the Moon's angular size"),
                                     null, "Angular size: why the Moon can cover the Sun",
-                                    "Watch the Moon exactly cover the Sun over Niagara Falls, find an angular size from an "
-                                  + "object's size and distance, and see how tiny Jupiter's disc is through a telescope."),
+                                    "Watch the Moon exactly cover the Sun over Niagara Falls, measure the sky with your hand, "
+                                  + "see why some eclipses are total and others annular, and zoom from the naked eye to a "
+                                  + "telescope to find Jupiter's tiny disc."),
                             new Entry(SKY, new Titled("Altitude and azimuth", "The pole star sits at your latitude"),               // Day 5
                                     null, "Altitude, azimuth and the celestial pole",
                                     "Stand on the UTM campus under the real evening sky, find things by altitude and azimuth, "
@@ -483,8 +489,11 @@ public final class LessonStudio extends JPanel {
         int n = lesson.steps.size();
         i = Math.max(0, Math.min(n - 1, i));
         boolean first = stepIdx < 0;
+        Step s = lesson.steps.get(i), prev = first || stepIdx >= n ? null : lesson.steps.get(stepIdx);
+        // Switching between the sky and the 3-D view: keep the old picture to dissolve from.
+        fadeFrom = prev != null && prev.sky != s.sky ? snapshotCanvas() : null;
+        stepShownT = simT;
         stepIdx = i;
-        Step s = lesson.steps.get(i);
         if (host != null) {
             // Every step starts from the plain heliocentric view and the naked eye; it sets up the rest.
             host.setBarycentric(false);
@@ -660,7 +669,40 @@ public final class LessonStudio extends JPanel {
     // ---- hosting: the simulation canvas calls these while a lesson runs ----
 
     /** Draw the step's annotations and readouts over the live simulation. */
-    void paintOverlay(Graphics2D g, int w, int h) { overlay.paint(g, w, h); }
+    /** Seconds a new step's annotations and readouts take to fade in, and a sky ↔ 3-D switch to dissolve. */
+    static final double FADE_IN = 0.35, DISSOLVE = 0.5;
+    /** Lesson time ({@link #simT}) when the current step was shown. */
+    private double stepShownT;
+    /** The last frame of the previous step's view while it dissolves into the new one, or null. */
+    private BufferedImage fadeFrom;
+
+    private BufferedImage snapshotCanvas() {
+        int w = canvas.getWidth(), h = canvas.getHeight();
+        if (w <= 0 || h <= 0) return null;
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = img.createGraphics();
+        canvas.paint(g);
+        g.dispose();
+        return img;
+    }
+
+    static double smooth(double x) { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); }
+
+    void paintOverlay(Graphics2D g, int w, int h) {
+        double age = simT - stepShownT;
+        BufferedImage from = fadeFrom;
+        if (from != null) {
+            float a = (float) (1 - smooth(age / DISSOLVE));
+            if (a <= 0) fadeFrom = null;
+            else {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setComposite(AlphaComposite.SrcOver.derive(a));
+                g2.drawImage(from, 0, 0, null);
+                g2.dispose();
+            }
+        }
+        overlay.paint(g, w, h, (float) smooth(age / FADE_IN));
+    }
     /** Ease the camera back to the step's framing (double-click on the view). */
     void reaim() { overlay.reaim(); }
 
@@ -1465,10 +1507,11 @@ public final class LessonStudio extends JPanel {
             public double[] eye() { return v(0, 0, 0); }
         };
 
-        void paint(Graphics2D g0, int w, int h) {
+        void paint(Graphics2D g0, int w, int h, float alpha) {
             Step s = step();
-            if (s == null) return;
+            if (s == null || alpha <= 0) return;
             Graphics2D g = (Graphics2D) g0.create();
+            if (alpha < 1) g.setComposite(AlphaComposite.SrcOver.derive(alpha));
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
             g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
@@ -2147,6 +2190,21 @@ public final class LessonStudio extends JPanel {
             }
         }
 
+        /** Days since the orbit's last perihelion, from its mean anomaly. */
+        double daysSincePeri(Orbit o) {
+            double E = o.E(), M = E - o.e() * Math.sin(E);
+            M = ((M % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+            return M / (2 * Math.PI) * o.periodYears() * 365.25;
+        }
+
+        /** Pause and move the clock so the body is {@code days} past perihelion (to the minute). */
+        void scrubTo(Orbit o, double days) {
+            host.setTime(0);
+            double t = host.simTime() + (days - daysSincePeri(o)) * DAY;
+            java.time.LocalDateTime d = java.time.LocalDateTime.of(2000, 1, 1, 12, 0).plusSeconds(Math.round(t));
+            host.goToUTC(d.getYear(), d.getMonthValue(), d.getDayOfMonth(), d.getHour(), d.getMinute());
+        }
+
         void timeSlider(Controls c, double maxDays) {
             c.slider("Time speed", 0, maxDays, () -> host.timeScale() / DAY, x -> host.setTime(x * DAY),
                     x -> x < 0.05 ? "paused" : String.format("%.1f days per second", x));
@@ -2286,11 +2344,18 @@ public final class LessonStudio extends JPanel {
                 $ vₚ / vₐ = Q / q = (1 + e) / (1 − e)
 
                 The green arrow is Mercury's real orbital speed.
+
+                > Drag "Mercury's day" to walk it around the orbit yourself: every wedge is the same
+                5.5 days, but near the Sun those days carry it much farther.
                 """)
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Mercury"); host.setOrbits(true, true); timeFor(mercury, 16); })
                 .cam(frame(mercury, 20, 0))
-                .controls(c -> timeSlider(c, 20))
+                .controls(c -> {
+                    timeSlider(c, 20);
+                    c.slider("Mercury's day (since perihelion)", 0, 87.9, () -> daysSincePeri(mercury), x -> scrubTo(mercury, x),
+                            x -> String.format("day %.0f of 88", x));
+                })
                 .scene((r, hud, t) -> {
                     draw(r, mercury, PERI | APO | SPEED);
                     hud.title("Mercury's speed", GREEN);

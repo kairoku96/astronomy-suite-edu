@@ -240,6 +240,7 @@ public class SolarSystemSimulation extends JPanel
             cameraIsApproaching = moonCameraIsApproaching = false;
             lessonSaved = null;
             lessonAimGoal = null;
+            lessonFlight = lessonSkyFlight = null;
             lessonAimBody = null;
             lessonSkyGoal = null;
             lessonSkyTrack = null;
@@ -256,30 +257,90 @@ public class SolarSystemSimulation extends JPanel
         repaint();
     }
 
-    /** Ease the lesson camera toward its goal (called each frame while nothing is followed). */
+    /** The lesson camera's timed move to a new framing, or null once it has arrived (then it just tracks). */
+    private ZoomPath lessonFlight;
+    /** The view the move started from and the goal it is flying to: {cx, cy, cz, radius m, pitch°, yaw°}. */
+    private double[] lessonFlightFrom, lessonFlightTo;
+    /** The body the move's centres are measured from (null = the world). */
+    private String lessonFlightBody;
+    /** A new goal arrived: decide on the next frame whether it needs a move or just tracking. */
+    private boolean lessonRetarget;
+
+    /**
+     * True when two lesson views {centre…, radius, angles…} are too far apart to simply ease
+     * between: the centre moves more than a fraction of the view, the zoom changes by more than
+     * ~30%, or the angles turn by more than a few degrees.
+     */
+    private static boolean viewsApart(double[] a, double[] b, int nCentre) {
+        double d2 = 0;
+        for (int c = 0; c < nCentre; c++) d2 += (b[c] - a[c]) * (b[c] - a[c]);
+        double r = Math.min(a[nCentre], b[nCentre]);
+        if (Math.sqrt(d2) > 0.15 * r || Math.abs(Math.log(b[nCentre] / a[nCentre])) > 0.25) return true;
+        for (int c = nCentre + 1; c < a.length; c++)
+            if (Math.abs(Math.IEEEremainder(b[c] - a[c], 360)) > 8) return true;
+        return false;
+    }
+
+    /**
+     * Move the lesson camera toward its goal. A new framing is flown to on a {@link ZoomPath}
+     * (about a second at any scale); after that, and for small goal changes such as a slider
+     * moving the subject, the view eases toward the goal with the pan measured in view widths,
+     * so a zoom-in never leaves the subject sliding across the screen.
+     */
     private void steerLessonCamera(double dtReal) {
         double[] g = lessonAimGoal;
-        double k = 1 - Math.exp(-3.0 * dtReal);
-        double zoomGoal = 0.40 * Math.max(1, Math.min(getWidth(), getHeight())) / (g[2] * METERS_TO_PIXELS);
-        lessonCamOffZ += ((g.length > 5 ? g[5] : 0) - lessonCamOffZ) * k;     // height of the centre (above the body)
-        if (lessonAimBody != null) {
-            // Centred on a moving body: ease only the offset from it, so the camera keeps up
-            // with the body however fast the clock runs.
-            double[] b = lessonBodyWorld(lessonAimBody);
-            lessonCamOffX += (g[0] - lessonCamOffX) * k;
-            lessonCamOffY += (g[1] - lessonCamOffY) * k;
+        double[] b = lessonAimBody != null ? lessonBodyWorld(lessonAimBody) : null;
+        double minDim = Math.max(1, Math.min(getWidth(), getHeight()));
+        // Centred on a moving body, the centre is the offset from it, so the camera keeps up
+        // with the body however fast the clock runs.
+        double[] cur = {b != null ? lessonCamOffX : camX, b != null ? lessonCamOffY : camY, lessonCamOffZ,
+                0.40 * minDim / (currentZoom * METERS_TO_PIXELS), Math.toDegrees(viewPitchRad), Math.toDegrees(viewYawRad)};
+        double[] goal = {g[0], g[1], g.length > 5 ? g[5] : 0, g[2], Math.max(0, Math.min(Math.toDegrees(MAX_PITCH_RAD), g[3])), g[4]};
+        if (lessonRetarget) {
+            lessonRetarget = false;
+            boolean flyingThere = lessonFlight != null && java.util.Objects.equals(lessonFlightBody, lessonAimBody)
+                    && !viewsApart(lessonFlightTo, goal, 3);
+            if (!flyingThere && viewsApart(cur, goal, 3)) {
+                double dist = Math.sqrt(Math.pow(goal[0] - cur[0], 2) + Math.pow(goal[1] - cur[1], 2) + Math.pow(goal[2] - cur[2], 2));
+                lessonFlight = new ZoomPath(dist, cur[3], goal[3]);
+                lessonFlightFrom = cur;
+                lessonFlightTo = goal;
+                lessonFlightBody = lessonAimBody;
+            } else if (!flyingThere) lessonFlight = null;
+        }
+        double[] next = new double[6];
+        if (lessonFlight != null) {
+            boolean done = lessonFlight.advance(dtReal);
+            double p = lessonFlight.pan(), f = lessonFlight.ease();
+            double[] a = lessonFlightFrom, z = lessonFlightTo;
+            for (int c = 0; c < 3; c++) next[c] = a[c] + (z[c] - a[c]) * p;
+            next[3] = lessonFlight.width();
+            next[4] = a[4] + (z[4] - a[4]) * f;
+            next[5] = a[5] + Math.IEEEremainder(z[5] - a[5], 360) * f;
+            if (done) lessonFlight = null;
+        } else {
+            double k = 1 - Math.exp(-5.0 * dtReal);
+            next[3] = Math.exp(Math.log(cur[3]) + Math.log(goal[3] / cur[3]) * k);
+            double keep = (1 - k) * Math.min(1, next[3] / cur[3]);      // the same share of the view each frame
+            for (int c = 0; c < 3; c++) next[c] = goal[c] + (cur[c] - goal[c]) * keep;
+            next[4] = cur[4] + (goal[4] - cur[4]) * k;
+            next[5] = cur[5] + Math.IEEEremainder(goal[5] - cur[5], 360) * k;
+        }
+        lessonCamOffZ = next[2];                                       // height of the centre (above the body)
+        if (b != null) {
+            lessonCamOffX = next[0];
+            lessonCamOffY = next[1];
             camX = b[0] + lessonCamOffX;
             camY = b[1] + lessonCamOffY;
         } else {
-            camX += (g[0] - camX) * k;
-            camY += (g[1] - camY) * k;
+            camX = next[0];
+            camY = next[1];
         }
         moonCamX = camX; moonCamY = camY;
-        currentZoom = Math.exp(Math.log(currentZoom) + (Math.log(zoomGoal) - Math.log(currentZoom)) * k);
+        currentZoom = 0.40 * minDim / (next[3] * METERS_TO_PIXELS);
         targetZoom = currentZoom;
-        setViewPitch(viewPitchRad + (Math.toRadians(g[3]) - viewPitchRad) * k);
-        double dy = Math.IEEEremainder(Math.toRadians(g[4]) - viewYawRad, 2 * Math.PI);
-        setViewYaw(viewYawRad + dy * k);
+        setViewPitch(Math.toRadians(next[4]));
+        setViewYaw(Math.toRadians(next[5]));
     }
 
     /** The simulation as seen by the lessons (see {@link LessonStudio.Host}). */
@@ -314,7 +375,8 @@ public class SolarSystemSimulation extends JPanel
             lessonAimGoal = goal.clone();
             if (lessonAimBody != null) lessonCamOffZ = camZ;   // continue smoothly from the followed body's height
             lessonAimBody = null;
-            lessonSteer = true;
+            if (!lessonSteer) lessonFlight = null;              // the user moved the view: start afresh from there
+            lessonSteer = lessonRetarget = true;
         }
         public double sunRadiusM() { return SUN_RADIUS_M; }
 
@@ -428,7 +490,8 @@ public class SolarSystemSimulation extends JPanel
         public void skyAim(double[] azAltFov) { skyAim(azAltFov, null); }
         public void skyAim(double[] goal, String track) {
             if (track == null || !track.equals(lessonSkyTrack)) lessonSkyTrackPrev = null;
-            lessonSkyGoal = goal.clone(); lessonSkyTrack = track; lessonSteer = true;
+            if (!lessonSteer || !java.util.Objects.equals(track, lessonSkyTrack)) lessonSkyFlight = null;
+            lessonSkyGoal = goal.clone(); lessonSkyTrack = track; lessonSteer = lessonSkyRetarget = true;
         }
         public void skyLayers(boolean altAzGrid, boolean eqGrid, boolean constellations, boolean ground) {
             SkyView sv = skyView();
@@ -496,21 +559,73 @@ public class SolarSystemSimulation extends JPanel
     /** Body the lesson's sky view tracks, like a telescope's drive (the goal is then an offset from it), or null. */
     private String lessonSkyTrack;
 
+    /** The sky view's timed move to a new goal, or null once it has arrived. */
+    private ZoomPath lessonSkyFlight;
+    /** Where the sky move started, {azimuth°, altitude°, field°}, measured from the tracked body like the goal. */
+    private double[] lessonSkyFrom, lessonSkyTo;
+    private boolean lessonSkyRetarget;
+
+    /** Unit east-north-up vector of an {azimuth°, altitude°} direction. */
+    private static double[] enu(double azDeg, double altDeg) {
+        double az = Math.toRadians(azDeg), alt = Math.toRadians(altDeg);
+        return new double[]{Math.cos(alt) * Math.sin(az), Math.cos(alt) * Math.cos(az), Math.sin(alt)};
+    }
+    /** Angle (degrees) between two {azimuth°, altitude°} directions. */
+    private static double skyAngle(double[] a, double[] b) {
+        double[] p = enu(a[0], a[1]), q = enu(b[0], b[1]);
+        double c = p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+        double[] x = {p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]};
+        return Math.toDegrees(Math.atan2(Math.sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]), c));
+    }
+
     /**
-     * Ease the sky view toward the lesson's goal. A tracked body is followed like a telescope's
-     * clock drive: once the view has swung onto it, it stays locked on however fast the sky turns.
+     * Move the sky view toward the lesson's goal: a new goal is flown to on a {@link ZoomPath}
+     * along the great circle (widening the field first when the target is far outside it), then
+     * small changes are eased with the pan measured in fields of view. A tracked body is followed
+     * like a telescope's clock drive: once the view has swung onto it, it stays locked on however
+     * fast the sky turns.
      */
     private void steerLessonSky(double dtReal) {
         SkyView sv = skyView();
-        double[] cur = sv.view(), g = lessonSkyGoal.clone();
+        double[] cur = sv.view();
+        double baz = 0, balt = 0;
         if (lessonSkyTrack != null) {
             double[] b = sv.bodyInfo(lessonSkyTrack, simTimeSec);
-            if (b != null) { g[0] += b[1]; g[1] += b[0]; }
+            if (b != null) { baz = b[1]; balt = b[0]; }
         }
-        double k = 1 - Math.exp(-3.0 * dtReal);
-        double daz = Math.IEEEremainder(g[0] - cur[0], 360), dalt = g[1] - cur[1];
-        sv.look(cur[0] + daz * k, cur[1] + dalt * k);
-        sv.setFov(Math.exp(Math.log(cur[2]) + (Math.log(g[2]) - Math.log(cur[2])) * k));
+        double[] goal = {lessonSkyGoal[0] + baz, lessonSkyGoal[1] + balt, Math.max(0.02, Math.min(200, lessonSkyGoal[2]))};
+        if (lessonSkyRetarget) {
+            lessonSkyRetarget = false;
+            double[] flyingTo = lessonSkyFlight == null ? null : new double[]{lessonSkyTo[0] + baz, lessonSkyTo[1] + balt, lessonSkyTo[2]};
+            boolean flyingThere = flyingTo != null && skyAngle(flyingTo, goal) < 0.15 * goal[2]
+                    && Math.abs(Math.log(goal[2] / flyingTo[2])) < 0.25;
+            if (!flyingThere && (skyAngle(cur, goal) > 0.15 * Math.min(cur[2], goal[2]) || Math.abs(Math.log(goal[2] / cur[2])) > 0.25)) {
+                lessonSkyFlight = new ZoomPath(skyAngle(cur, goal), cur[2], goal[2]);
+                lessonSkyFrom = new double[]{cur[0] - baz, cur[1] - balt, cur[2]};
+                lessonSkyTo = new double[]{goal[0] - baz, goal[1] - balt, goal[2]};
+            } else if (!flyingThere) lessonSkyFlight = null;
+        }
+        if (lessonSkyFlight != null) {
+            boolean done = lessonSkyFlight.advance(dtReal);
+            double p = lessonSkyFlight.pan();
+            // Slerp between the two ends, both carried along with the tracked body.
+            double[] a = enu(lessonSkyFrom[0] + baz, lessonSkyFrom[1] + balt), z = enu(lessonSkyTo[0] + baz, lessonSkyTo[1] + balt);
+            double th = Math.toRadians(skyAngle(new double[]{lessonSkyFrom[0] + baz, lessonSkyFrom[1] + balt},
+                    new double[]{lessonSkyTo[0] + baz, lessonSkyTo[1] + balt}));
+            double wa = th < 1e-9 ? 1 - p : Math.sin((1 - p) * th) / Math.sin(th), wz = th < 1e-9 ? p : Math.sin(p * th) / Math.sin(th);
+            double[] d = {wa * a[0] + wz * z[0], wa * a[1] + wz * z[1], wa * a[2] + wz * z[2]};
+            double alt = Math.toDegrees(Math.atan2(d[2], Math.hypot(d[0], d[1])));
+            double az = Math.hypot(d[0], d[1]) < 1e-12 ? cur[0] : Math.toDegrees(Math.atan2(d[0], d[1]));
+            sv.look(az, alt);
+            sv.setFov(lessonSkyFlight.width());
+            if (done) lessonSkyFlight = null;
+            return;
+        }
+        double k = 1 - Math.exp(-5.0 * dtReal);
+        double fov = Math.exp(Math.log(cur[2]) + Math.log(goal[2] / cur[2]) * k);
+        double keep = (1 - k) * Math.min(1, fov / cur[2]);        // the same share of the field each frame
+        sv.look(goal[0] - Math.IEEEremainder(goal[0] - cur[0], 360) * keep, goal[1] - (goal[1] - cur[1]) * keep);
+        sv.setFov(fov);
     }
 
     /** The tracked body's {altitude°, azimuth°} last frame, for the clock drive. */
@@ -1063,6 +1178,10 @@ public class SolarSystemSimulation extends JPanel
             oscI = new double[NAMES.length], oscNode = new double[NAMES.length],
             oscVarpi = new double[NAMES.length], oscM = new double[NAMES.length],
             oscEanom = new double[NAMES.length], oscPeriodY = new double[NAMES.length];
+    /** Translation (world, m) that puts each osculating ellipse through the planet's own centre. */
+    private final double[] oscShift = new double[3 * NAMES.length];
+    /** The massive bodies' system-barycentre states this frame (layout of {@link #ephemerisStates}). */
+    private final double[] ephemBary = new double[6 * NBodyEphemeris.N_MASSIVE];
 
     /** Built-in catalog of real minor bodies (comets, asteroids, distant objects). */
     private final java.util.List<SmallBody> smallBodies = new java.util.ArrayList<>();
@@ -2812,12 +2931,16 @@ public class SolarSystemSimulation extends JPanel
      * at UTC sim time {@code simSec} — planets at their own centres, minor bodies as integrated —
      * followed by the Sun's position relative to the Solar-System barycentre (3 more doubles, AU).
      */
-    static double[] ephemerisStates(double simSec) {
+    static double[] ephemerisStates(double simSec) { return ephemerisStates(simSec, null); }
+
+    /** As {@link #ephemerisStates(double)}, also copying the massive bodies' system-barycentre states into {@code bary}. */
+    static double[] ephemerisStates(double simSec, double[] bary) {
         int n = NBodyEphemeris.N_BODIES;
         double[] s = new double[6 * n + 3];
         NBodyEphemeris.shared().heliocentric(Astro.ttSeconds(simSec), s);
         double[] sun = NBodyEphemeris.sunBarycentric(s);   // from the barycentres, before re-centring
         System.arraycopy(sun, 0, s, 6 * n, 3);
+        if (bary != null) System.arraycopy(s, 0, bary, 0, 6 * NBodyEphemeris.N_MASSIVE);
         for (int i = 0; i < NAMES.length; i++) toPlanetCentre(s, i, simSec);
         return s;
     }
@@ -2890,7 +3013,7 @@ public class SolarSystemSimulation extends JPanel
      * speeds and osculating elements, the minor bodies, and the Sun's barycentric offset.
      */
     void updateEphemeris() {
-        double[] s = ephemerisStates(simTimeSec);
+        double[] s = ephemerisStates(simTimeSec, ephemBary);
         ephem = s;
         double ex = s[12], ey = s[13], ez = s[14];
         for (int i = 0; i < NAMES.length; i++) {
@@ -2907,11 +3030,13 @@ public class SolarSystemSimulation extends JPanel
             planetDistM[i] = Math.sqrt(s[o] * s[o] + s[o + 1] * s[o + 1] + s[o + 2] * s[o + 2]) * AU;
             double v = Math.sqrt(s[o + 3] * s[o + 3] + s[o + 4] * s[o + 4] + s[o + 5] * s[o + 5]);
             planetSpeedKmS[i] = v * AU / DAY / 1000.0;
-            double mu = NBodyEphemeris.GM_SUN + NBodyEphemeris.GM[i];
-            double[] el = NBodyEphemeris.elements(mu, s[o], s[o + 1], s[o + 2], s[o + 3], s[o + 4], s[o + 5]);
+            double[] el = jacobiElements(ephemBary, i);
+            double mu = el[7];
             oscA[i] = el[0] * AU; oscE[i] = el[1]; oscI[i] = el[2]; oscNode[i] = el[3];
             oscVarpi[i] = el[4]; oscM[i] = el[5]; oscEanom[i] = el[6];
             oscPeriodY[i] = 2 * Math.PI * Math.sqrt(el[0] * el[0] * el[0] / mu) / 365.25;
+            double[] k = keplerXYZ(oscA[i], oscE[i], oscEanom[i], oscI[i], oscNode[i], oscVarpi[i]);
+            oscShift[3 * i] = trueX[i] - k[0]; oscShift[3 * i + 1] = trueY[i] - k[1]; oscShift[3 * i + 2] = trueZ[i] - k[2];
         }
         for (SmallBody sb : smallBodies) {
             sb.update(s);
@@ -2929,7 +3054,33 @@ public class SolarSystemSimulation extends JPanel
 
     /** Point at eccentric anomaly {@code E} on planet {@code i}'s current osculating orbit (world, m, heliocentric). */
     private double[] planetOrbitPoint(int i, double E) {
-        return keplerXYZ(oscA[i], oscE[i], E, oscI[i], oscNode[i], oscVarpi[i]);
+        double[] p = keplerXYZ(oscA[i], oscE[i], E, oscI[i], oscNode[i], oscVarpi[i]);
+        p[0] += oscShift[3 * i]; p[1] += oscShift[3 * i + 1]; p[2] += oscShift[3 * i + 2];
+        return p;
+    }
+
+    /**
+     * Osculating elements of planet {@code i}'s system barycentre in Jacobi coordinates: relative
+     * to the centre of mass of the Sun and every massive body inside its orbit, under their
+     * combined GM plus its own. Elements of the planet's centre about the Sun wobble with its
+     * moons (Earth's a by ±0.001 AU every month, Pluto's by ±0.5 AU every 6.4 days) and, past
+     * Jupiter, with the Sun's own swing around Jupiter (Neptune's a by ±0.05 AU); these change
+     * only as the planets really pull on each other. {a, e, i, Ω, ϖ, M, E, μ} in
+     * {@link NBodyEphemeris#elements}' units.
+     */
+    private static double[] jacobiElements(double[] bary, int i) {
+        double m0 = NBodyEphemeris.GM_SUN;
+        double[] cm = new double[6];
+        for (int j = 0; j < NAMES.length; j++)
+            if (A_METERS[j] < A_METERS[i]) {
+                for (int c = 0; c < 6; c++) cm[c] += NBodyEphemeris.GM[j] * bary[6 * j + c];
+                m0 += NBodyEphemeris.GM[j];
+            }
+        double[] x = new double[6];
+        for (int c = 0; c < 6; c++) x[c] = bary[6 * i + c] - cm[c] / m0;
+        double mu = m0 + NBodyEphemeris.GM[i];
+        double[] el = NBodyEphemeris.elements(mu, x[0], x[1], x[2], x[3], x[4], x[5]);
+        return new double[]{ el[0], el[1], el[2], el[3], el[4], el[5], el[6], mu };
     }
 
     /** Newton solve of Kepler's equation M = E - e sinE for the eccentric anomaly E. */
