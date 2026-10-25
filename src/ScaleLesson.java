@@ -28,6 +28,26 @@ final class ScaleLesson extends LessonKit {
         camGoal = new double[]{0, 0, Math.max(0.6, d * 1.12) * AU, 25, 0};
     }
 
+    /**
+     * The light pulse is a sphere about the Sun; draw its outline as the camera sees it: the circle
+     * where sight lines graze it, centred r²/D toward the eye with radius r·√(1 − r²/D²). So it stays a
+     * true expanding shell, through every inclined planet it reaches, from any angle.
+     */
+    double[][] shell(double rad) {
+        double[] eye = scaleV(host.eye(), 1 / AU);
+        double D = len(eye);
+        double[] n = D > 0 ? scaleV(eye, 1 / D) : v(0, 0, 1);
+        if (rad >= D * 0.999) n = v(0, 0, 1);                       // the camera is inside it: show its slice through the ecliptic
+        double off = rad >= D * 0.999 ? 0 : rad * rad / D, rr = rad >= D * 0.999 ? rad : rad * Math.sqrt(1 - sq(rad / D));
+        double[] x = norm(cross(Math.abs(n[2]) < 0.9 ? v(0, 0, 1) : v(1, 0, 0), n)), y = cross(n, x), c = scaleV(n, off);
+        double[][] p = new double[200][];
+        for (int i = 0; i < 200; i++) {
+            double a = 2 * Math.PI * i / 200;
+            p[i] = add(c, add(scaleV(x, rr * Math.cos(a)), scaleV(y, rr * Math.sin(a))));
+        }
+        return p;
+    }
+
     /** The pulse's speed-up: it reaches the chosen planet in 4 real seconds. */
     double speedUp() { return dist(PLANETS[target]) / C / 4; }
 
@@ -70,9 +90,7 @@ final class ScaleLesson extends LessonKit {
                 .controls(c -> c.choices("Send light to", PLANETS, () -> target, k -> { target = k; frame(); pulseAge = 0; }))
                 .scene((r, hud, t) -> {
                     double k = speedUp(), travelled = C * k * pulseAge, rad = travelled / AU;
-                    double[][] ring = new double[200][];
-                    for (int i = 0; i < 200; i++) ring[i] = v(rad * Math.cos(2 * Math.PI * i / 200), rad * Math.sin(2 * Math.PI * i / 200), 0);
-                    r.polyline(ring, true, new Color(255, 236, 160, 220), 2.4f, false);
+                    r.polyline(shell(rad), true, new Color(255, 236, 160, 220), 2.4f, false);
                     for (int i = 0; i <= target; i++) {
                         double d = dist(PLANETS[i]);
                         double[] p = scaleV(pos(host.state(PLANETS[i])), 1 / AU);

@@ -26,7 +26,7 @@ final class KirkwoodLesson extends LessonKit {
     int total;
     double testA = 3.05;
     double lam0, tStart, prevD = Double.NaN;
-    final List<double[]> meets = new ArrayList<>();
+    final List<double[][]> meets = new ArrayList<>();          // each pass: {the test asteroid, Jupiter} (AU)
     double[] camGoal = {0, 0, 5.8 * AU, 10, 0};
 
     void load() {
@@ -168,14 +168,14 @@ final class KirkwoodLesson extends LessonKit {
                     double[] ap = testPos(now), jp = scaleV(pos(host.state("Jupiter")), 1 / AU);
                     double d = Math.IEEEremainder(Math.atan2(ap[1], ap[0]) - Math.atan2(jp[1], jp[0]), 2 * Math.PI);
                     if (!Double.isNaN(prevD) && prevD < 0 && d >= 0 && d - prevD < Math.PI) {
-                        meets.add(ap);
+                        meets.add(new double[][]{ap, jp});
                         if (meets.size() > 40) meets.remove(0);
                     }
                     prevD = d;
                     r.polyline(circle(testA), true, alpha(SUN_C, 90), 1.2f, true);
-                    for (double[] m : meets) {
-                        r.dot(m, 4.5, alpha(PERI_C, 220));
-                        r.line(m, scaleV(norm(m), aJ()), alpha(PERI_C, 50), 1f, false);
+                    for (double[][] m : meets) {
+                        r.dot(m[0], 4.5, alpha(PERI_C, 220));
+                        r.line(m[0], m[1], alpha(PERI_C, 50), 1f, false);                // to where Jupiter really was
                     }
                     r.dot(ap, 6, SUN_C);
                     double P = Math.pow(testA, 1.5), PJ = Math.pow(aJ(), 1.5), ratio = PJ / P;

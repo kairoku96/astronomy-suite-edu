@@ -49,7 +49,7 @@ final class RetrogradeLesson extends LessonKit {
         if (playing && track != null) night = (night + dt * 12) % NIGHTS;     // 12 nights a second
     }
 
-    /** Where the ray from p along u leaves a circle of radius R about the Sun (in the ecliptic plane). */
+    /** Where the ray from p along u leaves a sphere of radius R about the Sun. */
     static double[] toBackdrop(double[] p, double[] u, double R) {
         double pu = dot(p, u), s = -pu + Math.sqrt(Math.max(0, pu * pu - dot(p, p) + R * R));
         return add(p, scaleV(u, s));
@@ -162,7 +162,7 @@ final class RetrogradeLesson extends LessonKit {
                     for (int k = 14; k >= 0; k--) {
                         double tk = now - k * 12 * DAY;
                         double[] e = scaleV(pos(host.stateAt("Earth", tk)), 1 / AU), m = scaleV(pos(host.stateAt("Mars", tk)), 1 / AU);
-                        double[] end = toBackdrop(v(e[0], e[1], 0), norm(v(m[0] - e[0], m[1] - e[1], 0)), R);
+                        double[] end = toBackdrop(e, norm(sub(m, e)), R);      // in 3-D, so the line passes through Mars from any angle
                         int a = 40 + 200 * (14 - k) / 14;
                         r.line(e, end, alpha(k == 0 ? SUN_C : INK, k == 0 ? 230 : a / 2), k == 0 ? 2f : 1f, false);
                         r.dot(end, k == 0 ? 5 : 3, alpha(PERI_C, a));

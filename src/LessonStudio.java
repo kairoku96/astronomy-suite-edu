@@ -504,6 +504,12 @@ public final class LessonStudio extends JPanel {
         if (p != null) { p.revalidate(); p.repaint(); }
     }
 
+    // For the alignment check (-Dsss.aligncheck): walk every step of the course.
+    int lessonCount() { return lessons.size(); }
+    int stepCount() { return lesson == null ? 0 : lesson.steps.size(); }
+    boolean skyStep() { Step s = step(); return s != null && s.sky; }
+    String where() { return lesson == null || stepIdx < 0 ? "" : lesson.title + " / " + lesson.steps.get(stepIdx).title; }
+
     void goStep(int i) {
         if (lesson == null) return;
         int n = lesson.steps.size();
@@ -1733,6 +1739,10 @@ public final class LessonStudio extends JPanel {
         void line(double[] a, double[] b, Color c, float w, boolean dashed) {
             double len = Math.sqrt(sq(b[0] - a[0]) + sq(b[1] - a[1]) + sq(b[2] - a[2]));
             int n = Math.max(1, (int) Math.ceil(len / (dashed ? 0.16 : 0.5)));
+            // Dashes are cut in scene units; in a scene measured in thousands of km they'd shrink below a
+            // pixel and the line would look solid, so keep each dash at least ~4 px on screen.
+            if (dashed && proj(a[0], a[1], a[2], pa) && proj(b[0], b[1], b[2], pb))
+                n = Math.min(n, Math.max(3, (int) (Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / 8)));
             if (dashed && n % 2 == 0) n++;
             for (int i = 0; i < n; i++) {
                 if (dashed && (i & 1) == 1) continue;

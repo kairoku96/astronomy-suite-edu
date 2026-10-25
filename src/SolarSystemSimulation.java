@@ -205,11 +205,12 @@ public class SolarSystemSimulation extends JPanel
                 timeScale, simulationPaused, simTimeSec, camX, camY, camZ, currentZoom, targetZoom,
                 autoZoomEnabled, zoomMode, followingPlanet, followingMoon, cameraFocusIndex, cameraFocusMoon,
                 selectedPlanet, selectedMoon, viewPitchRad, viewYawRad, showSunInfo,
-                skyViewActive, skyView().snapshot()};
+                skyViewActive, skyView().snapshot(), apparentPositions};
             if (earthExplorerActive) exitEarthExplorer();
             showPerihelionAphelion = showVelocityVectors = showVelocityComparison = showKeplersLaw = false;
             showOnlySelected = false;
             showSunInfo = false;
+            if (apparentPositions) { apparentPositions = false; updateEphemeris(); }   // lessons draw where things are now, not light-time
             barycentricFrame = false;
             simulationPaused = false;
             computeBarycenter();
@@ -236,6 +237,8 @@ public class SolarSystemSimulation extends JPanel
             showSunInfo = (Boolean) s[k++];
             skyViewActive = (Boolean) s[k++];
             skyView().restore((Object[]) s[k++]);
+            apparentPositions = (Boolean) s[k++];
+            updateEphemeris();
             moonCamX = camX; moonCamY = camY;
             cameraIsApproaching = moonCameraIsApproaching = false;
             lessonSaved = null;
@@ -341,6 +344,67 @@ public class SolarSystemSimulation extends JPanel
         targetZoom = currentZoom;
         setViewPitch(Math.toRadians(next[4]));
         setViewYaw(Math.toRadians(next[5]));
+    }
+
+    /**
+     * Debug (-Dsss.aligncheck): for every 3-D step of the course, turn the camera through yaw 0–330°
+     * and pitch 0–180° in 30° steps, and measure how far (px) the lessons' overlay puts each visible
+     * planet, moon and orbit ring from where the sim itself draws them. Prints the worst gap per
+     * step; returns how many steps exceed half a pixel. {@code apparent} turns the light-time view
+     * on first, as if the user had pressed T before starting.
+     */
+    int alignCheck(boolean apparent) {
+        LessonHost h = new LessonHost();
+        double[] o = new double[4];
+        int bad = 0;
+        for (int li = 0; li < lessonStudio.lessonCount(); li++) {
+            if (apparent && li == 0) { apparentPositions = true; updateEphemeris(); }   // the user pressed T before starting
+            lessonStudio.startLesson(li);
+            for (int k = 0; k < lessonStudio.stepCount(); k++) {
+                lessonStudio.goStep(k);
+                for (int fr = 0; fr < 60; fr++) advanceFrame(1 / 30.0);
+                if (lessonStudio.skyStep()) continue;
+                double worst = 0;
+                String worstWhat = "";
+                lessonSteer = false;                                     // hold the angles we set
+                for (int yaw = 0; yaw < 360; yaw += 30)
+                    for (int pitch = 0; pitch <= 180; pitch += 30) {
+                        setViewYaw(Math.toRadians(yaw));
+                        setViewPitch(Math.toRadians(pitch));
+                        for (int i = 0; i < NAMES.length; i++) {
+                            if (!planetVisible[i]) continue;
+                            double wx = planetX[i] + sunBarycenterX, wy = planetY[i] + sunBarycenterY, wz = planetZ[i];
+                            double[] st = h.stateAt(NAMES[i], simTimeSec);
+                            if (inFront(wx, wy, wz) && h.project(st[0], st[1], st[2], o)) {
+                                double d = Math.hypot(o[0] - projX(wx, wy, wz), o[1] - projY(wx, wy, wz));
+                                if (d > worst) { worst = d; worstWhat = NAMES[i] + String.format(" at yaw %d pitch %d, %.0f km apart in 3-D, t=%.0f vs ephem", yaw, pitch,
+                                        Math.hypot(Math.hypot(st[0] + sunBarycenterX - wx, st[1] + sunBarycenterY - wy), st[2] - wz) / 1e3, simTimeSec); }
+                            }
+                            // The orbit ring a lesson draws (planetOrbit) against the ring the sim draws.
+                            double[] ring = planetOrbitPoint(i, oscEanom[i] + 1.0), lr = h.planetOrbit(i, oscEanom[i] + 1.0);
+                            if (inFront(ring[0] + sunBarycenterX, ring[1] + sunBarycenterY, ring[2]) && h.project(lr[0], lr[1], lr[2], o)) {
+                                double d = Math.hypot(o[0] - projX(ring[0] + sunBarycenterX, ring[1] + sunBarycenterY, ring[2]),
+                                                      o[1] - projY(ring[0] + sunBarycenterX, ring[1] + sunBarycenterY, ring[2]));
+                                if (d > worst) { worst = d; worstWhat = NAMES[i] + "'s orbit ring" + String.format(" at yaw %d pitch %d", yaw, pitch); }
+                            }
+                            for (int m = 0; m < MOON_NAMES[i].length; m++) {
+                                double[] rel = moonRelPos(i, m);
+                                double mx = wx + rel[0], my = wy + rel[1], mz = wz + rel[2];
+                                double[] ms = h.stateAt(MOON_NAMES[i][m], simTimeSec);
+                                if (inFront(mx, my, mz) && h.project(ms[0], ms[1], ms[2], o)) {
+                                    double d = Math.hypot(o[0] - projX(mx, my, mz), o[1] - projY(mx, my, mz));
+                                    if (d > worst) { worst = d; worstWhat = MOON_NAMES[i][m] + String.format(" at yaw %d pitch %d", yaw, pitch); }
+                                }
+                            }
+                        }
+                    }
+                if (worst > 0.5) bad++;
+                System.out.printf("%-6s %7.2f px  %s%s%n", worst > 0.5 ? "OFF" : "ok", worst, lessonStudio.where(),
+                        worst > 0.5 ? "   (worst: " + worstWhat + ")" : "");
+            }
+        }
+        System.out.println(bad + " step(s) misaligned by more than 0.5 px");
+        return bad;
     }
 
     /** The simulation as seen by the lessons (see {@link LessonStudio.Host}). */
@@ -1409,7 +1473,7 @@ public class SolarSystemSimulation extends JPanel
                 selectedPlanet = (selectedPlanet + 1) % NAMES.length;
             }
             case KeyEvent.VK_U -> showSunInfo = !showSunInfo;
-            case KeyEvent.VK_T -> { apparentPositions = !apparentPositions; updateEphemeris(); }
+            case KeyEvent.VK_T -> { if (!lessonActive()) { apparentPositions = !apparentPositions; updateEphemeris(); } }   // lessons stay geometric
             case KeyEvent.VK_H -> toggleMenuBarVisibility();
             default -> { return false; }
         }
@@ -6632,6 +6696,26 @@ public class SolarSystemSimulation extends JPanel
             f.dispose();
             System.out.println("Lesson shots complete: " + lessonDir);
             System.exit(0);
+        }
+        if (System.getProperty("sss.aligncheck") != null) {
+            try { FlatDarkLaf.setup(); } catch (Throwable ignored) { }
+            SolarSystemSimulation sim = new SolarSystemSimulation();
+            sim.computeBarycenter();
+            JPanel root = new JPanel(new BorderLayout());
+            sim.lessonStudio = new LessonStudio(sim, sim.new LessonHost(), sim::onLessonActiveChanged);
+            root.add(sim, BorderLayout.CENTER);
+            root.add(sim.lessonStudio, BorderLayout.EAST);
+            JFrame f = new JFrame();
+            f.setUndecorated(true);
+            f.setContentPane(root);
+            f.setSize(1600, 960);
+            f.addNotify();
+            // On the event thread, so the sim's own animation timer can't move the clock mid-measurement.
+            int[] bad = {0};
+            try { SwingUtilities.invokeAndWait(() -> bad[0] = sim.alignCheck(Boolean.getBoolean("sss.aligncheck.apparent"))); }
+            catch (Exception ex) { ex.printStackTrace(); bad[0] = -1; }
+            f.dispose();
+            System.exit(bad[0] == 0 ? 0 : 1);
         }
         if (System.getProperty("sss.bench") != null) {
             SolarSystemSimulation p = new SolarSystemSimulation();
