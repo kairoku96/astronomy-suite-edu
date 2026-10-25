@@ -8,10 +8,13 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.function.*;
 
 /**
@@ -470,7 +473,10 @@ public final class LessonStudio extends JPanel {
         startLesson(i);
     }
 
-    void startLesson(int i) {
+    void startLesson(int i) { startLesson(i, false); }
+
+    /** Starts lesson {@code i}, at its first step not yet done if {@code resume}. */
+    void startLesson(int i, boolean resume) {
         boolean wasActive = lesson != null;
         lesson = lessons.get(Math.max(0, Math.min(lessons.size() - 1, i)));
         for (Step s : lesson.steps) if (s.quiz != null) s.quiz.reset();
@@ -481,7 +487,12 @@ public final class LessonStudio extends JPanel {
         cards.show(this, "lesson");
         setVisible(true);
         if (!wasActive) onActiveChange.accept(true);
-        goStep(0);
+        int first = 0;
+        if (resume) {
+            Set<String> d = doneTitles(lesson);
+            while (first < lesson.steps.size() - 1 && d.contains(lesson.steps.get(first).title)) first++;
+        }
+        goStep(first);
         revalidateHost();
         canvas.requestFocusInWindow();
     }
@@ -493,6 +504,7 @@ public final class LessonStudio extends JPanel {
         stepIdx = -1;
         controls = null;
         setPreferredSize(new Dimension(PANEL_W, 10));
+        fillPicker();                                          // the lesson just left may be further along now
         cards.show(this, "picker");
         onActiveChange.accept(false);
         revalidateHost();
@@ -531,6 +543,7 @@ public final class LessonStudio extends JPanel {
         s.enter.run();
         if (s.live != null) s.live.run();
         overlay.reaim();
+        if (s.quiz == null) markDone(i);
 
         stepCount.setText("STEP " + (i + 1) + " OF " + n + (s.quiz != null ? "  ·  CHECK YOURSELF" : ""));
         stepCount.setForeground(s.quiz != null ? ORANGE : DIM);
@@ -584,7 +597,7 @@ public final class LessonStudio extends JPanel {
             else if (q.tried[k]) { b.setBackground(BAD.darker()); b.setForeground(Color.WHITE); }
             b.addActionListener(_ -> {
                 if (q.solved) return;
-                if (pick == q.correct) q.solved = true; else q.tried[pick] = true;
+                if (pick == q.correct) { q.solved = true; markDone(stepIdx); } else q.tried[pick] = true;
                 rebuildQuiz(s);
                 stepBar.repaint();
                 quizBox.revalidate();
@@ -656,7 +669,7 @@ public final class LessonStudio extends JPanel {
             b.append("Available lessons: ");
             for (int i = 0; i < lessons.size(); i++)
                 b.append(i == 0 ? "" : "; ").append(i + 1).append(". ").append(lessons.get(i).title)
-                 .append(" (").append(lessons.get(i).level).append(")");
+                 .append(" (").append(lessons.get(i).level).append(", ").append(progressText(lessons.get(i))).append(")");
             return b.append('\n').toString();
         }
         Step s = step();
@@ -766,6 +779,85 @@ public final class LessonStudio extends JPanel {
         }
     }
 
+    // ---- progress: which steps of each lesson the user has done, kept across runs ----
+
+    /** Per course and lesson, the titles of the steps done: seen, or for a check, answered right. */
+    private final AppSettings progress = AppSettings.load(AppSettings.file("lessons.properties"), "Astronomy Suite - lesson progress");
+    /** The head-less shot and alignment runs walk every step; they mustn't mark anything done. */
+    private static final boolean RECORD = System.getProperty("sss.lessonshot") == null && System.getProperty("sss.aligncheck") == null;
+    private static final String SEP = " | ";
+
+    private String progressKey(LessonDef L) { return courseCode() + "." + L.title; }
+
+    private Set<String> doneTitles(LessonDef L) {
+        String v = progress.get(progressKey(L), "");
+        return v.isEmpty() ? new LinkedHashSet<>() : new LinkedHashSet<>(Arrays.asList(v.split(java.util.regex.Pattern.quote(SEP))));
+    }
+    /** How many of the lesson's steps are done. */
+    int stepsDone(LessonDef L) {
+        Set<String> d = doneTitles(L);
+        int n = 0;
+        for (Step s : L.steps) if (d.contains(s.title)) n++;
+        return n;
+    }
+    boolean completed(LessonDef L) { return stepsDone(L) == L.steps.size(); }
+    String progressText(LessonDef L) {
+        int d = stepsDone(L);
+        return d == L.steps.size() ? "completed" : d == 0 ? "not started" : d + " of " + L.steps.size() + " steps done";
+    }
+
+    private void markDone(int k) {
+        if (lesson == null || !RECORD) return;
+        Set<String> d = doneTitles(lesson);
+        if (!d.add(lesson.steps.get(k).title)) return;
+        progress.put(progressKey(lesson), String.join(SEP, d));
+        progress.save();
+    }
+
+    private void resetProgress() {
+        for (LessonDef L : lessons) progress.remove(progressKey(L));
+        progress.save();
+        fillPicker();
+    }
+
+    /** The course's progress in the picker: one segment per lesson, filled as far as its steps are done. */
+    final class CourseBar extends JComponent {
+        private static final int GAP = 4;
+        CourseBar() {
+            setPreferredSize(new Dimension(300, 12));
+            setMaximumSize(new Dimension(Integer.MAX_VALUE, 12));
+            addMouseMotionListener(new MouseMotionAdapter() {
+                @Override public void mouseMoved(MouseEvent e) {
+                    int k = (int) (e.getX() / ((getWidth() + GAP) / (double) lessons.size()));
+                    setToolTipText(k >= 0 && k < lessons.size() ? (k + 1) + ". " + lessons.get(k).title + ": " + progressText(lessons.get(k)) : null);
+                }
+            });
+        }
+        @Override protected void paintComponent(Graphics g0) {
+            int n = lessons.size();
+            if (n == 0) return;
+            Graphics2D g = (Graphics2D) g0.create();
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            double w = (getWidth() + GAP) / (double) n;
+            int h = getHeight();
+            for (int k = 0; k < n; k++) {
+                LessonDef L = lessons.get(k);
+                int x = (int) Math.round(k * w), ww = (int) Math.round((k + 1) * w) - x - GAP;
+                g.setColor(new Color(255, 255, 255, 30));
+                g.fillRoundRect(x, 0, ww, h, h, h);
+                int done = stepsDone(L);
+                if (done == 0) continue;
+                Color a = L.accent;
+                g.setColor(done == L.steps.size() ? a : new Color(a.getRed(), a.getGreen(), a.getBlue(), 120));
+                Shape clip = g.getClip();
+                g.clipRect(x, 0, Math.max(1, (int) Math.round(ww * done / (double) L.steps.size())), h);
+                g.fillRoundRect(x, 0, ww, h, h, h);
+                g.setClip(clip);
+            }
+            g.dispose();
+        }
+    }
+
     // ---- lesson list ----
 
     private JComponent pickerCard() {
@@ -838,7 +930,37 @@ public final class LessonStudio extends JPanel {
         list.add(name);
         list.add(Box.createVerticalStrut(4));
         list.add(blurb);
-        list.add(Box.createVerticalStrut(14));
+        list.add(Box.createVerticalStrut(12));
+        int complete = 0;
+        for (LessonDef L : lessons) if (completed(L)) complete++;
+        JPanel prog = new JPanel(new BorderLayout(8, 0));
+        prog.setOpaque(false);
+        JLabel count = new JLabel(complete + " of " + lessons.size() + " lessons completed");
+        count.setFont(uiFont(Font.BOLD, 12.5f));
+        count.setForeground(complete == lessons.size() ? GREEN : INK);
+        count.setBorder(new EmptyBorder(0, 0, 0, 16));      // room for the label's last glyphs
+        prog.add(count, BorderLayout.WEST);
+        if (lessons.stream().anyMatch(L -> stepsDone(L) > 0)) {
+            JLabel reset = new JLabel("<html><u>Reset</u></html>");
+            reset.setFont(uiFont(Font.PLAIN, 12f));
+            reset.setForeground(DIM);
+            reset.setToolTipText("Clear your progress in " + c.code());
+            reset.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            reset.addMouseListener(new MouseAdapter() {
+                @Override public void mouseClicked(MouseEvent e) {
+                    if (JOptionPane.showConfirmDialog(LessonStudio.this, "Clear your progress in every " + c.code() + " lesson?",
+                            "Reset progress", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) resetProgress();
+                }
+                @Override public void mouseEntered(MouseEvent e) { reset.setForeground(ACCENT); }
+                @Override public void mouseExited(MouseEvent e) { reset.setForeground(DIM); }
+            });
+            prog.add(reset, BorderLayout.EAST);
+        }
+        prog.setMaximumSize(new Dimension(Integer.MAX_VALUE, 20));
+        list.add(prog);
+        list.add(Box.createVerticalStrut(6));
+        list.add(new CourseBar());
+        list.add(Box.createVerticalStrut(16));
         for (int i = 0; i < lessons.size(); i++) {
             JComponent tile = lessonTile(lessons.get(i), i);
             tile.setAlignmentX(LEFT_ALIGNMENT);
@@ -870,10 +992,20 @@ public final class LessonStudio extends JPanel {
         JPanel c = new JPanel();
         c.setOpaque(false);
         c.setLayout(new BoxLayout(c, BoxLayout.Y_AXIS));
+        int done = stepsDone(L), n = L.steps.size();
         JLabel lvl = new JLabel(L.level.toUpperCase() + "   ·   LESSON " + (index + 1));
         lvl.setFont(uiFont(Font.BOLD, 11.5f));
         lvl.setForeground(L.accent);
         lvl.setBorder(new EmptyBorder(0, 0, 0, 16));        // room for the label's last glyphs
+        JLabel status = new JLabel(done == n ? "COMPLETED" : done > 0 ? done + " / " + n + " STEPS" : "");
+        status.setFont(uiFont(Font.BOLD, 11.5f));
+        status.setForeground(done == n ? GREEN : DIM);
+        status.setBorder(new EmptyBorder(0, 0, 0, 6));      // room for the label's last glyphs
+        JPanel top = new JPanel(new BorderLayout());
+        top.setOpaque(false);
+        top.add(lvl, BorderLayout.WEST);
+        top.add(status, BorderLayout.EAST);
+        top.setMaximumSize(new Dimension(Integer.MAX_VALUE, top.getPreferredSize().height));
         RichText ti = new RichText(19f);
         ti.setBox(null, INK, 0);
         ti.setMarkup("**" + L.title + "**");
@@ -886,19 +1018,39 @@ public final class LessonStudio extends JPanel {
         JLabel meta = new JLabel((L.steps.size() - L.quizCount()) + " interactive steps  ·  " + L.quizCount() + " checks");
         meta.setFont(uiFont(Font.PLAIN, 12f));
         meta.setForeground(DIM);
-        for (JComponent j : new JComponent[]{lvl, ti, su, bl, meta}) j.setAlignmentX(LEFT_ALIGNMENT);
-        c.add(lvl); c.add(Box.createVerticalStrut(6));
+        for (JComponent j : new JComponent[]{top, ti, su, bl, meta}) j.setAlignmentX(LEFT_ALIGNMENT);
+        c.add(top); c.add(Box.createVerticalStrut(6));
         c.add(ti); c.add(Box.createVerticalStrut(2));
         c.add(su); c.add(Box.createVerticalStrut(8));
         c.add(bl); c.add(Box.createVerticalStrut(8));
         c.add(meta);
+        if (done > 0) {                                     // how far through it you are
+            JComponent bar = new JComponent() {
+                @Override protected void paintComponent(Graphics g0) {
+                    Graphics2D g = (Graphics2D) g0.create();
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    int w = getWidth(), h = getHeight();
+                    g.setColor(new Color(255, 255, 255, 30));
+                    g.fillRoundRect(0, 0, w, h, h, h);
+                    g.setColor(done == n ? GREEN : L.accent);
+                    g.fillRoundRect(0, 0, Math.max(h, (int) Math.round(w * done / (double) n)), h, h, h);
+                    g.dispose();
+                }
+            };
+            bar.setPreferredSize(new Dimension(100, 5));
+            bar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 5));
+            bar.setAlignmentX(LEFT_ALIGNMENT);
+            bar.setToolTipText(progressText(L));
+            c.add(Box.createVerticalStrut(10));
+            c.add(bar);
+        }
         tile.add(c, BorderLayout.CENTER);
-        JButton go = new JButton("Start lesson  →");
+        JButton go = new JButton(done == n ? "Review lesson  →" : done > 0 ? "Continue lesson  →" : "Start lesson  →");
         go.setFont(uiFont(Font.BOLD, 13f));
         go.setBackground(L.accent.darker());
         go.setForeground(Color.WHITE);
         go.setFocusable(false);
-        go.addActionListener(_ -> startLesson(index));
+        go.addActionListener(_ -> startLesson(index, done > 0 && done < n));
         JPanel south = new JPanel(new BorderLayout());
         south.setOpaque(false);
         south.setBorder(new EmptyBorder(12, 0, 0, 0));

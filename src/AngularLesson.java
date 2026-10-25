@@ -80,32 +80,85 @@ final class AngularLesson extends LessonKit {
         return p;
     }
 
-    /** Where finger k's centre line is, and its half-width, at height y. */
+    /** Where finger k's centre line is, and its half-width, at height y: exactly the edges {@link #finger} draws. */
     static double[] fingerAt(int k, double y) {
         double[] f = FINGERS[k];
-        double along = (y - f[1]) / Math.cos(Math.toRadians(f[5]));
-        return new double[]{f[0] + Math.tan(Math.toRadians(f[5])) * (y - f[1]), (f[3] + (f[4] - f[3]) * clamp(along / f[2], 0, 1)) / 2};
+        double a = Math.toRadians(f[5]), along = (y - f[1]) / Math.cos(a), sink = 1.4;
+        return new double[]{f[0] + Math.tan(a) * (y - f[1]), (f[3] + (f[4] - f[3]) * clamp((along + sink) / (f[2] - f[4] / 2 + sink), 0, 1)) / 2};
     }
 
-    /** The whole hand as one outline: fingers, palm, thumb and the web between thumb and index finger. */
+    /**
+     * The thumb's axis, a curve from its root in the palm out to its tip (the metacarpal angled out from
+     * the wrist, the two phalanges turning back up), and its width at the root and the tip.
+     */
+    static final double[][] THUMB = {{-3.6, -12.9}, {-7.6, -10.6}, {-9.2, -6.9}};
+    static final double THUMB_W0 = 3.1, THUMB_W1 = 1.75;
+    /** Where along the thumb the heel's edge joins it, and the web; how far the web runs up the index finger. */
+    static final double HEEL_T = 0.12, WEB_T = 0.8, WEB_TOP = -5.0;
+
+    /** {x, y, unit tangent x, y, half-width} of the thumb a fraction t of the way from its root to its tip. */
+    static double[] thumbAt(double t) {
+        double[] a = THUMB[0], c = THUMB[1], b = THUMB[2];
+        double u = 1 - t, tx = 2 * u * (c[0] - a[0]) + 2 * t * (b[0] - c[0]), ty = 2 * u * (c[1] - a[1]) + 2 * t * (b[1] - c[1]), m = Math.hypot(tx, ty);
+        return new double[]{u * u * a[0] + 2 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2 * u * t * c[1] + t * t * b[1],
+                            tx / m, ty / m, (THUMB_W0 + (THUMB_W1 - THUMB_W0) * t * (2 - t)) / 2};
+    }
+    /** The thumb's edge at t: the side toward the fingers (+1) or the outer side (−1). */
+    static double[] thumbEdge(double t, int side) {
+        double[] s = thumbAt(t);
+        return new double[]{s[0] + side * s[3] * s[4], s[1] - side * s[2] * s[4], s[2], s[3]};
+    }
+
+    /** The thumb from the heel out: a tube tapering along its curved axis, with a round tip. */
+    static Shape thumb() {
+        int n = 24;
+        Path2D.Double p = new Path2D.Double();
+        for (int i = 0; i <= n; i++) {
+            double[] e = thumbEdge(HEEL_T + (1 - HEEL_T) * i / n, 1);
+            if (i == 0) p.moveTo(e[0], e[1]); else p.lineTo(e[0], e[1]);
+        }
+        double[] tip = thumbAt(1);
+        for (int i = 1; i < 16; i++) {
+            double t = Math.PI * i / 16;
+            p.lineTo(tip[0] + (tip[3] * Math.cos(t) + tip[2] * Math.sin(t)) * tip[4], tip[1] + (-tip[2] * Math.cos(t) + tip[3] * Math.sin(t)) * tip[4]);
+        }
+        for (int i = n; i >= 0; i--) {
+            double[] e = thumbEdge(HEEL_T + (1 - HEEL_T) * i / n, -1);
+            p.lineTo(e[0], e[1]);
+        }
+        p.closePath();
+        return p;
+    }
+
+    /**
+     * The whole hand as one outline: fingers, palm, thumb and the web between thumb and index finger.
+     * The heel runs into the thumb's outer edge, and the web leaves the index finger and meets the thumb,
+     * each along that edge's own direction, so the outline has no corner anywhere.
+     */
     static Area handShape() {
         Area a = new Area();
         for (double[] f : FINGERS) a.add(new Area(finger(f[0], f[1], f[2], f[3], f[4], f[5])));
+        double[] heel = thumbEdge(HEEL_T, -1);
         Path2D.Double palm = new Path2D.Double();
         palm.moveTo(0.78, -5.4);
         palm.curveTo(0.95, -8.5, 0.85, -11.5, 0.2, -13.6);           // the little-finger edge, down to the heel
-        palm.curveTo(-1.0, -15.4, -4.0, -15.6, -5.6, -13.8);
-        palm.curveTo(-6.4, -12.4, -6.4, -8.5, -5.85, -5.2);          // the index-finger edge
+        palm.curveTo(-1.2, -15.8, heel[0] - heel[2] * 2.6, heel[1] - heel[3] * 2.6, heel[0], heel[1]);
+        palm.curveTo(-5.0, -12.0, -5.6, -8.5, -5.6, -5.3);           // back up inside the thumb and the web
         palm.lineTo(-3.0, -5.9);
         palm.closePath();
         a.add(new Area(palm));
+        a.add(new Area(thumb()));
+        double lean = Math.toRadians(FINGERS[3][5]);
+        double[] ix = fingerAt(3, WEB_TOP), th = thumbEdge(WEB_T, 1);
+        double sx = ix[0] - ix[1] * Math.cos(lean);
         Path2D.Double web = new Path2D.Double();
-        web.moveTo(-5.7, -6.2);
-        web.curveTo(-6.6, -7.2, -7.4, -8.4, -7.6, -9.4);
-        web.lineTo(-6.0, -12.0);
+        web.moveTo(sx, WEB_TOP);                                      // down the index finger's side, round the crotch, out the thumb
+        web.curveTo(sx - Math.sin(lean) * 1.9, WEB_TOP - Math.cos(lean) * 1.9, th[0] - th[2] * 1.3, th[1] - th[3] * 1.3, th[0], th[1]);
+        for (double t = WEB_T; t >= 0; t -= 0.1) web.lineTo(thumbAt(t)[0], thumbAt(t)[1]);
+        web.lineTo(-3.0, -9.0);
+        web.lineTo(ix[0], WEB_TOP);
         web.closePath();
         a.add(new Area(web));
-        a.add(new Area(finger(-5.4, -12.0, 5.9, 2.15, 1.75, -42)));      // the thumb
         return a;
     }
     private static Area handShape;

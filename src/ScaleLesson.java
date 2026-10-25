@@ -29,21 +29,31 @@ final class ScaleLesson extends LessonKit {
     }
 
     /**
-     * The light pulse is a sphere about the Sun; draw its outline as the camera sees it: the circle
-     * where sight lines graze it, centred r²/D toward the eye with radius r·√(1 − r²/D²). So it stays a
-     * true expanding shell, through every inclined planet it reaches, from any angle.
+     * The light pulse is a sphere about the Sun. Its on-screen outline would run ahead of every planet
+     * off the line of sight (a point on a sphere seen from close by projects inside its outline), so
+     * the pulse arrives early by eye, worst for the outer planets. Draw instead the line on the sphere
+     * that runs through the direction of each planet shown, a few degrees at most from the ecliptic:
+     * it is the real wavefront, and it touches each planet at the very moment the light gets there.
      */
     double[][] shell(double rad) {
-        double[] eye = scaleV(host.eye(), 1 / AU);
-        double D = len(eye);
-        double[] n = D > 0 ? scaleV(eye, 1 / D) : v(0, 0, 1);
-        if (rad >= D * 0.999) n = v(0, 0, 1);                       // the camera is inside it: show its slice through the ecliptic
-        double off = rad >= D * 0.999 ? 0 : rad * rad / D, rr = rad >= D * 0.999 ? rad : rad * Math.sqrt(1 - sq(rad / D));
-        double[] x = norm(cross(Math.abs(n[2]) < 0.9 ? v(0, 0, 1) : v(1, 0, 0), n)), y = cross(n, x), c = scaleV(n, off);
-        double[][] p = new double[200][];
-        for (int i = 0; i < 200; i++) {
-            double a = 2 * Math.PI * i / 200;
-            p[i] = add(c, add(scaleV(x, rr * Math.cos(a)), scaleV(y, rr * Math.sin(a))));
+        int n = target + 1;
+        double[][] dir = new double[n][];                           // {longitude, latitude} of each planet from the Sun
+        for (int i = 0; i < n; i++) {
+            double[] p = pos(host.state(PLANETS[i]));
+            dir[i] = new double[]{Math.atan2(p[1], p[0]), Math.asin(p[2] / len(p))};
+        }
+        java.util.Arrays.sort(dir, (a, b) -> Double.compare(a[0], b[0]));
+        double[][] p = new double[240][];
+        for (int i = 0; i < 240; i++) {
+            double lon = -Math.PI + 2 * Math.PI * i / 240;
+            int k = n - 1;                                          // the last planet at or before this longitude (wrapping round)
+            for (int j = 0; j < n; j++) if (dir[j][0] <= lon) k = j;
+            double[] a = dir[k], b = dir[(k + 1) % n];
+            double span = b[0] - a[0], f = lon - a[0];
+            if (span <= 0) span += 2 * Math.PI;
+            if (f < 0) f += 2 * Math.PI;
+            double lat = a[1] + (b[1] - a[1]) * (1 - Math.cos(Math.PI * f / span)) / 2;
+            p[i] = v(rad * Math.cos(lat) * Math.cos(lon), rad * Math.cos(lat) * Math.sin(lon), rad * Math.sin(lat));
         }
         return p;
     }

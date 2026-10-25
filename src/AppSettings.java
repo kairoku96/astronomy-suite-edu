@@ -9,31 +9,37 @@ import java.util.Properties;
  */
 final class AppSettings {
     private final Properties p = new Properties();
+    private final Path file;
+    private final String title;
 
-    static Path file() {
-        return Path.of(System.getProperty("user.home", "."), ".astronomy-suite", "settings.properties");
+    private AppSettings(Path file, String title) { this.file = file; this.title = title; }
+
+    static Path file() { return file("settings.properties"); }
+    static Path file(String name) {
+        return Path.of(System.getProperty("user.home", "."), ".astronomy-suite", name);
     }
 
-    static AppSettings load() {
-        AppSettings s = new AppSettings();
+    static AppSettings load() { return load(file(), "Astronomy Suite - window settings"); }
+
+    /** A settings file of its own beside the window's (e.g. lesson progress, saved as it changes). */
+    static AppSettings load(Path f, String title) {
+        AppSettings s = new AppSettings(f, title);
         try {
-            Path f = file();
             if (Files.isRegularFile(f)) {
                 try (var in = Files.newBufferedReader(f)) { s.p.load(in); }
             }
         } catch (Exception e) {
-            System.err.println("Could not read " + file() + ": " + e);
+            System.err.println("Could not read " + f + ": " + e);
         }
         return s;
     }
 
     void save() {
         try {
-            Path f = file();
-            Files.createDirectories(f.getParent());
-            try (var out = Files.newBufferedWriter(f)) { p.store(out, "Astronomy Suite - window settings"); }
+            Files.createDirectories(file.getParent());
+            try (var out = Files.newBufferedWriter(file)) { p.store(out, title); }
         } catch (Exception e) {
-            System.err.println("Could not write " + file() + ": " + e);
+            System.err.println("Could not write " + file + ": " + e);
         }
     }
 
@@ -55,4 +61,6 @@ final class AppSettings {
     String get(String key, String def) { return p.getProperty(key, def); }
 
     void put(String key, Object value) { p.setProperty(key, String.valueOf(value)); }
+
+    void remove(String key) { p.remove(key); }
 }
