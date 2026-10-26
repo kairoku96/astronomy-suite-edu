@@ -105,8 +105,19 @@ final class Missions {
 
     private static List<Mission> ALL;
 
+    /**
+     * The missions whose track files are all present. A mission without its data (Apollo 11
+     * and 17 until {@code ApolloReconstruction} rebuilds them) is left out of the menus rather
+     * than listed with nothing to fly.
+     */
     static synchronized List<Mission> all() {
-        if (ALL == null) ALL = build();
+        if (ALL == null) {
+            ALL = new ArrayList<>();
+            for (Mission m : build()) {
+                if (m.craft.stream().allMatch(c -> Files.isRegularFile(Assets.path("missions", c.file + ".trk.gz")))) ALL.add(m);
+                else System.err.println("Mission " + m.name + " hidden: its track files are not in assets/missions");
+            }
+        }
         return ALL;
     }
 

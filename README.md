@@ -592,6 +592,12 @@ mission spans the current date is marked even when no mission is playing.
 | New Horizons | | JPL Horizons −98 (to 2030) |
 | Juno | | JPL Horizons −61 (to 2025-09-30) |
 
+A mission whose track files aren't in `assets/missions/` is left out of the menus. That is the
+case for **Apollo 11 and 17** for now: rebuilding them with the current code misses the
+reconstruction's own targets (the LM rendezvous fails, and the return enters at 343 km / −12°
+instead of 121.9 km / −6.5°), so they stay hidden until that is fixed and their tracks are
+rebuilt.
+
 **Playback.** Tracks are stored as segments of ecliptic-J2000 states relative to a centre
 body. The base segment is relative to the Sun (or the Earth for lunar flights), and local
 segments are relative to the planet or the Moon being visited. A craft is drawn at the sim's
