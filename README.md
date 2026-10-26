@@ -84,6 +84,84 @@ shortcuts of their own: **Ctrl+G** go to date, **Ctrl+T** jump to today, **Ctrl+
 events, **Ctrl+L** lessons, **Ctrl+Q** exit and **F1** the list of controls. **Alt** plus the
 underlined letter opens a menu.
 
+## macOS app (.dmg)
+
+`Astronomy Suite.app` is self-contained: it carries its own trimmed Java runtime, JOGL with its
+macOS natives, FlatLaf and the `assets/` folder, so nothing else needs installing (Python is
+still only needed for the coding lesson's cells).
+
+### Installing
+
+1. Download the `.dmg` for your Mac: `…-arm64.dmg` for Apple Silicon (M1 and later),
+   `…-x86_64.dmg` for Intel. Builds come from the **macOS DMG** workflow's artifacts on GitHub
+   (Actions → macOS DMG → a run → *Artifacts*), or build one yourself (below).
+2. Open the `.dmg` and drag **Astronomy Suite** onto **Applications**.
+3. The first launch of an unsigned build is blocked by Gatekeeper ("Apple could not verify
+   'Astronomy Suite' is free of malware…"). To allow it once:
+   - **macOS 15 Sequoia and later:** click **Done**, open **System Settings → Privacy &
+     Security**, scroll to *"Astronomy Suite" was blocked…*, click **Open Anyway** and confirm.
+   - **macOS 14 and earlier:** Control-click (right-click) the app in Applications, choose
+     **Open**, then **Open** again.
+   - Or, in Terminal, clear the download quarantine flag (this also fixes an *"is damaged and
+     can't be opened"* message):
+
+     ```bash
+     xattr -dr com.apple.quarantine "/Applications/Astronomy Suite.app"
+     ```
+
+   A build signed with a Developer ID and notarized (see below) opens without any of this.
+
+Settings and lesson progress live in `~/.astronomy-suite/` as on every platform, so they survive
+reinstalling.
+
+### Building the .dmg
+
+On a Mac with JDK 22 or later (24 or 25 recommended; `JAVA_HOME` or `/usr/libexec/java_home`
+is used):
+
+```bash
+./package-mac.sh
+```
+
+The result is `build/mac/dist/Astronomy Suite-<version>-<arch>.dmg`, with the app beside it.
+The script compiles `src/`, downloads the JOGL 2.6 / GlueGen jars and their `macosx-universal`
+natives from jogamp.org into `build/jogamp/` (SHA-256 checked; or point `JOGL_DIR` /
+`GLUEGEN_DIR` at your own), jlinks a runtime, builds the app image with `jpackage`, launches it
+once in self-test mode from `/` (as Finder does) to check that the assets and natives load,
+then wraps it in a `.dmg`. `APP_VERSION=1.2.0 ./package-mac.sh` sets the version, and
+`./package-mac.sh --app-image` stops after the `.app` (it also runs on Windows and Linux under
+bash as a dry run of the same inputs, building an app image for that OS).
+
+The bundle's runtime matches the JDK's architecture, so build on an Apple Silicon Mac for
+`arm64` and on an Intel Mac for `x86_64`. The GitHub workflow
+(`.github/workflows/macos-dmg.yml`) builds both, on a manual run, on `v*` tags (the tag sets the
+version), and on pull requests that touch the packaging.
+
+### Signing and notarization (optional)
+
+Without these the app gets an ad-hoc signature and Gatekeeper's first-launch prompt above.
+With an Apple Developer ID, set:
+
+| Variable | Effect |
+|---|---|
+| `MAC_SIGN_IDENTITY` | e.g. `Developer ID Application: Jane Doe (TEAMID)`: signs the app (hardened runtime, `packaging/macos/entitlements.plist`) and the `.dmg` |
+| `MAC_KEYCHAIN` | keychain holding that identity, if not in the default search list |
+| `NOTARY_PROFILE` | a `xcrun notarytool store-credentials` profile: notarizes and staples the `.dmg` |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | notarize with an app-specific password instead of a profile |
+
+In CI, add the repository secrets `MACOS_CERTIFICATE` (base64 of the `.p12`),
+`MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY` and, for notarization, `APPLE_ID`,
+`APPLE_TEAM_ID` and `APPLE_APP_PASSWORD`; the workflow imports the certificate into a temporary
+keychain and passes them on.
+
+### Where the app finds its assets
+
+Assets are looked up in this order (`src/Assets.java`): the `-Dsss.assets=<dir>` property (the
+packaged app sets it to the folder inside its bundle), then `./assets` in the working directory
+(Gradle and `run2d.ps1` runs), then an `assets/` folder beside or above the compiled classes or
+jar. So the app works whatever folder it is started from. `-Dsss.selftest` prints where the
+assets were found and checks that they and the JOGL natives load.
+
 ## Lesson Studio
 
 Open **Education → Lessons...** (or pick a lesson directly from the Education menu).
@@ -695,9 +773,13 @@ assets/textures/                 planet / moon / sun texture maps
 assets/sky/                      star catalogue, constellation data, Milky Way map
 assets/moon/                     the ELP/MPP02 lunar series (35 901 terms)
 assets/missions/                 spacecraft tracks (*.trk.gz)
+src/Assets.java                  where assets/ is found, whatever the working directory
 libs/                            bundled FlatLaf look-and-feel
 build.gradle / settings.gradle   Gradle build (./gradlew run)
 run2d.ps1                        Windows build + launch script
+package-mac.sh                   macOS .app + .dmg packaging (jlink + jpackage)
+packaging/macos/                 macOS signing entitlements (and an optional icon.png / .icns)
+.github/workflows/macos-dmg.yml  CI: builds the .dmg on macOS runners
 ```
 
 ## License

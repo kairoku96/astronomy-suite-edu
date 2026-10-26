@@ -55,7 +55,7 @@ final class MoonEphemeris {
 
     private static synchronized Series[] series() {
         if (series != null) return series;
-        Path f = Path.of("assets/moon/elpmpp02.bin.gz");
+        Path f = Assets.path("moon", "elpmpp02.bin.gz");
         try (DataInputStream in = new DataInputStream(new BufferedInputStream(
                 new GZIPInputStream(Files.newInputStream(f)), 1 << 16))) {
             byte[] magic = new byte[8];

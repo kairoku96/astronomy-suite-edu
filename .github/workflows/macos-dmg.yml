@@ -1,0 +1,96 @@
+# Build "Astronomy Suite.app" in a .dmg on macOS runners (Apple Silicon and Intel) with
+# package-mac.sh, and upload the .dmg files as workflow artifacts.
+#
+# Runs by hand (Actions > macOS DMG > Run workflow), on v* tags, and on pull requests that touch
+# the packaging. Signing and notarization switch on only when these repository secrets exist:
+#   MACOS_CERTIFICATE           base64 of a "Developer ID Application" .p12
+#   MACOS_CERTIFICATE_PASSWORD  its password
+#   MACOS_SIGN_IDENTITY         "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   (app-specific password) for notarization
+name: macOS DMG
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - package-mac.sh
+      - packaging/**
+      - src/Assets.java
+      - .github/workflows/macos-dmg.yml
+
+permissions:
+  contents: read
+
+jobs:
+  dmg:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15         # Apple Silicon (arm64)
+          - runner: macos-15-intel   # Intel (x86_64)
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runtime bundled into the app is jlinked from this JDK. 25 is the current LTS
+      # (the sim needs 22+); the local scripts build with 24.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # JOGL 2.6 / GlueGen are not on Maven Central: package-mac.sh downloads them from
+      # jogamp.org into build/jogamp and checks their SHA-256. Cache them between runs.
+      - uses: actions/cache@v4
+        with:
+          path: build/jogamp
+          key: jogamp-2.6.0-macosx-universal
+
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="1.0.0"; fi
+          echo "APP_VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE != '' && env.MACOS_SIGN_IDENTITY != ''
+        run: |
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kcpass="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$kcpass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpass" "$kc"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$kc"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpass" "$kc"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "MAC_SIGN_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "MAC_KEYCHAIN=$kc" >> "$GITHUB_ENV"
+
+      # Builds the .app, runs the packaged launcher's self-test (assets + JOGL natives, from
+      # working directory /), then wraps it in a .dmg; signs/notarizes when the secrets are set.
+      - name: Package
+        run: ./package-mac.sh
+
+      - name: Inspect
+        run: |
+          app="build/mac/dist/Astronomy Suite.app"
+          codesign -dv --verbose=2 "$app" 2>&1 | sed -n '1,8p'
+          spctl --assess --type execute -vv "$app" || echo "(not accepted by Gatekeeper: expected for an unsigned build)"
+          du -sh "$app" build/mac/dist/*.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astronomy-suite-macos-${{ runner.arch }}
+          path: build/mac/dist/*.dmg
+          if-no-files-found: error

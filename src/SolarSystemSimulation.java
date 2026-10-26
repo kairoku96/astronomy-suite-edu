@@ -3747,7 +3747,7 @@ public class SolarSystemSimulation extends JPanel
 
     /** Read an equirectangular map at up to {@code maxW} wide into {@code outPix}/{@code outWH}. */
     private boolean loadRawTexture(String fileName, int maxW, int[][] outPix, int[] outWH) {
-        File f = new File("assets/textures/" + fileName);
+        File f = Assets.file("textures/" + fileName);
         if (!f.isFile()) return false;
         try {
             BufferedImage img = ImageIO.read(f);
@@ -4649,7 +4649,7 @@ public class SolarSystemSimulation extends JPanel
     private boolean loadTextureFile(String cacheKey, String fileName) {
         if (texPixels.containsKey(cacheKey)) return true;
         if (texMissing.contains(cacheKey)) return false;
-        File f = new File("assets/textures/" + fileName);
+        File f = Assets.file("textures/" + fileName);
         if (!f.isFile()) { texMissing.add(cacheKey); return false; }
         try {
             BufferedImage img = ImageIO.read(f);
@@ -4683,7 +4683,7 @@ public class SolarSystemSimulation extends JPanel
     private int[] loadRingLut() {
         if (ringLut != null || ringLutTried) return ringLut;
         ringLutTried = true;
-        File f = new File("assets/textures/saturn_ring.png");
+        File f = Assets.file("textures/saturn_ring.png");
         if (!f.isFile()) return null;
         try {
             BufferedImage im = ImageIO.read(f);
@@ -6661,7 +6661,56 @@ public class SolarSystemSimulation extends JPanel
         }
     }
 
+    /** {@code -Dsss.selftest}: print one line per check (assets, then JOGL natives); true if all pass. */
+    private static boolean selfTest() {
+        System.out.println("Java " + System.getProperty("java.version") + " (" + System.getProperty("java.home") + ")");
+        System.out.println("working dir " + System.getProperty("user.dir"));
+        System.out.println("assets dir  " + Assets.DIR);
+        record Check(String name, java.util.concurrent.Callable<Object> test) { }
+        java.util.List<Check> checks = java.util.List.of(
+                new Check("assets folder", () -> Files.isDirectory(Assets.DIR)),
+                new Check("star catalogue", () -> StarCatalog.get() != null),
+                new Check("ELP/MPP02 lunar series", () -> Math.abs(MoonEphemeris.geocentric(0.0)[2] - 3.84e8) < 3e7),   // metres
+                new Check("mission track", () -> SpacecraftTrack.load(Assets.path("missions", "juno.trk.gz")) != null),
+                new Check("texture", () -> ImageIO.read(Assets.file("textures/earth_diffuse.jpg")) != null),
+                new Check("asteroid table", () -> Files.isRegularFile(Assets.path("asteroids", "main_belt_a.csv"))),
+                new Check("JOGL natives", () -> {
+                    com.jogamp.opengl.GLProfile.initSingleton();
+                    return com.jogamp.common.jvm.JNILibLoaderBase.isLoaded("gluegen_rt")
+                        && com.jogamp.common.jvm.JNILibLoaderBase.isLoaded("jogl_desktop");
+                }));
+        boolean ok = true;
+        for (Check c : checks) {
+            String result;
+            try { result = Boolean.TRUE.equals(c.test().call()) ? "ok" : "FAILED"; }
+            catch (Throwable t) { result = "FAILED: " + t; }
+            ok &= result.equals("ok");
+            System.out.printf("  %-24s %s%n", c.name(), result);
+        }
+        // A GL context needs a GPU or a software renderer, which CI machines may lack: report only.
+        try { System.out.println("  default GL profile       " + com.jogamp.opengl.GLProfile.getDefault()); }
+        catch (Throwable t) { System.out.println("  default GL profile       unavailable (" + t.getMessage() + ")"); }
+        System.out.println(ok ? "Self-test passed" : "Self-test FAILED");
+        return ok;
+    }
+
     public static void main(String[] args) {
+        // Icon mode: write the app icon as a 1024 px PNG (the macOS .icns source) and exit.
+        // The ringed planet is drawn on the 824 px grid Apple's icon template leaves inside the canvas.
+        String iconPath = System.getProperty("sss.icon");
+        if (iconPath != null) {
+            BufferedImage icon = new BufferedImage(1024, 1024, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g = icon.createGraphics();
+            g.drawImage(AppWindow.drawIcon(824), 100, 100, null);
+            g.dispose();
+            try { ImageIO.write(icon, "png", new File(iconPath)); }
+            catch (Exception e) { System.err.println("Icon not written: " + e); System.exit(1); }
+            System.out.println("Icon written: " + iconPath);
+            System.exit(0);
+        }
+        // Self-test mode for packaged builds: can this install find its assets and load the
+        // JOGL natives? Exit code 1 if anything is missing. CI runs the .app's launcher with it.
+        if (System.getProperty("sss.selftest") != null) System.exit(selfTest() ? 0 : 1);
         // Off-screen screenshot mode: render showcase frames and exit (no UI).
         String shotDir = System.getProperty("sss.shot");
         if (shotDir != null) {

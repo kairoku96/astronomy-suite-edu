@@ -964,7 +964,7 @@ final class SkyView {
         if (ringLut != null || ringLutTried) return ringLut;
         ringLutTried = true;
         try {
-            BufferedImage im = ImageIO.read(new File("assets/textures/saturn_ring.png"));
+            BufferedImage im = ImageIO.read(Assets.file("textures/saturn_ring.png"));
             if (im != null) ringLut = im.getRGB(0, im.getHeight() / 2, im.getWidth(), 1, null, 0, im.getWidth());
         } catch (Exception ignored) { }
         return ringLut;
@@ -1024,7 +1024,7 @@ final class SkyView {
         if (textures.containsKey(key)) return textures.get(key);
         Tex t = null;
         try {
-            File f = new File("assets/textures/" + key + "_diffuse.jpg");
+            File f = Assets.file("textures/" + key + "_diffuse.jpg");
             if (f.isFile()) {
                 BufferedImage src = ImageIO.read(f);
                 int w = Math.min(1024, src.getWidth()), h = Math.max(1, w / 2);

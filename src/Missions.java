@@ -40,7 +40,7 @@ final class Missions {
         synchronized SpacecraftTrack track() {
             if (!tried) {
                 tried = true;
-                try { track = SpacecraftTrack.load(Paths.get("assets", "missions", file + ".trk.gz")); }
+                try { track = SpacecraftTrack.load(Assets.path("missions", file + ".trk.gz")); }
                 catch (Exception e) { System.err.println("No track for " + name + ": " + e.getMessage()); }
             }
             return track;
