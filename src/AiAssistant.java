@@ -63,7 +63,9 @@ final class AiAssistant {
               + "the reference and live state over any prior assumptions. If the live "
               + "state does not contain something, say so rather than guessing. You may "
               + "also answer general astronomy or other questions. Keep answers concise "
-              + "and use plain text (no markdown tables). "
+              + "and readable in a small chat window: it shows **bold**, *italics*, `code`, "
+              + "headings and bullet or numbered lists, but not tables. Write maths as plain text "
+              + "with Unicode symbols (3.5 × 10³ km, 57.3°, θ ≈ D/d, √2, M☉), never LaTeX or $ signs. "
               + "The live state includes a LESSON STUDIO section (the lesson and step the user is "
               + "on, the narration they are reading, the numbers on screen and the settings of the "
               + "controls) and a LOCAL SKY section (what the sky looks like from the observer's "
@@ -438,6 +440,235 @@ final class AiAssistant {
         }
     }
 
+    // =====================================================================
+    //  Reply formatting: the model writes Markdown (and sometimes LaTeX maths),
+    //  which the transcript shows as styled text instead of raw asterisks and $\frac{}{}$.
+    // =====================================================================
+
+    private static final java.util.regex.Pattern HEADING = java.util.regex.Pattern.compile("#{1,6}\\s+(.*)"),
+            BULLET = java.util.regex.Pattern.compile("[*+\\-•]\\s+(.*)"),
+            NUMBERED = java.util.regex.Pattern.compile("(\\d{1,3}[.)])\\s+(.*)"),
+            RULE = java.util.regex.Pattern.compile("(\\*\\s*){3,}|(-\\s*){3,}|(_\\s*){3,}"),
+            // `code`, **bold** / __bold__, *italic* / _italic_
+            INLINE = java.util.regex.Pattern.compile(
+                    "`([^`]+)`|\\*\\*(.+?)\\*\\*|__(.+?)__|(?<![\\w*])\\*(?![\\s*])(.+?)(?<![\\s*])\\*(?![\\w*])"
+                  + "|(?<![\\w_])_(?![\\s_])(.+?)(?<![\\s_])_(?![\\w_])"),
+            // $$...$$, \[...\], \(...\) and $...$ (no space just inside, so "$5 and $10" stays money)
+            MATH = java.util.regex.Pattern.compile(
+                    "\\$\\$(.+?)\\$\\$|\\\\\\[(.+?)\\\\\\]|\\\\\\((.+?)\\\\\\)|(?<![\\\\\\w$])\\$(?=\\S)([^$\\n]+?)(?<=\\S)\\$(?![\\w$])",
+                    java.util.regex.Pattern.DOTALL);
+
+    /** Points of indent per list level, and the hanging indent of a list item's marker. */
+    private static final float LIST_STEP = 16f, MARKER_W = 14f;
+
+    /**
+     * Appends {@code md} to {@code doc} in style {@code base}: headings, bullet and numbered lists
+     * (nested by their indent, with wrapped lines hanging under the text), code blocks, bold,
+     * italics, inline code, rules, and LaTeX maths turned into plain Unicode.
+     */
+    static void appendMarkdown(StyledDocument doc, String md, Style base) {
+        String[] lines = mathToText(md.replace("\r", "")).strip().split("\n", -1);
+        boolean code = false, blank = false, first = true;
+        for (String raw : lines) {
+            if (raw.strip().startsWith("```")) { code = !code; continue; }
+            if (!code && raw.isBlank()) { blank = true; continue; }
+            int lead = 0;
+            for (int k = 0; k < raw.length() && Character.isWhitespace(raw.charAt(k)); k++) lead += raw.charAt(k) == '\t' ? 4 : 1;
+            String line = raw.strip();
+            String marker = null;
+            boolean heading = false;
+            java.util.regex.Matcher m;
+            if (code) line = raw;
+            else if (RULE.matcher(line).matches()) line = "────────";
+            else if ((m = HEADING.matcher(line)).matches()) { line = m.group(1); heading = true; }
+            else if ((m = BULLET.matcher(line)).matches()) { marker = lead >= 2 ? "◦" : "•"; line = m.group(1); }
+            else if ((m = NUMBERED.matcher(line)).matches()) { marker = m.group(1); line = m.group(2); }
+            else if (line.startsWith("> ")) line = "│ " + line.substring(2);
+            // A reply that opens with a list or heading starts under "AI:", not beside it.
+            if (first && (marker != null || heading || code)) insert(doc, "\n", base);
+            else if (!first) insert(doc, blank && !code ? "\n\n" : "\n", base);
+            first = false;
+            blank = false;
+            int start = doc.getLength();
+            javax.swing.text.SimpleAttributeSet attrs = new javax.swing.text.SimpleAttributeSet(base);
+            if (code) StyleConstants.setFontFamily(attrs, Font.MONOSPACED);
+            if (heading) StyleConstants.setBold(attrs, true);
+            if (marker != null) insert(doc, marker + (marker.length() == 1 ? "  " : " "), attrs);
+            if (code) insert(doc, line, attrs);
+            else appendInline(doc, line, attrs);
+            int level = marker != null ? Math.min(lead / 2, 4) : 0;
+            javax.swing.text.SimpleAttributeSet para = new javax.swing.text.SimpleAttributeSet();
+            StyleConstants.setLeftIndent(para, marker != null ? level * LIST_STEP + MARKER_W : code ? LIST_STEP : 0);
+            StyleConstants.setFirstLineIndent(para, marker != null ? -MARKER_W : 0);
+            doc.setParagraphAttributes(start, doc.getLength() - start, para, false);
+        }
+        // New paragraphs inherit the last one's indent; start what follows at the margin.
+        insert(doc, "\n", base);
+        javax.swing.text.SimpleAttributeSet flat = new javax.swing.text.SimpleAttributeSet();
+        StyleConstants.setLeftIndent(flat, 0);
+        StyleConstants.setFirstLineIndent(flat, 0);
+        doc.setParagraphAttributes(doc.getLength(), 0, flat, false);
+    }
+
+    /** Bold, italic and code spans of one line, nested (bold text may hold italics). */
+    private static void appendInline(StyledDocument doc, String s, javax.swing.text.AttributeSet attrs) {
+        java.util.regex.Matcher m = INLINE.matcher(s);
+        int at = 0;
+        while (m.find()) {
+            insert(doc, s.substring(at, m.start()), attrs);
+            javax.swing.text.SimpleAttributeSet a = new javax.swing.text.SimpleAttributeSet(attrs);
+            if (m.group(1) != null) {
+                StyleConstants.setFontFamily(a, Font.MONOSPACED);
+                insert(doc, m.group(1), a);
+            } else if (m.group(2) != null || m.group(3) != null) {
+                StyleConstants.setBold(a, true);
+                appendInline(doc, m.group(2) != null ? m.group(2) : m.group(3), a);
+            } else {
+                StyleConstants.setItalic(a, true);
+                appendInline(doc, m.group(4) != null ? m.group(4) : m.group(5), a);
+            }
+            at = m.end();
+        }
+        insert(doc, s.substring(at), attrs);
+    }
+
+    private static void insert(StyledDocument doc, String s, javax.swing.text.AttributeSet a) {
+        if (s.isEmpty()) return;
+        try { doc.insertString(doc.getLength(), s, a); } catch (BadLocationException ignored) { }
+    }
+
+    /** Every LaTeX maths span in {@code s} as plain text ("$\frac{a}{b} \times 10^3$" → "a/b × 10³"). */
+    static String mathToText(String s) {
+        java.util.regex.Matcher m = MATH.matcher(s);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            String tex = m.group(1) != null ? m.group(1) : m.group(2) != null ? m.group(2) : m.group(3) != null ? m.group(3) : m.group(4);
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(new Tex(tex.strip()).text()));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    /** A tiny LaTeX-maths-to-Unicode reader: symbols, \frac, \sqrt, \text, and super/subscripts. */
+    private static final class Tex {
+        private static final Map<String, String> SYMBOLS = new HashMap<>();
+        static {
+            String[] pairs = {
+                "times", "×", "cdot", "·", "approx", "≈", "sim", "~", "simeq", "≃", "equiv", "≡", "neq", "≠", "ne", "≠",
+                "leq", "≤", "le", "≤", "geq", "≥", "ge", "≥", "ll", "≪", "gg", "≫", "pm", "±", "mp", "∓", "propto", "∝",
+                "infty", "∞", "circ", "°", "degree", "°", "prime", "′", "odot", "☉", "oplus", "⊕", "to", "→",
+                "rightarrow", "→", "leftarrow", "←", "Rightarrow", "⇒", "implies", "⇒", "int", "∫", "oint", "∮",
+                "sum", "Σ", "prod", "Π", "partial", "∂", "nabla", "∇", "ldots", "…", "cdots", "⋯", "dots", "…",
+                "alpha", "α", "beta", "β", "gamma", "γ", "Gamma", "Γ", "delta", "δ", "Delta", "Δ", "epsilon", "ε",
+                "varepsilon", "ε", "zeta", "ζ", "eta", "η", "theta", "θ", "Theta", "Θ", "kappa", "κ", "lambda", "λ",
+                "Lambda", "Λ", "mu", "μ", "nu", "ν", "xi", "ξ", "pi", "π", "Pi", "Π", "rho", "ρ", "sigma", "σ",
+                "Sigma", "Σ", "tau", "τ", "phi", "φ", "varphi", "φ", "Phi", "Φ", "chi", "χ", "psi", "ψ", "omega", "ω",
+                "Omega", "Ω", "hbar", "ħ", "angle", "∠", "quad", "  ", "qquad", "    ",
+                "sin", "sin", "cos", "cos", "tan", "tan", "log", "log", "ln", "ln", "exp", "exp", "min", "min", "max", "max",
+            };
+            for (int k = 0; k < pairs.length; k += 2) SYMBOLS.put(pairs[k], pairs[k + 1]);
+        }
+        private static final String SUP_FROM = "0123456789+-−=()niax°′", SUP_TO = "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁻⁼⁽⁾ⁿⁱᵃˣ°′",
+                SUB_FROM = "0123456789+-−=()aehijklmnoprstuvx☉⊕", SUB_TO = "₀₁₂₃₄₅₆₇₈₉₊₋₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ☉⊕";
+
+        private final String s;
+        private int i;
+        Tex(String s) { this.s = s; }
+
+        String text() { return read(s.length()).replaceAll(" {2,}", " ").strip(); }
+
+        /** Converts up to index {@code end}. */
+        private String read(int end) {
+            StringBuilder out = new StringBuilder();
+            while (i < end) {
+                char c = s.charAt(i);
+                if (c == '\\') out.append(command());
+                else if (c == '^' || c == '_') {
+                    i++;
+                    String arg = new Tex(arg()).text();
+                    String to = script(arg, c == '^' ? SUP_FROM : SUB_FROM, c == '^' ? SUP_TO : SUB_TO);
+                    out.append(to != null ? to : c == '^' ? "^" + wrap(arg) : "_" + arg);
+                } else if (c == '{') {
+                    out.append(new Tex(group()).text());
+                } else { if (c != '}') out.append(c); i++; }
+            }
+            return out.toString();
+        }
+
+        private String command() {
+            int j = i + 1;
+            while (j < s.length() && Character.isLetter(s.charAt(j))) j++;
+            String name = s.substring(i + 1, j);
+            if (name.isEmpty()) {                             // \, \; \! \{ \% \\ ...
+                char n = j < s.length() ? s.charAt(j) : ' ';
+                i = j + 1;
+                return switch (n) { case ',', ';', ':', ' ' -> " "; case '!' -> ""; case '\\' -> "\n"; default -> String.valueOf(n); };
+            }
+            i = j;
+            return switch (name) {
+                case "frac", "dfrac", "tfrac" -> { String a = new Tex(arg()).text(); yield wrap(a) + "/" + wrap(new Tex(arg()).text()); }
+                case "sqrt" -> "√" + wrap(new Tex(arg()).text());
+                case "text", "mathrm", "mathbf", "mathit", "textbf", "textit", "textrm", "operatorname", "mbox", "rm", "bf" -> {
+                    skipSpace();
+                    yield i < s.length() && s.charAt(i) == '{' ? group() : "";
+                }
+                case "left", "right", "big", "Big", "bigg", "Bigg", "displaystyle", "textstyle", "limits" -> "";
+                default -> SYMBOLS.getOrDefault(name, name);
+            };
+        }
+
+        /** The next argument: a {group}, a \command, or one character. */
+        private String arg() {
+            skipSpace();
+            if (i >= s.length()) return "";
+            char c = s.charAt(i);
+            if (c == '{') return group();
+            if (c == '\\') {
+                int j = i + 1;
+                while (j < s.length() && Character.isLetter(s.charAt(j))) j++;
+                if (j == i + 1) j++;
+                String a = s.substring(i, Math.min(j, s.length()));
+                i = j;
+                return a;
+            }
+            i++;
+            return String.valueOf(c);
+        }
+
+        /** The raw text of the {group} at i, braces matched. */
+        private String group() {
+            int depth = 0, start = i + 1;
+            for (; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (c == '\\') { i++; continue; }
+                if (c == '{') depth++;
+                else if (c == '}' && --depth == 0) { i++; return s.substring(start, i - 1); }
+            }
+            return s.substring(Math.min(start, s.length()));
+        }
+
+        private void skipSpace() { while (i < s.length() && s.charAt(i) == ' ') i++; }
+
+        /** {@code t} in super/subscript characters, or null if one has none. */
+        private static String script(String t, String from, String to) {
+            if (t.isEmpty()) return "";
+            StringBuilder b = new StringBuilder();
+            for (int k = 0; k < t.length(); ) {
+                int cp = t.codePointAt(k), at = from.indexOf(cp);
+                if (at < 0) return null;
+                b.appendCodePoint(to.codePointAt(to.offsetByCodePoints(0, from.codePointCount(0, at))));
+                k += Character.charCount(cp);
+            }
+            return b.toString();
+        }
+
+        /** Brackets a compound term so "a + b over c" reads (a + b)/c. */
+        private static String wrap(String t) {
+            boolean compound = t.length() > 1 && t.chars().anyMatch(ch -> " +-−×·/".indexOf(ch) >= 0);
+            return compound && !(t.startsWith("(") && t.endsWith(")")) ? "(" + t + ")" : t;
+        }
+    }
+
     /** Single reused chat window. */
     private static JDialog aiChatDialog;
 
@@ -550,7 +781,8 @@ final class AiAssistant {
                     try {
                         String reply = get();
                         append.accept("AI: ", aiStyle);
-                        append.accept(reply + "\n\n", bodyStyle);
+                        appendMarkdown(doc, reply, bodyStyle);
+                        append.accept("\n", bodyStyle);
                     } catch (Exception ex) {
                         Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
                         String msg = cause.getMessage();
