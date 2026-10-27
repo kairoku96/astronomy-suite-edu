@@ -137,7 +137,9 @@ final class TelescopeLesson extends LessonKit {
     private BufferedImage img;
 
     /** The pair as the telescope images it, square-root stretched, with the profile through both stars. */
-    void imageInset(Graphics2D g, Rectangle b) {
+    void imageInset(Graphics2D g, Rectangle b) { imageInset(g, b, false); }
+    /** ... with the scale bar in plain arcseconds when {@code plain} (AST101). */
+    void imageInset(Graphics2D g, Rectangle b, boolean plain) {
         double[] pr = pair();
         double sep = pr[0], pa = Math.toRadians(pr[1]), ratio = pr[2];
         double fieldArc = Math.max(4 * sep, 3 * imageFwhm());
@@ -183,7 +185,7 @@ final class TelescopeLesson extends LessonKit {
         double barPx = side * bar / fieldArc;
         g.setStroke(new BasicStroke(1.5f));
         g.draw(new Line2D.Double(x0 + 6, y0 + side + 12, x0 + 6 + barPx, y0 + side + 12));
-        g.drawString(angle(bar), (float) (x0 + 10 + barPx), (float) (y0 + side + 16));
+        g.drawString(plain ? arcsec(bar) : angle(bar), (float) (x0 + 10 + barPx), (float) (y0 + side + 16));
         g.setFont(LessonStudio.uiFont(Font.BOLD, 11.5f));
         boolean res = resolved(sep, ratio);
         g.setColor(res ? GREEN : PERI_C);
@@ -257,6 +259,8 @@ final class TelescopeLesson extends LessonKit {
                 hunt for its moon **Triton** (magnitude 13.5). The star catalogue here stops near
                 magnitude 7, so only the planets and moons show the gain.
                 """)
+                .watch(() -> host.skyEnu("Neptune"))
+                .only("AST221")
                 .sky("Neptune", () -> field == 0 ? new double[]{-6, 3, 30} : new double[]{0, 0, 0.04})
                 .enter(() -> {
                     host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
@@ -289,11 +293,65 @@ final class TelescopeLesson extends LessonKit {
                     hud.formula("faintest magnitude = 5.0 + 5 log₁₀(D / 7 mm)");
                 }));
 
+        // AST101 leaves out magnitudes: the same sky, told as "how many times too faint for your eye".
+        s.add(step("A bigger bucket for light", """
+                A telescope's most important number is the width D of its main mirror, its
+                {k:aperture}. The mirror is a bucket for light: it collects over its area, so it
+                gathers
+
+                $ (D / 7 mm)²
+
+                times more light than the pupil of your dark-adapted eye, about 7 mm across. Twice
+                as wide catches four times the light; ten times as wide, a hundred times.
+
+                Here is the real sky over Mississauga, late on September 21, 2026. **Saturn** is
+                easy. **Neptune** is about 13 times too faint for your eye under this suburban sky,
+                and its moon **Triton** more than 2,000 times too faint.
+
+                > Open up the aperture and watch Neptune appear once the mirror gathers enough
+                light, then switch to the telescope view to hunt for Triton. (The stars here stop
+                at the faintest a dark site shows the eye, so only the planets and moons show the
+                gain.)
+                """)
+                .watch(() -> host.skyEnu("Neptune"))
+                .only("AST101")
+                .sky("Neptune", () -> field == 0 ? new double[]{-6, 3, 30} : new double[]{0, 0, 0.04})
+                .enter(() -> {
+                    host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
+                    host.goToUTC(2026, 9, 22, 3, 0);
+                    host.setTime(0);
+                    host.skyLayers(false, false, true, true);
+                    host.skyOptics(CITY_LIMIT, apertureMm(), null);
+                })
+                .live(() -> host.skyOptics(CITY_LIMIT, apertureMm(), null))
+                .controls(c -> {
+                    apertureSlider(c);
+                    c.choices("View", new String[]{"Wide (30°)", "Telescope"}, () -> field, k -> field = k);
+                })
+                .scene((r, hud, t) -> {
+                    double lim = host.skyLimit();
+                    double[] np = host.skyBody("Neptune"), tr = host.skyBody("Triton");
+                    r.ring(host.skyEnu("Neptune"), field == 0 ? 12 : 26, np[4] < lim ? GREEN : alpha(DIM, 160), 1.8f);
+                    if (field == 0) r.label(host.skyEnu("Neptune"), "Neptune", np[4] < lim ? GREEN : DIM, 12f, 0, 24);
+                    else r.label(host.skyEnu("Triton"), "Triton", tr[4] < lim ? GREEN : DIM, 12f, 0, 22);
+                    double gain = sq(apertureMm() / EYE_MM);
+                    hud.title("Light grasp", ACCENT);
+                    hud.row("aperture D", apertureText(apertureMm()));
+                    hud.row("light gathered vs your eye", gain < 1e4 ? String.format("%,.0f×", gain) : sci(gain, 1) + "×", ACCENT);
+                    hud.gap();
+                    for (String n : new String[]{"Saturn", "Titan", "Neptune", "Triton"}) {
+                        double m = host.skyBody(n)[4];
+                        hud.row(vis(m, lim) + "  " + n, needs(m), m < lim ? GREEN : DIM);
+                    }
+                    hud.formula("light gathered = (D / 7 mm)² × your eye");
+                }));
+
         s.add(step("Check: a 1-second exposure", """
                 From the slides. Your eye has an aperture of about **1 cm** and your brain adds up
                 photons for about **1/30 s**. A camera on a **1-m telescope** takes a **1-second**
                 exposure.
                 """)
+                .reviews("A bigger bucket for light")
                 .sky("Neptune", () -> new double[]{-6, 3, 30})
                 .enter(() -> {
                     host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
@@ -344,6 +402,7 @@ final class TelescopeLesson extends LessonKit {
                 the air toward 0 (space), or thicken it past sea level, and watch the image and the
                 Strehl ratio.
                 """)
+                .only("AST221")
                 .sky("Pluto", () -> new double[]{0, 0, 0.03})
                 .enter(() -> {
                     host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
@@ -386,10 +445,112 @@ final class TelescopeLesson extends LessonKit {
                     hud.inset("What the telescope delivers", 300, 340, this::imageInset);
                 }));
 
+        // AST101: no radians, Fried length or Strehl ratio; the sharpest angle comes straight out in arcseconds.
+        s.add(step("Diffraction and seeing", """
+                Light is a wave, so even a perfect telescope can't focus a star to a point. It
+                makes a small blob with faint rings around it. Two stars closer together than the
+                blob's size merge into one: that size is the telescope's {k:diffraction limit}, the
+                sharpest it can ever see. With λ the wavelength of the light in micrometres (µm)
+                and D the mirror's width in metres,
+
+                $ sharpest angle ≈ 0.25″ × λ (µm) / D (m)
+
+                A bigger mirror, or a shorter wavelength, sees finer detail.
+
+                On the ground the air blurs the image much more. Pockets of warm and cool air bend
+                the light by slightly different amounts, so stars twinkle and smear into a blob
+                called the {k:seeing}: about 2″ in Mississauga and 0.55″ on Mauna Kea, high above
+                most of the air. In space there is no air at all. {k:Adaptive optics} (AO) bends a
+                flexible mirror hundreds of times a second to undo the blur.
+
+                The inset is the real **Pluto and Charon** tonight (never more than 0.9″ apart), or
+                a binary star whose two stars are as far apart as Earth and the Sun, 33 light-years
+                away: 0.1″ apart.
+
+                > Change the aperture, wavelength and site. When does the blob split into two? Then
+                thin the air toward none (space), or thicken it, and watch the blur change.
+                """)
+                .only("AST101")
+                .sky("Pluto", () -> new double[]{0, 0, 0.03})
+                .enter(() -> {
+                    host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
+                    host.goToUTC(2026, 9, 22, 1, 0);
+                    host.setTime(0);
+                    host.skyLayers(false, false, false, true);
+                    host.skyNorthUp(true);
+                    if (logD < 2) logD = 3;
+                })
+                .live(() -> {
+                    host.skyOptics(6.5, Math.max(apertureMm(), 1500), null);
+                    host.skyAir(rho / SITE_RHO[1]);
+                })
+                .controls(c -> {
+                    c.choices("Target", new String[]{"Pluto & Charon", "Binary star (0.1″)"}, () -> target, k -> target = k);
+                    apertureSlider(c);
+                    c.choices("Wavelength", new String[]{"Visible  0.55 µm", "Infrared  2.2 µm"}, () -> band, k -> band = k);
+                    c.choices("Site", SITES, () -> site, k -> { site = k; rho = SITE_RHO[k]; });
+                    c.slider("Air density", 0, 2, () -> site == 0 ? 0 : rho, x -> { rho = x; if (site == 0 && x > 0.005) site = 1; },
+                            this::densityText);
+                })
+                .scene((r, hud, t) -> {
+                    double[] pr = pair();
+                    r.label(host.skyEnu("Pluto"), "Pluto", SUN_C, 12f, 0, 26);
+                    hud.title(target == 0 ? "Pluto and Charon tonight" : "Binary star, 0.1″ apart", ACCENT);
+                    hud.row("separation", arcsec(pr[0]), SUN_C);
+                    hud.row("mirror D  /  wavelength λ", apertureText(apertureMm()) + "  /  " + (band == 0 ? "0.55 µm" : "2.2 µm"));
+                    hud.row("sharpest possible (diffraction)", arcsec(rayleigh()), ACCENT);
+                    hud.row("blur from the air (seeing)", seeing() == 0 ? "none: no air" : arcsec(seeing()) + (site == 3 ? " before AO" : ""), ACCENT);
+                    hud.row("air density", densityText(site == 0 ? 0 : rho));
+                    hud.row("size of a star's image", arcsec(imageFwhm()));
+                    boolean res = resolved(pr[0], pr[2]);
+                    hud.row("verdict", res ? "two stars: resolved" : "one blob: not resolved", res ? GREEN : PERI_C);
+                    hud.formula("sharpest angle ≈ 0.25″ × λ (µm) / D (m)");
+                    hud.inset("What the telescope delivers", 300, 340, (g, b) -> imageInset(g, b, true));
+                }));
+
+        s.add(step("Check: resolving the binary", """
+                The binary star from the last step: two stars as far apart as Earth and the Sun,
+                33 light-years away, so **0.1″** apart. Use the image on the right to test each
+                telescope.
+                """)
+                .reviews("Diffraction and seeing")
+                .only("AST101")
+                .sky("Pluto", () -> new double[]{0, 0, 0.03})
+                .enter(() -> {
+                    host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
+                    host.goToUTC(2026, 9, 22, 1, 0);
+                    host.setTime(0);
+                    host.skyLayers(false, false, false, true);
+                    host.skyNorthUp(true);
+                    target = 1;
+                    rho = SITE_RHO[site];
+                })
+                .live(() -> host.skyOptics(6.5, Math.max(apertureMm(), 1500), null))
+                .controls(c -> {
+                    apertureSlider(c);
+                    c.choices("Wavelength", new String[]{"Visible  0.55 µm", "Infrared  2.2 µm"}, () -> band, k -> band = k);
+                    c.choices("Site", SITES, () -> site, k -> site = k);
+                })
+                .quiz("Which of these can resolve the binary?", 3,
+                      "In space a 1-m telescope in visible light reaches 0.25″ × 0.55 / 1 = 0.14″: just too coarse. On "
+                    + "the ground in Mississauga the air blurs everything to about 2″. With AO a 1-m in the infrared gets "
+                    + "0.25″ × 2.2 / 1 = 0.55″. Only the 10-m in the infrared with AO reaches 0.25″ × 2.2 / 10 = 0.055″, "
+                    + "finer than 0.1″.",
+                      "Your eye", "A 1-m telescope in space, visible light (0.55 µm)", "A 1-m telescope in the infrared with AO",
+                      "A 10-m telescope in the infrared with AO")
+                .scene((r, hud, t) -> {
+                    hud.title("Binary star, 0.1″ apart", ACCENT);
+                    hud.row("sharpest possible (diffraction)", arcsec(rayleigh()), ACCENT);
+                    hud.row("blur from the air (seeing)", seeing() == 0 ? "none" : arcsec(seeing()));
+                    hud.inset("What the telescope delivers", 300, 340, (g, b) -> imageInset(g, b, true));
+                }));
+
         s.add(step("Check: resolving the binary", """
                 The slides' question: a binary at **10 pc** with the two stars **1 AU** apart, so
                 0.1″ apart. Use the image on the right to test each telescope.
                 """)
+                .reviews("Diffraction and seeing")
+                .only("AST221")
                 .sky("Pluto", () -> new double[]{0, 0, 0.03})
                 .enter(() -> {
                     host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
@@ -464,6 +625,7 @@ final class TelescopeLesson extends LessonKit {
                 From the slides: a radio interferometer the size of the Earth, at **λ = 1 mm**, with
                 Earth's radius taken as **6000 km**.
                 """)
+                .reviews("Interferometry: a telescope as big as the Earth")
                 .unit(MM)
                 .cam("Earth", () -> camGoal)
                 .enter(() -> {
@@ -492,4 +654,17 @@ final class TelescopeLesson extends LessonKit {
     }
 
     static String vis(double mag, double lim) { return mag < lim ? "seen:" : "too faint:"; }
+
+    /**
+     * How a body compares with the faintest thing the naked eye sees here, without magnitudes:
+     * "69× brighter than your eye needs", or "13× too faint for your eye: needs D ≥ 25 mm"
+     * (the light ratio is 10^(0.4 Δm), and the aperture that makes it up is 7 mm × √ratio).
+     */
+    static String needs(double mag) {
+        double ratio = Math.pow(10, 0.4 * (mag - CITY_LIMIT));
+        if (ratio <= 1) return String.format("%,.0f× brighter than your eye needs", 1 / ratio);
+        double d = EYE_MM * Math.sqrt(ratio);
+        return String.format("%,.0f× too faint for your eye: needs D ≥ %s", ratio,
+                d < 1000 ? String.format("%.0f mm", d) : String.format("%.1f m", d / 1000));
+    }
 }

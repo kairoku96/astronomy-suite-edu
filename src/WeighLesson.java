@@ -86,19 +86,24 @@ final class WeighLesson extends LessonKit {
                 on logarithmic axes. They fall on one straight line of slope 3/2. Far planets are not
                 only farther; they also move more slowly, so a year on Neptune lasts 165 Earth years.
 
-                Look closely at a³ / P²: the outer planets miss 1 by up to about 1%. Those differences are
-                real. The planets tug on each other, so each orbit's size wobbles a little around its
-                average, and the exact law also contains the planet's own mass (next step).
+                Look closely at a³ / P²: from Jupiter outward it comes out a little above 1, by up to
+                0.3%. That difference is real. An outer planet circles the Sun _and_ the planets inside
+                its orbit, about 0.1% more mass than the Sun alone, and the exact law contains the masses
+                (next step). Jupiter also tugs Saturn's orbit a little larger and smaller over the
+                centuries.
                 """)
                 .unit(AU)
                 .cam(() -> new double[]{0, 0, 31 * AU, 42, 0})
                 .enter(() -> { host.showOnly(null, PLANETS); host.setOrbits(true, true); host.setTime(0.5 * YEAR); })
                 .controls(c -> timeSlider(c, "years", YEAR, 4))
                 .scene((r, hud, t) -> {
-                    hud.title("Measured orbits", ACCENT);
+                    hud.title("Measured orbits: a³ and P² come out the same", ACCENT);
+                    hud.row("planet   a (AU)   P (yr)", "a³          P²          a³ / P²", DIM);
                     for (int i = 0; i < 8; i++) {
-                        double a = host.planetA(host.planet(PLANETS[i])) / AU;
-                        hud.row(PLANETS[i], String.format("a %6.3f AU   P %7.3f yr   a³/P² %.4f", a, P_YR[i], a * a * a / (P_YR[i] * P_YR[i])));
+                        double a = host.planetA(host.planet(PLANETS[i])) / AU, a3 = a * a * a, p2 = P_YR[i] * P_YR[i];
+                        // Digits come from the measured period, so the live a never flickers between 1.000 and 0.9999.
+                        hud.row(String.format("%s   %s   %s", PLANETS[i], sig(a, Math.cbrt(p2)), sig(P_YR[i])),
+                                String.format("%s   %s   %.3f", sig(a3, p2), sig(p2), a3 / p2));
                     }
                     hud.formula("P² = a³   (P in years, a in AU)");
                     hud.inset("Period vs distance (log-log)", 250, 210, (g, b) -> {

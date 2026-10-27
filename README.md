@@ -1,4 +1,6 @@
-# Astronomy Suite
+# Orrerium
+
+<img src="assets/icon/orrerium.png" alt="Orrerium icon: Saturn, ray-traced from the sim's own textures" width="160" align="right">
 
 An interactive Java solar-system simulator with a built-in **Lesson Studio** of
 hands-on, animated 3-D astronomy lessons.
@@ -74,7 +76,7 @@ If the JOGL jars aren't in the default location, point the build at them:
 ### Settings and shortcuts
 
 The app remembers its display toggles, the planets and objects shown, the UI size, the time
-speed and the window's size and position in `~/.astronomy-suite/settings.properties` (beside
+speed and the window's size and position in `~/.orrerium/settings.properties` (beside
 the sky view's observer location and the AI key). They are saved when you quit; if you quit
 during a lesson, the settings from before the lesson are saved. Delete the file to go back to
 the defaults. `-Pgpu` / `-Dsss.gpu` overrides the saved GPU choice.
@@ -83,6 +85,102 @@ The menus show each toggle's single-key shortcut (O, R, L, …). The menu items 
 shortcuts of their own: **Ctrl+G** go to date, **Ctrl+T** jump to today, **Ctrl+E** next
 events, **Ctrl+L** lessons, **Ctrl+Q** exit and **F1** the list of controls. **Alt** plus the
 underlined letter opens a menu.
+
+## Installing the app (macOS and Windows)
+
+The packaged app is self-contained: it carries its own trimmed Java runtime, JOGL with its
+natives, FlatLaf and the `assets/` folder, so nothing else needs installing (Python is still
+only needed for the coding lesson's cells). Builds come from the **Packages** workflow on
+GitHub: open a run (Actions → Packages, or a pull request's *Checks*) and download from
+*Artifacts*: `orrerium-macos-ARM64` (Apple Silicon), `orrerium-macos-X64` (Intel Mac) or
+`orrerium-windows-x64`. Or build them yourself (below).
+
+### Windows
+
+- **Installer:** run `Orrerium-<version>-setup.exe`. It installs for your user only (no
+  administrator prompt), lets you pick the folder (default `%LOCALAPPDATA%\Programs\Orrerium`),
+  and adds Start-menu and desktop shortcuts. A newer installer upgrades it in place; remove it
+  from **Settings → Apps → Installed apps**.
+- **Portable:** unzip `Orrerium-<version>-windows-x64.zip` anywhere and run
+  `Orrerium\Orrerium.exe`.
+- The builds aren't code-signed, so Microsoft Defender SmartScreen may say *"Windows protected
+  your PC"* the first time: click **More info → Run anyway**.
+
+### macOS
+
+1. Download the `.dmg` for your Mac: `…-arm64.dmg` for Apple Silicon (M1 and later),
+   `…-x86_64.dmg` for Intel.
+2. Open the `.dmg` and drag **Orrerium** onto **Applications**.
+3. The first launch of an unsigned build is blocked by Gatekeeper ("Apple could not verify
+   'Orrerium' is free of malware…"). To allow it once:
+   - **macOS 15 Sequoia and later:** click **Done**, open **System Settings → Privacy &
+     Security**, scroll to *"Orrerium" was blocked…*, click **Open Anyway** and confirm.
+   - **macOS 14 and earlier:** Control-click (right-click) the app in Applications, choose
+     **Open**, then **Open** again.
+   - Or, in Terminal, clear the download quarantine flag (this also fixes an *"is damaged and
+     can't be opened"* message):
+
+     ```bash
+     xattr -dr com.apple.quarantine "/Applications/Orrerium.app"
+     ```
+
+   A build signed with a Developer ID and notarized (see below) opens without any of this.
+
+Settings and lesson progress live in `~/.orrerium/` as on every platform, so they survive
+reinstalling. (The app used to be called Astronomy Suite; its old `~/.astronomy-suite/` folder is
+moved there on the first launch.)
+
+### Building the packages
+
+With JDK 22 or later (24 or 25 recommended; `JAVA_HOME` is used, or `/usr/libexec/java_home`
+on a Mac), on a Mac or in Git Bash on Windows:
+
+```bash
+./package.sh
+```
+
+Everything lands in `build/package/dist/`: on a Mac `Orrerium.app` and
+`Orrerium-<version>-<arch>.dmg`; on Windows the `Orrerium\` app folder,
+`Orrerium-<version>-setup.exe` and `Orrerium-<version>-windows-x64.zip`. The Windows installer
+needs the [WiX Toolset](https://wixtoolset.org) (v3.14, or v4/v5 with JDK 24+) on the `PATH`.
+
+The script compiles `src/`, downloads the JOGL 2.6 / GlueGen jars and this platform's natives
+from jogamp.org into `build/jogamp/` (SHA-256 checked; or point `JOGL_DIR` / `GLUEGEN_DIR` at
+your own), jlinks a runtime, builds the app with `jpackage` (icon: `assets/icon/orrerium.png`,
+turned into an `.icns` or `.ico`), launches it once in self-test mode from another folder (as
+Finder or a shortcut does) to check that the assets and natives load, then builds the
+installers. `APP_VERSION=1.2.0 ./package.sh` sets the version, and `./package.sh --app-image`
+stops after the app (that also works on Linux).
+
+A package's runtime matches the JDK's OS and architecture, so each is built on its own
+platform. The GitHub workflow (`.github/workflows/package.yml`) builds all three (Apple Silicon,
+Intel Mac, Windows x64) on a manual run, on `v*` tags (the tag sets the version), and on pull
+requests that touch the packaging.
+
+### Signing and notarization (optional)
+
+Without these the app gets an ad-hoc signature and Gatekeeper's first-launch prompt above.
+With an Apple Developer ID, set:
+
+| Variable | Effect |
+|---|---|
+| `MAC_SIGN_IDENTITY` | e.g. `Developer ID Application: Jane Doe (TEAMID)`: signs the app (hardened runtime, `packaging/macos/entitlements.plist`) and the `.dmg` |
+| `MAC_KEYCHAIN` | keychain holding that identity, if not in the default search list |
+| `NOTARY_PROFILE` | a `xcrun notarytool store-credentials` profile: notarizes and staples the `.dmg` |
+| `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | notarize with an app-specific password instead of a profile |
+
+In CI, add the repository secrets `MACOS_CERTIFICATE` (base64 of the `.p12`),
+`MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY` and, for notarization, `APPLE_ID`,
+`APPLE_TEAM_ID` and `APPLE_APP_PASSWORD`; the workflow imports the certificate into a temporary
+keychain and passes them on.
+
+### Where the app finds its assets
+
+Assets are looked up in this order (`src/Assets.java`): the `-Dsss.assets=<dir>` property (the
+packaged app sets it to the folder inside its bundle), then `./assets` in the working directory
+(Gradle and `run2d.ps1` runs), then an `assets/` folder beside or above the compiled classes or
+jar. So the app works whatever folder it is started from. `-Dsss.selftest` prints where the
+assets were found and checks that they and the JOGL natives load.
 
 ## Lesson Studio
 
@@ -178,7 +276,7 @@ account is required — but does need a free API key. The first time you open th
 click **API key...**, then **Get a free key** (it opens
 [aistudio.google.com/apikey](https://aistudio.google.com/apikey)), sign in with a
 Google account, create a key, and paste it in. The key is saved locally in
-`~/.astronomy-suite/ai.properties` so you only enter it once, and it is only ever
+`~/.orrerium/ai.properties` so you only enter it once, and it is only ever
 sent to Google.
 
 You can also supply the key and tweak the backend with JVM flags or environment
@@ -514,6 +612,12 @@ mission spans the current date is marked even when no mission is playing.
 | New Horizons | | JPL Horizons −98 (to 2030) |
 | Juno | | JPL Horizons −61 (to 2025-09-30) |
 
+A mission whose track files aren't in `assets/missions/` is left out of the menus. That is the
+case for **Apollo 11 and 17** for now: rebuilding them with the current code misses the
+reconstruction's own targets (the LM rendezvous fails, and the return enters at 343 km / −12°
+instead of 121.9 km / −6.5°), so they stay hidden until that is fixed and their tracks are
+rebuilt.
+
 **Playback.** Tracks are stored as segments of ecliptic-J2000 states relative to a centre
 body. The base segment is relative to the Sun (or the Earth for lunar flights), and local
 segments are relative to the planet or the Moon being visited. A craft is drawn at the sim's
@@ -695,9 +799,15 @@ assets/textures/                 planet / moon / sun texture maps
 assets/sky/                      star catalogue, constellation data, Milky Way map
 assets/moon/                     the ELP/MPP02 lunar series (35 901 terms)
 assets/missions/                 spacecraft tracks (*.trk.gz)
+src/Assets.java                  where assets/ is found, whatever the working directory
+src/SaturnIcon.java              the app icon: Saturn ray-traced from its textures (-Dsss.icon=<png>)
+assets/icon/orrerium.png         that render at 1024 px (the .icns and window icons are made from it)
 libs/                            bundled FlatLaf look-and-feel
 build.gradle / settings.gradle   Gradle build (./gradlew run)
 run2d.ps1                        Windows build + launch script
+package.sh                       app packaging: macOS .app + .dmg, Windows .exe + .zip (jlink + jpackage)
+packaging/                       macOS signing entitlements; optional macos/Orrerium.icns, windows/Orrerium.ico overrides
+.github/workflows/package.yml    CI: builds the .dmg files and the Windows installer + zip
 ```
 
 ## License

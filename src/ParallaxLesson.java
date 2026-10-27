@@ -108,7 +108,9 @@ final class ParallaxLesson extends LessonKit {
     }
 
     /** The true-scale yearly ellipse on the sky (east to the left, as on a sky chart), with the star now. */
-    void ellipseInset(Graphics2D g, Rectangle b, double halfArcsec) {
+    void ellipseInset(Graphics2D g, Rectangle b, double halfArcsec) { ellipseInset(g, b, halfArcsec, false); }
+    /** ... with the scale bar in plain arcseconds when {@code plain} (AST101). */
+    void ellipseInset(Graphics2D g, Rectangle b, double halfArcsec, boolean plain) {
         double cx = b.getCenterX(), cy = b.getCenterY() + 6, s = (Math.min(b.width, b.height) / 2.0 - 16) / halfArcsec;
         g.setColor(new Color(255, 255, 255, 40));
         g.draw(new Line2D.Double(b.x + 4, cy, b.getMaxX() - 4, cy));
@@ -131,7 +133,7 @@ final class ParallaxLesson extends LessonKit {
         g.drawString("E", b.x + 6, (float) cy - 4);
         double bar = TelescopeLesson.niceBar(halfArcsec / 2);
         g.draw(new Line2D.Double(b.getMaxX() - 10 - bar * s, b.getMaxY() - 8, b.getMaxX() - 10, b.getMaxY() - 8));
-        String lab = angle(bar);
+        String lab = plain ? arcsec(bar) : angle(bar);
         g.drawString(lab, (float) (b.getMaxX() - 12 - bar * s - g.getFontMetrics().stringWidth(lab) - 4), (float) b.getMaxY() - 4);
     }
 
@@ -233,6 +235,8 @@ final class ParallaxLesson extends LessonKit {
                 so you can see the effect. The inset is the real thing, at true scale: an ellipse
                 only **1.5″** across, p = 0.75″ either side of the star's average position.
                 """)
+                .watch(() -> scaleV(unitWorld(star), D_VIS))
+                .only("AST221")
                 .unit(AU)
                 .cam(() -> camGoal)
                 .enter(() -> {
@@ -249,6 +253,89 @@ final class ParallaxLesson extends LessonKit {
                     hud.row("distance d = 1 / p", String.format("%.2f pc = %.2f light-years", 1 / p, 1 / p * PC / LY));
                     hud.formula("d (parsecs) = 1 / p (arcseconds)");
                     hud.inset("True scale, one year", 230, 230, (g, b) -> ellipseInset(g, b, 0.9));
+                }));
+
+        // AST101 leaves out the parsec: the same parallax, told as the shift Tycho looked for.
+        s.add(step("Parallax: Earth's orbit as a baseline", """
+                Hold up a finger and blink one eye, then the other: the finger jumps against the
+                background. That shift is {k:parallax}, and the nearer the finger, the bigger it
+                is.
+
+                If Earth goes around the Sun, the stars should do the same. Over a year Earth
+                carries us around a circle 300 million km wide, so a nearby star should trace a small
+                loop against the far more distant stars. Half the distance, twice the shift.
+
+                In the 1580s Tycho Brahe looked hard for this shift and saw none. His instruments,
+                the best of his time, could measure about 1 arcminute (1/60 of a degree). Even the
+                nearest star's shift is **0.75 arcseconds**, 80 times smaller. The stars are far
+                more distant than anyone imagined; the shift wasn't seen until 1838.
+
+                > The diagram shows α Centauri A 100,000 times too close, so you can see the
+                effect. The inset is the real loop at true scale. Pick farther stars: their loops
+                shrink.
+                """)
+                .watch(() -> scaleV(unitWorld(star), D_VIS))
+                .only("AST101")
+                .unit(AU)
+                .cam(() -> camGoal)
+                .enter(() -> {
+                    host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(15 * DAY);
+                    star = 0; frame(); sample();
+                })
+                .controls(c -> {
+                    c.choices("Star", STARS, () -> star, this::pick);
+                    timeSlider(c, "days", DAY, 40);
+                })
+                .scene((r, hud, t) -> {
+                    draw3d(r, true);
+                    double p = DATA[star][2] / 1000, ly = 1 / p * PC / LY;
+                    hud.title("Parallax of " + NAME[star], PINK);
+                    hud.row("distance", String.format("%.1f light-years", ly));
+                    hud.row("shift p (half the loop)", arcsec(p), PINK);
+                    hud.row("Tycho could measure", "about 60″ (1 arcminute)", DIM);
+                    hud.row("the shift is smaller by", String.format("%,.0f×", 60 / p), PINK);
+                    hud.formula("twice as far → half the shift");
+                    hud.inset("True scale, one year", 230, 230, (g, b) -> ellipseInset(g, b, 0.9, true));
+                }));
+
+        s.add(step("Check: a star twice as far", """
+                α Centauri A, 4.4 light-years away, shifts **0.75″** either way over a year. Picture a
+                second star exactly **twice as far** away, 8.7 light-years.
+                """)
+                .reviews("Parallax: Earth's orbit as a baseline")
+                .only("AST101")
+                .unit(AU)
+                .cam(() -> camGoal)
+                .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(15 * DAY); star = 0; frame(); sample(); })
+                .quiz("How big is the second star's shift?", 2,
+                      "Twice as far, half the shift: 0.75″ / 2 ≈ 0.37″. The same 300-million-km baseline looks half "
+                    + "as wide from twice as far away. (Sirius, at 8.6 light-years, really does shift 0.38″.)",
+                      "1.5″", "0.75″", "About 0.37″", "About 0.19″")
+                .scene((r, hud, t) -> {
+                    draw3d(r, true);
+                    hud.inset("α Centauri A, true scale", 230, 230, (g, b) -> ellipseInset(g, b, 0.9, true));
+                }));
+
+        s.add(step("Check: why Tycho saw no shift", """
+                Tycho Brahe measured star positions to about 1 arcminute (60″) and found no yearly
+                shift at all.
+                """)
+                .reviews("Parallax: Earth's orbit as a baseline")
+                .only("AST101")
+                .unit(AU)
+                .cam(() -> camGoal)
+                .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(15 * DAY); star = 0; frame(); sample(); })
+                .quiz("What does the missing shift really tell us?", 1,
+                      "Tycho took it to mean that Earth stands still. But Earth does move: even the nearest star's shift is "
+                    + "0.75″, 80 times smaller than he could measure, because the stars are far more distant than anyone "
+                    + "then imagined. The shift was finally measured in 1838, by telescope.",
+                      "Earth doesn't move around the Sun", "The stars are much farther away than Tycho thought",
+                      "The stars move along with Earth", "Parallax only works for planets")
+                .scene((r, hud, t) -> {
+                    draw3d(r, true);
+                    hud.title("The numbers", PINK);
+                    hud.row("Tycho could measure", "about 60″");
+                    hud.row("the nearest star's shift", "0.75″", PINK);
                 }));
 
         s.add(step("The parsec", """
@@ -346,6 +433,7 @@ final class ParallaxLesson extends LessonKit {
         s.add(step("Check: a star at 25 pc", """
                 A star lies **25 parsecs** away.
                 """)
+                .reviews("The parsec")
                 .unit(AU)
                 .cam(() -> camGoal)
                 .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.setTime(15 * DAY); star = 0; frame(); sample(); })

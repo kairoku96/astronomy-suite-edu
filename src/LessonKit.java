@@ -96,8 +96,33 @@ abstract class LessonKit {
         if (a >= 1e-3) return String.format("%.1f mas", arcsec * 1e3);
         return String.format("%.1f µas", arcsec * 1e6);
     }
+    /** An angle in arcseconds only (no milli- or micro-arcseconds), for AST101: 1.96″, 0.138″, 0.005″. */
+    static String arcsec(double arcsec) {
+        double a = Math.abs(arcsec);
+        if (a >= 60) return angle(arcsec);
+        return String.format(a >= 1 ? "%.2f″" : a >= 0.01 ? "%.3f″" : "%.4f″", arcsec);
+    }
+    /** Ecliptic longitude (°, 0–360) of a world-frame vector (world = {ye, −xe, ze}). */
+    static double eclLon(double[] w) { double l = Math.toDegrees(Math.atan2(w[0], -w[1])); return l < 0 ? l + 360 : l; }
+    /** Ecliptic latitude (°) of a world-frame vector. */
+    static double eclLat(double[] w) { return Math.toDegrees(Math.asin(clamp(w[2] / len(w), -1, 1))); }
+
     /** Signed number with a real minus sign. */
     static String signed(String fmt, double x) { return String.format(fmt, x).replace('-', '−'); }
+    /**
+     * Four significant figures, with thousands separators: 0.05801, 1.000, 140.7, 27,205. The digits
+     * are chosen after rounding, so a value hovering at a power of ten (Earth's a = 0.99998 … 1.00002)
+     * always reads 1.000 rather than flipping between 1.000 and 1.0000.
+     */
+    static String sig(double x) { return sig(x, x); }
+    /** {@code x} with the decimals four significant figures of {@code ref} would get: a live value stays put. */
+    static String sig(double x, double ref) {
+        double m = Math.abs(ref);
+        if (m == 0) return "0.000";
+        int d = Math.max(0, 3 - (int) Math.floor(Math.log10(m)));
+        if (d > 0 && Math.round(m * Math.pow(10, d)) >= 10000) d--;      // rounds up into the next decade
+        return d == 0 ? String.format("%,.0f", x) : String.format("%." + d + "f", x);
+    }
 
     // ------------------------------------------------------------------ the sky (east-north-up directions)
 
