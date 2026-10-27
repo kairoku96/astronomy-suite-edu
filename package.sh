@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Package Orrerium as a macOS app: build/mac/dist/Orrerium.app, then a .dmg
-# that holds it. The app carries its own trimmed Java runtime (jlink), the JOGL/GlueGen jars with
-# their macosx-universal natives, FlatLaf and the assets/ folder, so nothing needs installing.
+# Package Orrerium for the OS it runs on, into build/package/dist/:
+#   macOS    Orrerium.app, then Orrerium-<version>-<arch>.dmg holding it
+#   Windows  Orrerium\ (Orrerium.exe + app\ + runtime\), then Orrerium-<version>-setup.exe
+#            (a per-user installer, needs the WiX Toolset) and Orrerium-<version>-windows-x64.zip
+# The app carries its own trimmed Java runtime (jlink), the JOGL/GlueGen jars with this
+# platform's natives, FlatLaf and the assets/ folder, so nothing else needs installing.
 #
-# Usage:  ./package-mac.sh               build the .app and the .dmg               (macOS only)
-#         ./package-mac.sh --app-image   stop after the .app. On Windows/Linux this builds the
-#                                        same app image for the host OS as a dry run of the inputs.
+# Usage:  ./package.sh               the app and its installer(s)    (macOS, or Windows in Git Bash)
+#         ./package.sh --app-image   stop after the app (on Linux too)
 #
 # Environment (all optional):
 #   JAVA_HOME            JDK 22+ with jlink/jpackage (default: /usr/libexec/java_home -v 24+, else PATH)
@@ -30,6 +32,8 @@ MAIN_CLASS="SolarSystemSimulation"
 # reaches jdk.unsupported and java.logging reflectively, which jdeps can't see).
 MODULES="java.base,java.desktop,java.net.http,java.logging,jdk.unsupported"
 JOGAMP_URL="https://jogamp.org/deployment/v2.6.0/jar"
+# Fixed for good: Windows recognises a newer installer with the same upgrade code as an update.
+WIN_UPGRADE_UUID="2b42913f-6cea-4295-bcc3-db71b3fd75f9"
 
 APP_IMAGE_ONLY=0
 case "${1:-}" in
@@ -49,8 +53,8 @@ case "$(uname -s)" in
     Linux) OS=linux; case "$(uname -m)" in aarch64|arm64) NATIVES=linux-aarch64 ;; *) NATIVES=linux-amd64 ;; esac ;;
     *) die "unsupported OS $(uname -s)" ;;
 esac
-if [ "$OS" != mac ] && [ "$APP_IMAGE_ONLY" = 0 ]; then
-    die "a .dmg can only be built on macOS; use --app-image for a dry run on $OS"
+if [ "$OS" = linux ] && [ "$APP_IMAGE_ONLY" = 0 ]; then
+    die "no Linux installer is set up; use --app-image"
 fi
 # Git Bash: C:/... paths, which the Windows JDK tools understand and MSYS won't rewrite.
 if [ "$OS" = windows ]; then ROOT="$(cd "$(dirname "$0")" && pwd -W)"; else ROOT="$(cd "$(dirname "$0")" && pwd)"; fi
@@ -80,6 +84,8 @@ expected_sha() {
         gluegen-rt.jar) echo 465bbc8d410b872a76b5b901cdb9c2c07905edd5e61a7120dc6a4d007880ec2f ;;
         jogl-all-natives-macosx-universal.jar) echo 81db6a2b50f3803d4307a8bd7570a4f78c41ae0d44361208d0885a5cdf289dfa ;;
         gluegen-rt-natives-macosx-universal.jar) echo e543d5e81bc8b8f63e5dc365ac47da009f82175b2c6eba16a24ce3b2eb031773 ;;
+        jogl-all-natives-windows-amd64.jar) echo 33081ebfac520d7d283830a614f458f728104bef4eff56b52f604ee8c5af90c8 ;;
+        gluegen-rt-natives-windows-amd64.jar) echo c7c9138606858fed0b1650a2444cc1bc96599cc635a8d879979a37646e8594b1 ;;
     esac
 }
 fetch_jogamp() {   # fetch_jogamp <dir> <jar>
@@ -111,9 +117,9 @@ FLATLAF="$(ls "$ROOT"/libs/flatlaf-*.jar 2>/dev/null | head -n 1)"
 [ -n "$FLATLAF" ] || die "libs/flatlaf-*.jar not found"
 
 # ---- Compile + jar -----------------------------------------------------------------------------
-OUT="$ROOT/build/mac"
+OUT="$ROOT/build/package"
 CLASSES="$OUT/classes"
-INPUT="$OUT/input"        # becomes Contents/app/ inside the bundle
+INPUT="$OUT/input"        # becomes the app's own folder (Contents/app on macOS, app\ on Windows)
 DIST="$OUT/dist"
 rm -rf "$CLASSES" "$INPUT" "$OUT/runtime" "$DIST"
 mkdir -p "$CLASSES" "$INPUT/natives" "$DIST"
@@ -160,6 +166,15 @@ if [ "$OS" = mac ]; then
         iconutil -c icns "$SET" -o "$ICNS"
     fi
     ICON_ARGS=(--icon "$ICNS")
+elif [ "$OS" = windows ]; then
+    # packaging/windows/Orrerium.ico if present; else the app writes one (16-256 px, PNG entries)
+    # from the same render, cropped to the planet as for its window icons.
+    ICO="$ROOT/packaging/windows/Orrerium.ico"
+    if [ ! -f "$ICO" ]; then
+        ICO="$OUT/Orrerium.ico"
+        "$JBIN/java" -Djava.awt.headless=true -Dsss.icon="$ICO" -cp "$CLASSES$SEP$FLATLAF" "$MAIN_CLASS" >/dev/null
+    fi
+    ICON_ARGS=(--icon "$ICO")
 fi
 
 # ---- Runtime -----------------------------------------------------------------------------------
@@ -190,7 +205,6 @@ case "$OS" in
     mac) PLATFORM_ARGS=(--mac-package-identifier "$APP_ID" --mac-package-name "$APP_NAME"
                         --mac-app-category public.app-category.education
                         --java-options "-Dapple.awt.application.appearance=system") ;;
-    windows) PLATFORM_ARGS=(--win-console) ;;   # dry run: let the self-test print to this shell
 esac
 
 say "jpackage --type app-image"
@@ -215,12 +229,36 @@ if [ "$OS" = mac ]; then
     codesign --verify --deep --strict "$APP"
 fi
 
-# Launch the packaged app the way Finder does (working directory /) in its self-test mode:
-# assets found through $APPDIR, JOGL natives loaded from the bundle, bundled runtime used.
+# Launch the packaged app the way Finder or a shortcut does (working directory elsewhere) in its
+# self-test mode: assets found through $APPDIR, JOGL natives loaded from the app, bundled runtime
+# used. Piped through cat so the Windows launcher (a GUI program, no console) still reports here.
 say "self-test of the packaged launcher"
-(cd / && JAVA_TOOL_OPTIONS="-Dsss.selftest=1" "$LAUNCHER") || die "packaged app failed its self-test"
+(cd / && JAVA_TOOL_OPTIONS="-Dsss.selftest=1" "$LAUNCHER" | cat) || die "packaged app failed its self-test"
 say "app image: $APP"
 if [ "$APP_IMAGE_ONLY" = 1 ]; then exit 0; fi
+
+# ---- Windows: installer + portable zip ---------------------------------------------------------
+if [ "$OS" = windows ]; then
+    ZIP="$DIST/$APP_NAME-$APP_VERSION-windows-x64.zip"
+    say "zipping the app folder"
+    "$JBIN/jar" --create --no-manifest --file "$ZIP" -C "$DIST" "$APP_NAME"
+
+    # A per-user install (no administrator prompt) into %LOCALAPPDATA%\Programs, with Start-menu
+    # and desktop shortcuts; a later version with the same upgrade code replaces it.
+    say "jpackage --type exe"
+    "$JBIN/jpackage" --type exe --dest "$DIST" --app-image "$APP" \
+        --name "$APP_NAME" --app-version "$APP_VERSION" --vendor "$VENDOR" \
+        --description "Solar-system simulator with built-in astronomy lessons" \
+        --copyright "Copyright (c) 2025 $VENDOR, MIT License" \
+        --win-per-user-install --win-dir-chooser --win-menu --win-menu-group "$APP_NAME" \
+        --win-shortcut --win-upgrade-uuid "$WIN_UPGRADE_UUID" \
+        || die "jpackage could not build the installer: it needs the WiX Toolset (v3.14, or v4+ with JDK 24+)"
+    EXE="$DIST/$APP_NAME-$APP_VERSION-setup.exe"
+    mv "$DIST/$APP_NAME-$APP_VERSION.exe" "$EXE"
+    say "done: $EXE"
+    say "      $ZIP"
+    exit 0
+fi
 
 # ---- DMG ---------------------------------------------------------------------------------------
 say "jpackage --type dmg"

@@ -109,6 +109,32 @@ final class SaturnIcon {
         return out;
     }
 
+    /**
+     * A Windows .ico of the window icons ({@link AppWindow#icon}, the committed render cropped to
+     * the planet), 16 to 256 px, each stored as a PNG entry (Windows Vista and later).
+     */
+    static void writeIco(java.io.File f) throws IOException {
+        int[] sizes = {16, 20, 24, 32, 40, 48, 64, 128, 256};
+        byte[][] png = new byte[sizes.length][];
+        for (int i = 0; i < sizes.length; i++) {
+            var bytes = new java.io.ByteArrayOutputStream();
+            ImageIO.write(AppWindow.icon(sizes[i]), "png", bytes);
+            png[i] = bytes.toByteArray();
+        }
+        var buf = java.nio.ByteBuffer.allocate(6 + 16 * sizes.length + java.util.Arrays.stream(png).mapToInt(p -> p.length).sum())
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buf.putShort((short) 0).putShort((short) 1).putShort((short) sizes.length);   // ICONDIR: icon, n images
+        int offset = 6 + 16 * sizes.length;
+        for (int i = 0; i < sizes.length; i++) {
+            int s = sizes[i] >= 256 ? 0 : sizes[i];                                      // 0 means 256
+            buf.put((byte) s).put((byte) s).put((byte) 0).put((byte) 0)
+               .putShort((short) 1).putShort((short) 32).putInt(png[i].length).putInt(offset);
+            offset += png[i].length;
+        }
+        for (byte[] p : png) buf.put(p);
+        java.nio.file.Files.write(f.toPath(), buf.array());
+    }
+
     /** Premultiplied linear {r, g, b, alpha} along the view ray through screen point (x, y). */
     private double[] trace(double x, double y) {
         double[] o = new double[3], d = {-V[0], -V[1], -V[2]};

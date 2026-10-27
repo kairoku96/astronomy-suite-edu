@@ -86,17 +86,30 @@ shortcuts of their own: **Ctrl+G** go to date, **Ctrl+T** jump to today, **Ctrl+
 events, **Ctrl+L** lessons, **Ctrl+Q** exit and **F1** the list of controls. **Alt** plus the
 underlined letter opens a menu.
 
-## macOS app (.dmg)
+## Installing the app (macOS and Windows)
 
-`Orrerium.app` is self-contained: it carries its own trimmed Java runtime, JOGL with its
-macOS natives, FlatLaf and the `assets/` folder, so nothing else needs installing (Python is
-still only needed for the coding lesson's cells).
+The packaged app is self-contained: it carries its own trimmed Java runtime, JOGL with its
+natives, FlatLaf and the `assets/` folder, so nothing else needs installing (Python is still
+only needed for the coding lesson's cells). Builds come from the **Packages** workflow on
+GitHub: open a run (Actions → Packages, or a pull request's *Checks*) and download from
+*Artifacts*: `orrerium-macos-ARM64` (Apple Silicon), `orrerium-macos-X64` (Intel Mac) or
+`orrerium-windows-x64`. Or build them yourself (below).
 
-### Installing
+### Windows
+
+- **Installer:** run `Orrerium-<version>-setup.exe`. It installs for your user only (no
+  administrator prompt), lets you pick the folder (default `%LOCALAPPDATA%\Programs\Orrerium`),
+  and adds Start-menu and desktop shortcuts. A newer installer upgrades it in place; remove it
+  from **Settings → Apps → Installed apps**.
+- **Portable:** unzip `Orrerium-<version>-windows-x64.zip` anywhere and run
+  `Orrerium\Orrerium.exe`.
+- The builds aren't code-signed, so Microsoft Defender SmartScreen may say *"Windows protected
+  your PC"* the first time: click **More info → Run anyway**.
+
+### macOS
 
 1. Download the `.dmg` for your Mac: `…-arm64.dmg` for Apple Silicon (M1 and later),
-   `…-x86_64.dmg` for Intel. Builds come from the **macOS DMG** workflow's artifacts on GitHub
-   (Actions → macOS DMG → a run → *Artifacts*), or build one yourself (below).
+   `…-x86_64.dmg` for Intel.
 2. Open the `.dmg` and drag **Orrerium** onto **Applications**.
 3. The first launch of an unsigned build is blocked by Gatekeeper ("Apple could not verify
    'Orrerium' is free of malware…"). To allow it once:
@@ -117,28 +130,32 @@ Settings and lesson progress live in `~/.orrerium/` as on every platform, so the
 reinstalling. (The app used to be called Astronomy Suite; its old `~/.astronomy-suite/` folder is
 moved there on the first launch.)
 
-### Building the .dmg
+### Building the packages
 
-On a Mac with JDK 22 or later (24 or 25 recommended; `JAVA_HOME` or `/usr/libexec/java_home`
-is used):
+With JDK 22 or later (24 or 25 recommended; `JAVA_HOME` is used, or `/usr/libexec/java_home`
+on a Mac), on a Mac or in Git Bash on Windows:
 
 ```bash
-./package-mac.sh
+./package.sh
 ```
 
-The result is `build/mac/dist/Orrerium-<version>-<arch>.dmg`, with the app beside it.
-The script compiles `src/`, downloads the JOGL 2.6 / GlueGen jars and their `macosx-universal`
-natives from jogamp.org into `build/jogamp/` (SHA-256 checked; or point `JOGL_DIR` /
-`GLUEGEN_DIR` at your own), jlinks a runtime, builds the app image with `jpackage`, launches it
-once in self-test mode from `/` (as Finder does) to check that the assets and natives load,
-then wraps it in a `.dmg`. `APP_VERSION=1.2.0 ./package-mac.sh` sets the version, and
-`./package-mac.sh --app-image` stops after the `.app` (it also runs on Windows and Linux under
-bash as a dry run of the same inputs, building an app image for that OS).
+Everything lands in `build/package/dist/`: on a Mac `Orrerium.app` and
+`Orrerium-<version>-<arch>.dmg`; on Windows the `Orrerium\` app folder,
+`Orrerium-<version>-setup.exe` and `Orrerium-<version>-windows-x64.zip`. The Windows installer
+needs the [WiX Toolset](https://wixtoolset.org) (v3.14, or v4/v5 with JDK 24+) on the `PATH`.
 
-The bundle's runtime matches the JDK's architecture, so build on an Apple Silicon Mac for
-`arm64` and on an Intel Mac for `x86_64`. The GitHub workflow
-(`.github/workflows/macos-dmg.yml`) builds both, on a manual run, on `v*` tags (the tag sets the
-version), and on pull requests that touch the packaging.
+The script compiles `src/`, downloads the JOGL 2.6 / GlueGen jars and this platform's natives
+from jogamp.org into `build/jogamp/` (SHA-256 checked; or point `JOGL_DIR` / `GLUEGEN_DIR` at
+your own), jlinks a runtime, builds the app with `jpackage` (icon: `assets/icon/orrerium.png`,
+turned into an `.icns` or `.ico`), launches it once in self-test mode from another folder (as
+Finder or a shortcut does) to check that the assets and natives load, then builds the
+installers. `APP_VERSION=1.2.0 ./package.sh` sets the version, and `./package.sh --app-image`
+stops after the app (that also works on Linux).
+
+A package's runtime matches the JDK's OS and architecture, so each is built on its own
+platform. The GitHub workflow (`.github/workflows/package.yml`) builds all three (Apple Silicon,
+Intel Mac, Windows x64) on a manual run, on `v*` tags (the tag sets the version), and on pull
+requests that touch the packaging.
 
 ### Signing and notarization (optional)
 
@@ -788,9 +805,9 @@ assets/icon/orrerium.png         that render at 1024 px (the .icns and window ic
 libs/                            bundled FlatLaf look-and-feel
 build.gradle / settings.gradle   Gradle build (./gradlew run)
 run2d.ps1                        Windows build + launch script
-package-mac.sh                   macOS .app + .dmg packaging (jlink + jpackage)
-packaging/macos/                 macOS signing entitlements (and an optional Orrerium.icns override)
-.github/workflows/macos-dmg.yml  CI: builds the .dmg on macOS runners
+package.sh                       app packaging: macOS .app + .dmg, Windows .exe + .zip (jlink + jpackage)
+packaging/                       macOS signing entitlements; optional macos/Orrerium.icns, windows/Orrerium.ico overrides
+.github/workflows/package.yml    CI: builds the .dmg files and the Windows installer + zip
 ```
 
 ## License

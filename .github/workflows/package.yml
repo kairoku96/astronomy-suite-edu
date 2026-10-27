@@ -1,13 +1,14 @@
-# Build "Orrerium.app" in a .dmg on macOS runners (Apple Silicon and Intel) with
-# package-mac.sh, and upload the .dmg files as workflow artifacts.
+# Build the Orrerium installers with package.sh and upload them as workflow artifacts:
+#   macOS    Orrerium-<version>-arm64.dmg and -x86_64.dmg (Apple Silicon and Intel runners)
+#   Windows  Orrerium-<version>-setup.exe (per-user installer) and -windows-x64.zip (portable)
 #
-# Runs by hand (Actions > macOS DMG > Run workflow), on v* tags, and on pull requests that touch
-# the packaging. Signing and notarization switch on only when these repository secrets exist:
+# Runs by hand (Actions > Packages > Run workflow), on v* tags, and on pull requests that touch
+# the packaging. macOS signing and notarization switch on only when these repository secrets exist:
 #   MACOS_CERTIFICATE           base64 of a "Developer ID Application" .p12
 #   MACOS_CERTIFICATE_PASSWORD  its password
 #   MACOS_SIGN_IDENTITY         "Developer ID Application: Name (TEAMID)"
 #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   (app-specific password) for notarization
-name: macOS DMG
+name: Packages
 
 on:
   workflow_dispatch:
@@ -15,16 +16,18 @@ on:
     tags: ['v*']
   pull_request:
     paths:
-      - package-mac.sh
+      - package.sh
       - packaging/**
+      - assets/icon/**
       - src/Assets.java
-      - .github/workflows/macos-dmg.yml
+      - src/SaturnIcon.java
+      - .github/workflows/package.yml
 
 permissions:
   contents: read
 
 jobs:
-  dmg:
+  macos:
     strategy:
       fail-fast: false
       matrix:
@@ -49,8 +52,8 @@ jobs:
           distribution: temurin
           java-version: '25'
 
-      # JOGL 2.6 / GlueGen are not on Maven Central: package-mac.sh downloads them from
-      # jogamp.org into build/jogamp and checks their SHA-256. Cache them between runs.
+      # JOGL 2.6 / GlueGen are not on Maven Central: package.sh downloads them from jogamp.org
+      # into build/jogamp and checks their SHA-256. Cache them between runs.
       - uses: actions/cache@v4
         with:
           path: build/jogamp
@@ -80,17 +83,69 @@ jobs:
       # Builds the .app, runs the packaged launcher's self-test (assets + JOGL natives, from
       # working directory /), then wraps it in a .dmg; signs/notarizes when the secrets are set.
       - name: Package
-        run: ./package-mac.sh
+        run: ./package.sh
 
       - name: Inspect
         run: |
-          app="build/mac/dist/Orrerium.app"
+          app="build/package/dist/Orrerium.app"
           codesign -dv --verbose=2 "$app" 2>&1 | sed -n '1,8p'
           spctl --assess --type execute -vv "$app" || echo "(not accepted by Gatekeeper: expected for an unsigned build)"
-          du -sh "$app" build/mac/dist/*.dmg
+          du -sh "$app" build/package/dist/*.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: orrerium-macos-${{ runner.arch }}
-          path: build/mac/dist/*.dmg
+          path: build/package/dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    # windows-2022 ships the WiX Toolset 3.14 that jpackage uses for the .exe installer.
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash      # Git Bash: package.sh runs as on a Mac
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: actions/cache@v4
+        with:
+          path: build/jogamp
+          key: jogamp-2.6.0-windows-amd64
+
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="1.0.0"; fi
+          echo "APP_VERSION=$v" >> "$GITHUB_ENV"
+
+      # Put WiX on the PATH: the preinstalled 3.x if there is one, else WiX 5 as a .NET tool with
+      # the two extensions jpackage's installer uses.
+      - name: WiX Toolset
+        run: |
+          wix3="$(ls -d "/c/Program Files (x86)/WiX Toolset v3."*/bin 2>/dev/null | tail -n 1)"
+          if [ -n "$wix3" ]; then
+            echo "using $wix3"
+            cygpath -w "$wix3" >> "$GITHUB_PATH"
+          else
+            dotnet tool install --global wix --version 5.0.2
+            wix extension add --global WixToolset.Util.wixext/5.0.2
+            wix extension add --global WixToolset.UI.wixext/5.0.2
+            cygpath -w "$USERPROFILE/.dotnet/tools" >> "$GITHUB_PATH"
+          fi
+
+      # Builds Orrerium\ (GUI launcher, no console), runs its self-test from another folder,
+      # then the per-user setup .exe and the portable .zip.
+      - name: Package
+        run: ./package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orrerium-windows-x64
+          path: |
+            build/package/dist/*.exe
+            build/package/dist/*.zip
           if-no-files-found: error

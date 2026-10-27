@@ -6700,7 +6700,10 @@ public class SolarSystemSimulation extends JPanel
         // leaves inside the canvas.
         String iconPath = System.getProperty("sss.icon");
         if (iconPath != null) {
-            try { ImageIO.write(SaturnIcon.render(1024, 824, 4), "png", new File(iconPath)); }
+            try {
+                if (iconPath.toLowerCase(Locale.ROOT).endsWith(".ico")) SaturnIcon.writeIco(new File(iconPath));
+                else ImageIO.write(SaturnIcon.render(1024, 824, 4), "png", new File(iconPath));
+            }
             catch (Exception e) { System.err.println("Icon not written: " + e); System.exit(1); }
             System.out.println("Icon written: " + iconPath);
             System.exit(0);
