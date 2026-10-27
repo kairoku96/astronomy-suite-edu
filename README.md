@@ -1,4 +1,6 @@
-# Astronomy Suite
+# Orrerium
+
+<img src="assets/icon/orrerium.png" alt="Orrerium icon: Saturn, ray-traced from the sim's own textures" width="160" align="right">
 
 An interactive Java solar-system simulator with a built-in **Lesson Studio** of
 hands-on, animated 3-D astronomy lessons.
@@ -74,7 +76,7 @@ If the JOGL jars aren't in the default location, point the build at them:
 ### Settings and shortcuts
 
 The app remembers its display toggles, the planets and objects shown, the UI size, the time
-speed and the window's size and position in `~/.astronomy-suite/settings.properties` (beside
+speed and the window's size and position in `~/.orrerium/settings.properties` (beside
 the sky view's observer location and the AI key). They are saved when you quit; if you quit
 during a lesson, the settings from before the lesson are saved. Delete the file to go back to
 the defaults. `-Pgpu` / `-Dsss.gpu` overrides the saved GPU choice.
@@ -86,7 +88,7 @@ underlined letter opens a menu.
 
 ## macOS app (.dmg)
 
-`Astronomy Suite.app` is self-contained: it carries its own trimmed Java runtime, JOGL with its
+`Orrerium.app` is self-contained: it carries its own trimmed Java runtime, JOGL with its
 macOS natives, FlatLaf and the `assets/` folder, so nothing else needs installing (Python is
 still only needed for the coding lesson's cells).
 
@@ -95,24 +97,25 @@ still only needed for the coding lesson's cells).
 1. Download the `.dmg` for your Mac: `…-arm64.dmg` for Apple Silicon (M1 and later),
    `…-x86_64.dmg` for Intel. Builds come from the **macOS DMG** workflow's artifacts on GitHub
    (Actions → macOS DMG → a run → *Artifacts*), or build one yourself (below).
-2. Open the `.dmg` and drag **Astronomy Suite** onto **Applications**.
+2. Open the `.dmg` and drag **Orrerium** onto **Applications**.
 3. The first launch of an unsigned build is blocked by Gatekeeper ("Apple could not verify
-   'Astronomy Suite' is free of malware…"). To allow it once:
+   'Orrerium' is free of malware…"). To allow it once:
    - **macOS 15 Sequoia and later:** click **Done**, open **System Settings → Privacy &
-     Security**, scroll to *"Astronomy Suite" was blocked…*, click **Open Anyway** and confirm.
+     Security**, scroll to *"Orrerium" was blocked…*, click **Open Anyway** and confirm.
    - **macOS 14 and earlier:** Control-click (right-click) the app in Applications, choose
      **Open**, then **Open** again.
    - Or, in Terminal, clear the download quarantine flag (this also fixes an *"is damaged and
      can't be opened"* message):
 
      ```bash
-     xattr -dr com.apple.quarantine "/Applications/Astronomy Suite.app"
+     xattr -dr com.apple.quarantine "/Applications/Orrerium.app"
      ```
 
    A build signed with a Developer ID and notarized (see below) opens without any of this.
 
-Settings and lesson progress live in `~/.astronomy-suite/` as on every platform, so they survive
-reinstalling.
+Settings and lesson progress live in `~/.orrerium/` as on every platform, so they survive
+reinstalling. (The app used to be called Astronomy Suite; its old `~/.astronomy-suite/` folder is
+moved there on the first launch.)
 
 ### Building the .dmg
 
@@ -123,7 +126,7 @@ is used):
 ./package-mac.sh
 ```
 
-The result is `build/mac/dist/Astronomy Suite-<version>-<arch>.dmg`, with the app beside it.
+The result is `build/mac/dist/Orrerium-<version>-<arch>.dmg`, with the app beside it.
 The script compiles `src/`, downloads the JOGL 2.6 / GlueGen jars and their `macosx-universal`
 natives from jogamp.org into `build/jogamp/` (SHA-256 checked; or point `JOGL_DIR` /
 `GLUEGEN_DIR` at your own), jlinks a runtime, builds the app image with `jpackage`, launches it
@@ -256,7 +259,7 @@ account is required — but does need a free API key. The first time you open th
 click **API key...**, then **Get a free key** (it opens
 [aistudio.google.com/apikey](https://aistudio.google.com/apikey)), sign in with a
 Google account, create a key, and paste it in. The key is saved locally in
-`~/.astronomy-suite/ai.properties` so you only enter it once, and it is only ever
+`~/.orrerium/ai.properties` so you only enter it once, and it is only ever
 sent to Google.
 
 You can also supply the key and tweak the backend with JVM flags or environment
@@ -780,11 +783,13 @@ assets/sky/                      star catalogue, constellation data, Milky Way m
 assets/moon/                     the ELP/MPP02 lunar series (35 901 terms)
 assets/missions/                 spacecraft tracks (*.trk.gz)
 src/Assets.java                  where assets/ is found, whatever the working directory
+src/SaturnIcon.java              the app icon: Saturn ray-traced from its textures (-Dsss.icon=<png>)
+assets/icon/orrerium.png         that render at 1024 px (the .icns and window icons are made from it)
 libs/                            bundled FlatLaf look-and-feel
 build.gradle / settings.gradle   Gradle build (./gradlew run)
 run2d.ps1                        Windows build + launch script
 package-mac.sh                   macOS .app + .dmg packaging (jlink + jpackage)
-packaging/macos/                 macOS signing entitlements (and an optional icon.png / .icns)
+packaging/macos/                 macOS signing entitlements (and an optional Orrerium.icns override)
 .github/workflows/macos-dmg.yml  CI: builds the .dmg on macOS runners
 ```
 

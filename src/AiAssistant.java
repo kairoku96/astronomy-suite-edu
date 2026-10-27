@@ -32,7 +32,7 @@ final class AiAssistant {
     //  Google Gemini's free tier (https://aistudio.google.com/apikey),
     //  which costs nothing — no billing account required — but does need a
     //  free API key. The key is entered once in the chat window ("API
-    //  key..." button) and remembered in ~/.astronomy-suite/ai.properties.
+    //  key..." button) and remembered in ~/.orrerium/ai.properties.
     //
     //  Overrides (all optional):
     //    -Dsss.ai.key=...    (or env GEMINI_API_KEY / SSS_AI_KEY)  the key
@@ -46,12 +46,12 @@ final class AiAssistant {
         private static final String MODEL = prop("sss.ai.model", "SSS_AI_MODEL",
                 "gemini-3.6-flash");
         private static final Path CONFIG =
-                Path.of(System.getProperty("user.home", "."), ".astronomy-suite", "ai.properties");
+                AppSettings.file("ai.properties");
         /** Key set at runtime via the UI (overrides the config file, in memory). */
         private static volatile String runtimeKey;
 
         private static final String SYSTEM_PROMPT =
-                "You are the built-in AI assistant for \"Astronomy Suite\", an "
+                "You are the built-in AI assistant for \"Orrerium\", an "
               + "interactive solar-system simulator and astronomy learning app. "
               + "You are a specialist in THIS app: answer questions about how to use "
               + "it, what its features do, and the astronomy it teaches. Below you are "
@@ -78,7 +78,7 @@ final class AiAssistant {
 
         /** Static, accurate reference for the app so the model can answer precisely. */
         private static final String APP_FACTS =
-                "=== ASTRONOMY SUITE - FEATURE & CONTROL REFERENCE ===\n"
+                "=== ORRERIUM - FEATURE & CONTROL REFERENCE ===\n"
               + "What it is: a Java Swing + OpenGL interactive model of the solar system "
               + "with real orbits (a symplectic N-body integration of the planets, dwarf planets, comets and asteroids under mutual gravity from JPL Horizons initial conditions; moons from theories fitted to JPL satellite ephemerides), textured planets, moons, rings, eclipse "
               + "shadows, real comets/minor bodies, a real-date planetarium, and a 3-D "
@@ -179,7 +179,7 @@ final class AiAssistant {
                 Properties p = new Properties();
                 p.setProperty("gemini.key", runtimeKey);
                 try (var out = Files.newOutputStream(CONFIG)) {
-                    p.store(out, "Astronomy Suite AI assistant settings");
+                    p.store(out, "Orrerium AI assistant settings");
                 }
             } catch (Exception ignored) {
                 // If we can't write the file, the key still works for this session.

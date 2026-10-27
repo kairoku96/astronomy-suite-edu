@@ -782,7 +782,7 @@ public final class LessonStudio extends JPanel {
     // ---- progress: which steps of each lesson the user has done, kept across runs ----
 
     /** Per course and lesson, the titles of the steps done: seen, or for a check, answered right. */
-    private final AppSettings progress = AppSettings.load(AppSettings.file("lessons.properties"), "Astronomy Suite - lesson progress");
+    private final AppSettings progress = AppSettings.load(AppSettings.file("lessons.properties"), "Orrerium - lesson progress");
     /** The head-less shot and alignment runs walk every step; they mustn't mark anything done. */
     private static final boolean RECORD = System.getProperty("sss.lessonshot") == null && System.getProperty("sss.aligncheck") == null;
     private static final String SEP = " | ";

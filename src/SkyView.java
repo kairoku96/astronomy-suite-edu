@@ -1569,7 +1569,7 @@ final class SkyView {
     }
 
     private static Path settingsFile() {
-        return Path.of(System.getProperty("user.home", "."), ".astronomy-suite", "sky.properties");
+        return AppSettings.file("sky.properties");
     }
 
     private void loadLocation() {
@@ -1594,7 +1594,7 @@ final class SkyView {
             p.setProperty("lon", String.valueOf(lonDeg));
             p.setProperty("name", placeName);
             p.setProperty("zone", zone.getId());
-            try (var out = Files.newBufferedWriter(f)) { p.store(out, "Astronomy Suite - Sky from Earth observer"); }
+            try (var out = Files.newBufferedWriter(f)) { p.store(out, "Orrerium - Sky from Earth observer"); }
         } catch (Exception ignored) { }
     }
 

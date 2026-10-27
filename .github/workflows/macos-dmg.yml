@@ -1,4 +1,4 @@
-# Build "Astronomy Suite.app" in a .dmg on macOS runners (Apple Silicon and Intel) with
+# Build "Orrerium.app" in a .dmg on macOS runners (Apple Silicon and Intel) with
 # package-mac.sh, and upload the .dmg files as workflow artifacts.
 #
 # Runs by hand (Actions > macOS DMG > Run workflow), on v* tags, and on pull requests that touch
@@ -84,13 +84,13 @@ jobs:
 
       - name: Inspect
         run: |
-          app="build/mac/dist/Astronomy Suite.app"
+          app="build/mac/dist/Orrerium.app"
           codesign -dv --verbose=2 "$app" 2>&1 | sed -n '1,8p'
           spctl --assess --type execute -vv "$app" || echo "(not accepted by Gatekeeper: expected for an unsigned build)"
           du -sh "$app" build/mac/dist/*.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: astronomy-suite-macos-${{ runner.arch }}
+          name: orrerium-macos-${{ runner.arch }}
           path: build/mac/dist/*.dmg
           if-no-files-found: error

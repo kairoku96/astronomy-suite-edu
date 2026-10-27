@@ -4194,7 +4194,7 @@ public class SolarSystemSimulation extends JPanel
         }
         String url = GE_LAYER_URL[layer] + z + "/" + y + "/" + x;   // ArcGIS order is {z}/{y}/{x}
         HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-                .header("User-Agent", "AstronomySuite/1.0 (Earth Explorer)")
+                .header("User-Agent", "Orrerium/1.0 (Earth Explorer)")
                 .timeout(Duration.ofSeconds(12))
                 .GET().build();
         HttpResponse<byte[]> resp = tileHttp.send(req, HttpResponse.BodyHandlers.ofByteArray());
@@ -6695,15 +6695,12 @@ public class SolarSystemSimulation extends JPanel
     }
 
     public static void main(String[] args) {
-        // Icon mode: write the app icon as a 1024 px PNG (the macOS .icns source) and exit.
-        // The ringed planet is drawn on the 824 px grid Apple's icon template leaves inside the canvas.
+        // Icon mode: ray-trace Saturn as the 1024 px app icon (the .icns source, committed as
+        // assets/icon/orrerium.png) and exit. It fills the 824 px grid Apple's icon template
+        // leaves inside the canvas.
         String iconPath = System.getProperty("sss.icon");
         if (iconPath != null) {
-            BufferedImage icon = new BufferedImage(1024, 1024, BufferedImage.TYPE_INT_ARGB);
-            Graphics2D g = icon.createGraphics();
-            g.drawImage(AppWindow.drawIcon(824), 100, 100, null);
-            g.dispose();
-            try { ImageIO.write(icon, "png", new File(iconPath)); }
+            try { ImageIO.write(SaturnIcon.render(1024, 824, 4), "png", new File(iconPath)); }
             catch (Exception e) { System.err.println("Icon not written: " + e); System.exit(1); }
             System.out.println("Icon written: " + iconPath);
             System.exit(0);

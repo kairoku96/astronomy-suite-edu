@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the Astronomy Suite as a macOS app: build/mac/dist/Astronomy Suite.app, then a .dmg
+# Package Orrerium as a macOS app: build/mac/dist/Orrerium.app, then a .dmg
 # that holds it. The app carries its own trimmed Java runtime (jlink), the JOGL/GlueGen jars with
 # their macosx-universal natives, FlatLaf and the assets/ folder, so nothing needs installing.
 #
@@ -13,7 +13,7 @@
 #   GLUEGEN_DIR          folder with gluegen-rt.jar + gluegen-rt-natives-<platform>.jar
 #                        (default for both: build/jogamp, downloaded from jogamp.org (v2.6.0) if missing)
 #   APP_VERSION          bundle version, numbers only, first one > 0 (default 1.0.0)
-#   APP_ID               bundle identifier (default io.github.kairoku96.astronomy-suite)
+#   APP_ID               bundle identifier (default io.github.kairoku96.orrerium)
 #   MAC_SIGN_IDENTITY    "Developer ID Application: Name (TEAMID)": sign the app and the .dmg with
 #                        the hardened runtime. Unset: ad-hoc signature (Gatekeeper will warn, see README).
 #   MAC_KEYCHAIN         keychain holding that identity (default: the search list)
@@ -21,9 +21,9 @@
 #   APPLE_ID + APPLE_TEAM_ID + APPLE_APP_PASSWORD   notarize and staple the .dmg (needs signing)
 set -eo pipefail
 
-APP_NAME="Astronomy Suite"
+APP_NAME="Orrerium"
 APP_VERSION="${APP_VERSION:-1.0.0}"
-APP_ID="${APP_ID:-io.github.kairoku96.astronomy-suite}"
+APP_ID="${APP_ID:-io.github.kairoku96.orrerium}"
 VENDOR="Ethan Lin"
 MAIN_CLASS="SolarSystemSimulation"
 # What the app needs from the JDK (jdeps reports java.base, java.desktop, java.net.http; JOGL also
@@ -125,7 +125,7 @@ find src -name '*.java' > "$OUT/sources.txt"
 
 cp "$FLATLAF" "$JOGL_DIR/jogl-all.jar" "$GLUEGEN_DIR/gluegen-rt.jar" "$INPUT/"
 printf 'Class-Path: %s jogl-all.jar gluegen-rt.jar\n' "$(basename "$FLATLAF")" > "$OUT/manifest.txt"
-"$JBIN/jar" --create --file "$INPUT/astronomy-suite.jar" --main-class "$MAIN_CLASS" \
+"$JBIN/jar" --create --file "$INPUT/orrerium.jar" --main-class "$MAIN_CLASS" \
     --manifest "$OUT/manifest.txt" -C "$CLASSES" .
 
 # The natives go in as plain libraries (loaded from java.library.path, see JAVA_OPTIONS below)
@@ -138,25 +138,25 @@ cp -R assets "$INPUT/assets"
 cp LICENSE "$INPUT/"
 
 # ---- Icon --------------------------------------------------------------------------------------
-# packaging/macos/AstronomySuite.icns if present; else build one from packaging/macos/icon.png,
-# or from the app's own icon (AppWindow.drawIcon) rendered at 1024 px.
+# packaging/macos/Orrerium.icns if present; else build one from the ray-traced Saturn in
+# assets/icon/orrerium.png (SaturnIcon), rendering it first if that file is missing.
 ICON_ARGS=()
 if [ "$OS" = mac ]; then
-    ICNS="$ROOT/packaging/macos/AstronomySuite.icns"
+    ICNS="$ROOT/packaging/macos/Orrerium.icns"
     if [ ! -f "$ICNS" ]; then
-        PNG="$ROOT/packaging/macos/icon.png"
+        PNG="$ROOT/assets/icon/orrerium.png"
         if [ ! -f "$PNG" ]; then
             PNG="$OUT/icon.png"
             "$JBIN/java" -Djava.awt.headless=true -Dsss.icon="$PNG" -cp "$CLASSES$SEP$FLATLAF" "$MAIN_CLASS" >/dev/null
         fi
         say "building .icns from $PNG"
-        SET="$OUT/AstronomySuite.iconset"
+        SET="$OUT/Orrerium.iconset"
         rm -rf "$SET"; mkdir -p "$SET"
         for s in 16 32 128 256 512; do
             sips -z "$s" "$s" "$PNG" --out "$SET/icon_${s}x${s}.png" >/dev/null
             sips -z $((s * 2)) $((s * 2)) "$PNG" --out "$SET/icon_${s}x${s}@2x.png" >/dev/null
         done
-        ICNS="$OUT/AstronomySuite.icns"
+        ICNS="$OUT/Orrerium.icns"
         iconutil -c icns "$SET" -o "$ICNS"
     fi
     ICON_ARGS=(--icon "$ICNS")
@@ -198,7 +198,7 @@ say "jpackage --type app-image"
     --name "$APP_NAME" --app-version "$APP_VERSION" --vendor "$VENDOR" \
     --description "Solar-system simulator with built-in astronomy lessons" \
     --copyright "Copyright (c) 2025 $VENDOR, MIT License" \
-    --input "$INPUT" --main-jar astronomy-suite.jar --main-class "$MAIN_CLASS" \
+    --input "$INPUT" --main-jar orrerium.jar --main-class "$MAIN_CLASS" \
     --runtime-image "$OUT/runtime" \
     "${JAVA_OPTIONS[@]}" ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
     ${ICON_ARGS[@]+"${ICON_ARGS[@]}"} ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"}
