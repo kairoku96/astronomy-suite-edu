@@ -33,7 +33,7 @@ final class KirkwoodLesson extends LessonKit {
         if (binA != null) return;
         try {
             List<double[]> rows = new ArrayList<>();
-            for (String line : Files.readAllLines(Path.of("assets", "asteroids", "main_belt_a.csv"), StandardCharsets.UTF_8)) {
+            for (String line : Files.readAllLines(Assets.path("asteroids", "main_belt_a.csv"), StandardCharsets.UTF_8)) {
                 if (line.startsWith("#") || line.startsWith("a_")) continue;
                 String[] f = line.split(",");
                 rows.add(new double[]{Double.parseDouble(f[0]), Double.parseDouble(f[1])});

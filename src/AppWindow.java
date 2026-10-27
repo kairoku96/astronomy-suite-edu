@@ -17,7 +17,7 @@ import com.formdev.flatlaf.FlatDarkLaf;
 final class AppWindow {
     private AppWindow() {}
 
-    static final String APP_NAME = "Astronomy Suite";
+    static final String APP_NAME = "Orrerium";
 
     /** A checkbox menu item and the panel setting it mirrors, saved under {@code key} (null: not saved). */
     private record Toggle(String key, JCheckBoxMenuItem item, BooleanSupplier get, Consumer<Boolean> set) {
@@ -118,16 +118,62 @@ final class AppWindow {
                 </body></html>""".formatted(APP_NAME, System.getProperty("java.version"),
                 AppSettings.file().getParent());
         JOptionPane.showMessageDialog(frame, html, "About " + APP_NAME,
-                JOptionPane.INFORMATION_MESSAGE, new ImageIcon(drawIcon(64)));
+                JOptionPane.INFORMATION_MESSAGE, new ImageIcon(icon(64)));
     }
 
     private static java.util.List<Image> appIcons() {
         java.util.List<Image> icons = new ArrayList<>();
-        for (int size : new int[]{16, 20, 24, 32, 40, 48, 64, 128, 256}) icons.add(drawIcon(size));
+        for (int size : new int[]{16, 20, 24, 32, 40, 48, 64, 128, 256}) icons.add(icon(size));
         return icons;
     }
 
-    /** The app icon: a ringed planet lit from the upper left, drawn at {@code s} pixels. */
+    private static BufferedImage iconMaster;
+    private static boolean iconMasterTried;
+
+    /**
+     * The app icon at {@code s} pixels: the ray-traced Saturn in {@code assets/icon/orrerium.png}
+     * (see {@link SaturnIcon}), cropped to the planet and rings so small sizes stay legible, or the
+     * drawn {@link #drawIcon} if that file is missing.
+     */
+    static synchronized BufferedImage icon(int s) {
+        if (!iconMasterTried) {
+            iconMasterTried = true;
+            try {
+                BufferedImage im = javax.imageio.ImageIO.read(Assets.file("icon/orrerium.png"));
+                if (im != null) iconMaster = cropToContent(im);
+            } catch (Exception ignored) { }
+        }
+        if (iconMaster == null) return drawIcon(s);
+        BufferedImage cur = iconMaster;
+        while (cur.getWidth() / 2 >= s) cur = scaled(cur, cur.getWidth() / 2);   // halve: no aliasing
+        return scaled(cur, s);
+    }
+
+    /** The smallest centred square holding every non-transparent pixel. */
+    private static BufferedImage cropToContent(BufferedImage im) {
+        int x0 = im.getWidth(), y0 = im.getHeight(), x1 = -1, y1 = -1;
+        for (int y = 0; y < im.getHeight(); y++) for (int x = 0; x < im.getWidth(); x++)
+            if ((im.getRGB(x, y) >>> 24) > 8) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+        if (x1 < 0) return im;
+        int side = Math.max(x1 - x0, y1 - y0) + 1, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+        BufferedImage out = new BufferedImage(side, side, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = out.createGraphics();
+        g.drawImage(im, side / 2 - cx, side / 2 - cy, null);
+        g.dispose();
+        return out;
+    }
+
+    private static BufferedImage scaled(BufferedImage im, int s) {
+        BufferedImage out = new BufferedImage(s, s, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = out.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        g.drawImage(im, 0, 0, s, s, null);
+        g.dispose();
+        return out;
+    }
+
+    /** The fallback icon: a ringed planet lit from the upper left, drawn at {@code s} pixels. */
     static BufferedImage drawIcon(int s) {
         BufferedImage img = new BufferedImage(s, s, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = img.createGraphics();

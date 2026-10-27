@@ -50,7 +50,7 @@ final class StarCatalog {
     static synchronized StarCatalog get() {
         if (shared == null && !loadFailed) {
             try {
-                shared = new StarCatalog(new File("assets/sky"));
+                shared = new StarCatalog(Assets.path("sky").toFile());
             } catch (Exception e) {
                 loadFailed = true;
                 System.err.println("Star catalogue unavailable: " + e);
