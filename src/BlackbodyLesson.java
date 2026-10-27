@@ -322,6 +322,7 @@ final class BlackbodyLesson extends LessonKit {
         s.add(step("Check: the Sun's colour", """
                 The Sun's surface is at about **5800 K**.
                 """)
+                .reviews("The Sun is (nearly) a blackbody")
                 .unit(R_SUN)
                 .cam(() -> nearSun(4.5, 55, 25))
                 .enter(() -> { sunOnly(); temp = 5800; })

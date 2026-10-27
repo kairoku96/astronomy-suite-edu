@@ -8,10 +8,13 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.function.*;
 
 /**
@@ -117,7 +120,16 @@ public final class LessonStudio extends JPanel {
         Runnable live;
         /** Covers material the AST221 slides (Days 2–8) don't: hidden unless -Dsss.lessons.all=true. */
         boolean beyondSlides;
+        /** The one course that shows this step (its own version of a shared step), or null for all. */
+        String course;
+        /** The point (scene units; east-north-up on sky steps) the hint is about: it pulses as the step opens. */
+        Supplier<double[]> watch;
+        /** For a check: the title of the step it reviews, offered as a link back. */
+        String reviews;
         Step(String title, String html) { this.title = title; this.html = html; }
+        Step only(String courseCode) { course = courseCode; return this; }
+        Step watch(Supplier<double[]> p) { watch = p; return this; }
+        Step reviews(String stepTitle) { reviews = stepTitle; return this; }
         Step cam(Supplier<double[]> s) { cam = s; return this; }
         Step cam(String body, Supplier<double[]> s) { follow = body; cam = s; return this; }
         Step sky(Supplier<double[]> view) { sky = true; skyCam = view; return this; }
@@ -146,10 +158,11 @@ public final class LessonStudio extends JPanel {
 
         /** This lesson as a course uses it: only the steps it keeps, under its own title if it gives one. */
         LessonDef forCourse(String courseCode, Entry e) {
-            List<Step> kept = steps.stream().filter(e.keep()).toList();
+            List<Step> mine = steps.stream().filter(s -> s.course == null || s.course.equals(courseCode)).toList();
+            List<Step> kept = mine.stream().filter(e.keep()).toList();
             if (e.keep() instanceof Titled t)
                 for (String name : t.titles())
-                    if (steps.stream().noneMatch(s -> s.title.equals(name)))
+                    if (mine.stream().noneMatch(s -> s.title.equals(name)))
                         throw new IllegalStateException(courseCode + ": \"" + title + "\" has no step \"" + name + "\"");
             return new LessonDef(level, e.title() != null ? e.title() : title, e.subtitle() != null ? e.subtitle() : subtitle,
                     e.blurb() != null ? e.blurb() : blurb, accent, kept, tick);
@@ -166,7 +179,8 @@ public final class LessonStudio extends JPanel {
 
     /** Catalogue positions of the lessons in {@link #buildLessons}. */
     static final int SKY = 0, ANGULAR = 1, TELESCOPE = 2, ORBITS = 3, WEIGH = 4, LIGHT = 5, BLACKBODY = 6,
-            PROJECT1 = 7, MAGNITUDE = 8, PARALLAX = 9, WOBBLE = 10, TITAN = 11;
+            PROJECT1 = 7, MAGNITUDE = 8, PARALLAX = 9, WOBBLE = 10, TITAN = 11,
+            MOON = 12, RETROGRADE = 13, SCALE = 14, JUPITER_MOONS = 15, KIRKWOOD = 16;
 
     /** Every lesson with all of its steps; courses pick from these. */
     static List<LessonDef> buildLessons(Host host) {
@@ -182,7 +196,12 @@ public final class LessonStudio extends JPanel {
                 new MagnitudeLesson(host).build(),
                 new ParallaxLesson(host).build(),
                 new WobbleLesson(host).build(),
-                new TitanLesson(host).build());
+                new TitanLesson(host).build(),
+                new MoonLesson(host).build(),
+                new RetrogradeLesson(host).build(),
+                new ScaleLesson(host).build(),
+                new JupiterMoonsLesson(host).build(),
+                new KirkwoodLesson(host).build());
     }
 
     /** One lesson of a course: which catalogue lesson, the steps it keeps, and an optional new title, subtitle and blurb. */
@@ -204,16 +223,23 @@ public final class LessonStudio extends JPanel {
                     "The sky, orbits, light, telescopes and planets, with light math. The lessons follow the AST101 "
                   + "slides in order and keep the steps that match them.",
                     List.of(
-                            new Entry(ANGULAR, new Titled("Angular size", "A planet's tiny disc", "Check: the Moon's angular size"),  // Day 3
+                            new Entry(ANGULAR, new Titled("Angular size", "Same angle, different sizes",                            // Day 3
+                                    "A planet's tiny disc", "Check: the Moon's angular size"),
                                     null, "Angular size: why the Moon can cover the Sun",
-                                    "Watch the Moon exactly cover the Sun over Niagara Falls, find an angular size from an "
-                                  + "object's size and distance, and see how tiny Jupiter's disc is through a telescope."),
-                            new Entry(SKY, new Titled("Altitude and azimuth", "The pole star sits at your latitude"),               // Day 5
+                                    "Watch the Moon exactly cover the Sun over Niagara Falls, measure the sky with your hand, "
+                                  + "see why some eclipses are total and others annular, and zoom from the naked eye to a "
+                                  + "telescope to find Jupiter's tiny disc."),
+                            new Entry(SCALE, ALL_STEPS),                                                                            // Days 3–4
+                            new Entry(SKY, new Titled("Altitude and azimuth", "The pole star sits at your latitude",                // Day 5
+                                    "Check: reading altitude and azimuth", "Check: the pole star in Reykjavík"),
                                     null, "Altitude, azimuth and the celestial pole",
                                     "Stand on the UTM campus under the real evening sky, find things by altitude and azimuth, "
                                   + "and see that the celestial pole's altitude is your latitude (try other places)."),
+                            new Entry(MOON, ALL_STEPS),                                                                             // Day 7
                             new Entry(ORBITS, ALL_STEPS),                                                                           // Days 6, 9–11
-                            new Entry(PARALLAX, new Titled("Parallax: Earth's orbit as a baseline"),                                 // Day 9
+                            new Entry(RETROGRADE, ALL_STEPS),                                                                       // Day 9
+                            new Entry(PARALLAX, new Titled("Parallax: Earth's orbit as a baseline",                                  // Day 9
+                                    "Check: a star twice as far", "Check: why Tycho saw no shift"),
                                     "Stellar Parallax", "The shift Tycho looked for",
                                     "Watch nearby stars shift as the real Earth goes around the Sun: the parallax that Tycho "
                                   + "searched for and could not see, and why it is so small."),
@@ -231,7 +257,8 @@ public final class LessonStudio extends JPanel {
                                     "The Sun as a blackbody, why hotter means bluer and brighter, each planet's temperature "
                                   + "from its live distance and albedo, Mars between perihelion and aphelion, and the "
                                   + "Earth-like zone around a cooler star."),
-                            new Entry(MAGNITUDE, new Titled("Where absorption lines come from"),                                     // Day 14
+                            new Entry(MAGNITUDE, new Titled("Where absorption lines come from", "Check: why only certain colours?",    // Day 14
+                                    "Check: a fingerprint", "Check: the strongest hydrogen lines"),
                                     "Spectral Lines", "Fingerprints of the elements",
                                     "Electrons jumping between the energy levels of hydrogen make the dark Balmer lines in "
                                   + "Vega's spectrum, at the same wavelengths hot hydrogen glows."),
@@ -241,6 +268,8 @@ public final class LessonStudio extends JPanel {
                                     "Open up a telescope's mirror until Neptune appears, see the image a telescope really "
                                   + "delivers of Pluto and Charon from space, Mississauga or Mauna Kea, and thin or thicken "
                                   + "the air to watch the seeing change."),
+                            new Entry(JUPITER_MOONS, ALL_STEPS),                                                                    // Days 25–27
+                            new Entry(KIRKWOOD, ALL_STEPS),                                                                         // Day 28
                             new Entry(WOBBLE, new Titled("The Sun orbits too", "Radial velocity: the Doppler wobble",                 // Days 11, 30–31
                                     "Transits and eclipses", "Check: which star is heavier?"),
                                     null, "Finding exoplanets: radial velocity and transits",
@@ -444,7 +473,10 @@ public final class LessonStudio extends JPanel {
         startLesson(i);
     }
 
-    void startLesson(int i) {
+    void startLesson(int i) { startLesson(i, false); }
+
+    /** Starts lesson {@code i}, at its first step not yet done if {@code resume}. */
+    void startLesson(int i, boolean resume) {
         boolean wasActive = lesson != null;
         lesson = lessons.get(Math.max(0, Math.min(lessons.size() - 1, i)));
         for (Step s : lesson.steps) if (s.quiz != null) s.quiz.reset();
@@ -455,7 +487,12 @@ public final class LessonStudio extends JPanel {
         cards.show(this, "lesson");
         setVisible(true);
         if (!wasActive) onActiveChange.accept(true);
-        goStep(0);
+        int first = 0;
+        if (resume) {
+            Set<String> d = doneTitles(lesson);
+            while (first < lesson.steps.size() - 1 && d.contains(lesson.steps.get(first).title)) first++;
+        }
+        goStep(first);
         revalidateHost();
         canvas.requestFocusInWindow();
     }
@@ -467,6 +504,7 @@ public final class LessonStudio extends JPanel {
         stepIdx = -1;
         controls = null;
         setPreferredSize(new Dimension(PANEL_W, 10));
+        fillPicker();                                          // the lesson just left may be further along now
         cards.show(this, "picker");
         onActiveChange.accept(false);
         revalidateHost();
@@ -478,13 +516,22 @@ public final class LessonStudio extends JPanel {
         if (p != null) { p.revalidate(); p.repaint(); }
     }
 
+    // For the alignment check (-Dsss.aligncheck): walk every step of the course.
+    int lessonCount() { return lessons.size(); }
+    int stepCount() { return lesson == null ? 0 : lesson.steps.size(); }
+    boolean skyStep() { Step s = step(); return s != null && s.sky; }
+    String where() { return lesson == null || stepIdx < 0 ? "" : lesson.title + " / " + lesson.steps.get(stepIdx).title; }
+
     void goStep(int i) {
         if (lesson == null) return;
         int n = lesson.steps.size();
         i = Math.max(0, Math.min(n - 1, i));
         boolean first = stepIdx < 0;
+        Step s = lesson.steps.get(i), prev = first || stepIdx >= n ? null : lesson.steps.get(stepIdx);
+        // Switching between the sky and the 3-D view: keep the old picture to dissolve from.
+        fadeFrom = prev != null && prev.sky != s.sky ? snapshotCanvas() : null;
+        stepShownT = simT;
         stepIdx = i;
-        Step s = lesson.steps.get(i);
         if (host != null) {
             // Every step starts from the plain heliocentric view and the naked eye; it sets up the rest.
             host.setBarycentric(false);
@@ -496,6 +543,7 @@ public final class LessonStudio extends JPanel {
         s.enter.run();
         if (s.live != null) s.live.run();
         overlay.reaim();
+        if (s.quiz == null) markDone(i);
 
         stepCount.setText("STEP " + (i + 1) + " OF " + n + (s.quiz != null ? "  ·  CHECK YOURSELF" : ""));
         stepCount.setForeground(s.quiz != null ? ORANGE : DIM);
@@ -549,7 +597,7 @@ public final class LessonStudio extends JPanel {
             else if (q.tried[k]) { b.setBackground(BAD.darker()); b.setForeground(Color.WHITE); }
             b.addActionListener(_ -> {
                 if (q.solved) return;
-                if (pick == q.correct) q.solved = true; else q.tried[pick] = true;
+                if (pick == q.correct) { q.solved = true; markDone(stepIdx); } else q.tried[pick] = true;
                 rebuildQuiz(s);
                 stepBar.repaint();
                 quizBox.revalidate();
@@ -567,6 +615,24 @@ public final class LessonStudio extends JPanel {
             fb.setMarkup(q.solved ? "**Correct!** " + q.explain
                                   : "**Not quite.** Look at the scene again and try another answer.");
             quizBox.add(fb);
+        }
+        // "Reviews step 3: …", a link back to the step this check is about (when this course has it).
+        int back = -1;
+        for (int k = 0; s.reviews != null && k < lesson.steps.size(); k++) if (lesson.steps.get(k).title.equals(s.reviews)) back = k;
+        if (back >= 0) {
+            final int target = back;
+            JLabel link = new JLabel("<html>Reviews step " + (back + 1) + ": " + s.reviews + "&nbsp;&nbsp;<u>go back</u></html>");
+            link.setFont(uiFont(Font.PLAIN, 12f));
+            link.setForeground(DIM);
+            link.setAlignmentX(LEFT_ALIGNMENT);
+            link.setBorder(new EmptyBorder(8, 2, 0, 0));
+            link.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            link.addMouseListener(new MouseAdapter() {
+                @Override public void mouseClicked(MouseEvent e) { goStep(target); }
+                @Override public void mouseEntered(MouseEvent e) { link.setForeground(ACCENT); }
+                @Override public void mouseExited(MouseEvent e) { link.setForeground(DIM); }
+            });
+            quizBox.add(link);
         }
     }
 
@@ -603,11 +669,12 @@ public final class LessonStudio extends JPanel {
             b.append("Available lessons: ");
             for (int i = 0; i < lessons.size(); i++)
                 b.append(i == 0 ? "" : "; ").append(i + 1).append(". ").append(lessons.get(i).title)
-                 .append(" (").append(lessons.get(i).level).append(")");
+                 .append(" (").append(lessons.get(i).level).append(", ").append(progressText(lessons.get(i))).append(")");
             return b.append('\n').toString();
         }
         Step s = step();
         int li = lessons.indexOf(lesson) + 1;
+        b.append("Course bundle: ").append(courseCode()).append(" (").append(COURSES.get(course).name()).append(")\n");
         b.append(courseCode()).append(" LESSON IN PROGRESS: lesson ").append(li).append(" of ").append(lessons.size()).append(", \"")
          .append(lesson.title).append("\" (").append(lesson.level).append(": ").append(lesson.subtitle).append(")\n");
         b.append("Step ").append(stepIdx + 1).append(" of ").append(lesson.steps.size()).append(": \"").append(s.title).append("\"")
@@ -623,9 +690,14 @@ public final class LessonStudio extends JPanel {
             for (int k = 0; k < q.options.length; k++)
                 b.append("  ").append((char) ('A' + k)).append(". ").append(plainText(q.options[k]).strip())
                  .append(q.tried[k] ? "   (user tried this: wrong)" : "").append('\n');
-            b.append("  Correct answer (for tutoring only): ").append((char) ('A' + q.correct)).append(". ")
-             .append(plainText(q.options[q.correct]).strip()).append(" - ").append(plainText(q.explain).strip()).append('\n');
-            b.append("  Status: ").append(q.solved ? "the user has answered it correctly" : "not answered correctly yet").append('\n');
+            if (s.reviews != null) b.append("  This check reviews the step \"").append(s.reviews).append("\".\n");
+            // The answer and its explanation are left out until the user solves it, so the assistant
+            // cannot give them away however it is asked; it tutors from the narration instead.
+            if (q.solved)
+                b.append("  Status: the user has answered it correctly. Answer: ").append((char) ('A' + q.correct)).append(". ")
+                 .append(plainText(q.options[q.correct]).strip()).append(" - ").append(plainText(q.explain).strip()).append('\n');
+            else
+                b.append("  Status: not answered correctly yet (the answer is withheld from you; do not work it out for the user).\n");
         }
         Hud hud = overlay.hud;
         if (hud.title != null || !hud.rows.isEmpty() || !hud.formulas.isEmpty()) {
@@ -660,7 +732,40 @@ public final class LessonStudio extends JPanel {
     // ---- hosting: the simulation canvas calls these while a lesson runs ----
 
     /** Draw the step's annotations and readouts over the live simulation. */
-    void paintOverlay(Graphics2D g, int w, int h) { overlay.paint(g, w, h); }
+    /** Seconds a new step's annotations and readouts take to fade in, and a sky ↔ 3-D switch to dissolve. */
+    static final double FADE_IN = 0.35, DISSOLVE = 0.5;
+    /** Lesson time ({@link #simT}) when the current step was shown. */
+    private double stepShownT;
+    /** The last frame of the previous step's view while it dissolves into the new one, or null. */
+    private BufferedImage fadeFrom;
+
+    private BufferedImage snapshotCanvas() {
+        int w = canvas.getWidth(), h = canvas.getHeight();
+        if (w <= 0 || h <= 0) return null;
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = img.createGraphics();
+        canvas.paint(g);
+        g.dispose();
+        return img;
+    }
+
+    static double smooth(double x) { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); }
+
+    void paintOverlay(Graphics2D g, int w, int h) {
+        double age = simT - stepShownT;
+        BufferedImage from = fadeFrom;
+        if (from != null) {
+            float a = (float) (1 - smooth(age / DISSOLVE));
+            if (a <= 0) fadeFrom = null;
+            else {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setComposite(AlphaComposite.SrcOver.derive(a));
+                g2.drawImage(from, 0, 0, null);
+                g2.dispose();
+            }
+        }
+        overlay.paint(g, w, h, (float) smooth(age / FADE_IN));
+    }
     /** Ease the camera back to the step's framing (double-click on the view). */
     void reaim() { overlay.reaim(); }
 
@@ -677,6 +782,85 @@ public final class LessonStudio extends JPanel {
             case KeyEvent.VK_LEFT -> { goStep(stepIdx - 1); return true; }
             case KeyEvent.VK_ESCAPE -> { exitLesson(); return true; }
             default -> { return false; }
+        }
+    }
+
+    // ---- progress: which steps of each lesson the user has done, kept across runs ----
+
+    /** Per course and lesson, the titles of the steps done: seen, or for a check, answered right. */
+    private final AppSettings progress = AppSettings.load(AppSettings.file("lessons.properties"), "Orrerium - lesson progress");
+    /** The head-less shot and alignment runs walk every step; they mustn't mark anything done. */
+    private static final boolean RECORD = System.getProperty("sss.lessonshot") == null && System.getProperty("sss.aligncheck") == null;
+    private static final String SEP = " | ";
+
+    private String progressKey(LessonDef L) { return courseCode() + "." + L.title; }
+
+    private Set<String> doneTitles(LessonDef L) {
+        String v = progress.get(progressKey(L), "");
+        return v.isEmpty() ? new LinkedHashSet<>() : new LinkedHashSet<>(Arrays.asList(v.split(java.util.regex.Pattern.quote(SEP))));
+    }
+    /** How many of the lesson's steps are done. */
+    int stepsDone(LessonDef L) {
+        Set<String> d = doneTitles(L);
+        int n = 0;
+        for (Step s : L.steps) if (d.contains(s.title)) n++;
+        return n;
+    }
+    boolean completed(LessonDef L) { return stepsDone(L) == L.steps.size(); }
+    String progressText(LessonDef L) {
+        int d = stepsDone(L);
+        return d == L.steps.size() ? "completed" : d == 0 ? "not started" : d + " of " + L.steps.size() + " steps done";
+    }
+
+    private void markDone(int k) {
+        if (lesson == null || !RECORD) return;
+        Set<String> d = doneTitles(lesson);
+        if (!d.add(lesson.steps.get(k).title)) return;
+        progress.put(progressKey(lesson), String.join(SEP, d));
+        progress.save();
+    }
+
+    private void resetProgress() {
+        for (LessonDef L : lessons) progress.remove(progressKey(L));
+        progress.save();
+        fillPicker();
+    }
+
+    /** The course's progress in the picker: one segment per lesson, filled as far as its steps are done. */
+    final class CourseBar extends JComponent {
+        private static final int GAP = 4;
+        CourseBar() {
+            setPreferredSize(new Dimension(300, 12));
+            setMaximumSize(new Dimension(Integer.MAX_VALUE, 12));
+            addMouseMotionListener(new MouseMotionAdapter() {
+                @Override public void mouseMoved(MouseEvent e) {
+                    int k = (int) (e.getX() / ((getWidth() + GAP) / (double) lessons.size()));
+                    setToolTipText(k >= 0 && k < lessons.size() ? (k + 1) + ". " + lessons.get(k).title + ": " + progressText(lessons.get(k)) : null);
+                }
+            });
+        }
+        @Override protected void paintComponent(Graphics g0) {
+            int n = lessons.size();
+            if (n == 0) return;
+            Graphics2D g = (Graphics2D) g0.create();
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            double w = (getWidth() + GAP) / (double) n;
+            int h = getHeight();
+            for (int k = 0; k < n; k++) {
+                LessonDef L = lessons.get(k);
+                int x = (int) Math.round(k * w), ww = (int) Math.round((k + 1) * w) - x - GAP;
+                g.setColor(new Color(255, 255, 255, 30));
+                g.fillRoundRect(x, 0, ww, h, h, h);
+                int done = stepsDone(L);
+                if (done == 0) continue;
+                Color a = L.accent;
+                g.setColor(done == L.steps.size() ? a : new Color(a.getRed(), a.getGreen(), a.getBlue(), 120));
+                Shape clip = g.getClip();
+                g.clipRect(x, 0, Math.max(1, (int) Math.round(ww * done / (double) L.steps.size())), h);
+                g.fillRoundRect(x, 0, ww, h, h, h);
+                g.setClip(clip);
+            }
+            g.dispose();
         }
     }
 
@@ -752,7 +936,37 @@ public final class LessonStudio extends JPanel {
         list.add(name);
         list.add(Box.createVerticalStrut(4));
         list.add(blurb);
-        list.add(Box.createVerticalStrut(14));
+        list.add(Box.createVerticalStrut(12));
+        int complete = 0;
+        for (LessonDef L : lessons) if (completed(L)) complete++;
+        JPanel prog = new JPanel(new BorderLayout(8, 0));
+        prog.setOpaque(false);
+        JLabel count = new JLabel(complete + " of " + lessons.size() + " lessons completed");
+        count.setFont(uiFont(Font.BOLD, 12.5f));
+        count.setForeground(complete == lessons.size() ? GREEN : INK);
+        count.setBorder(new EmptyBorder(0, 0, 0, 16));      // room for the label's last glyphs
+        prog.add(count, BorderLayout.WEST);
+        if (lessons.stream().anyMatch(L -> stepsDone(L) > 0)) {
+            JLabel reset = new JLabel("<html><u>Reset</u></html>");
+            reset.setFont(uiFont(Font.PLAIN, 12f));
+            reset.setForeground(DIM);
+            reset.setToolTipText("Clear your progress in " + c.code());
+            reset.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            reset.addMouseListener(new MouseAdapter() {
+                @Override public void mouseClicked(MouseEvent e) {
+                    if (JOptionPane.showConfirmDialog(LessonStudio.this, "Clear your progress in every " + c.code() + " lesson?",
+                            "Reset progress", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) resetProgress();
+                }
+                @Override public void mouseEntered(MouseEvent e) { reset.setForeground(ACCENT); }
+                @Override public void mouseExited(MouseEvent e) { reset.setForeground(DIM); }
+            });
+            prog.add(reset, BorderLayout.EAST);
+        }
+        prog.setMaximumSize(new Dimension(Integer.MAX_VALUE, 20));
+        list.add(prog);
+        list.add(Box.createVerticalStrut(6));
+        list.add(new CourseBar());
+        list.add(Box.createVerticalStrut(16));
         for (int i = 0; i < lessons.size(); i++) {
             JComponent tile = lessonTile(lessons.get(i), i);
             tile.setAlignmentX(LEFT_ALIGNMENT);
@@ -784,10 +998,20 @@ public final class LessonStudio extends JPanel {
         JPanel c = new JPanel();
         c.setOpaque(false);
         c.setLayout(new BoxLayout(c, BoxLayout.Y_AXIS));
+        int done = stepsDone(L), n = L.steps.size();
         JLabel lvl = new JLabel(L.level.toUpperCase() + "   ·   LESSON " + (index + 1));
         lvl.setFont(uiFont(Font.BOLD, 11.5f));
         lvl.setForeground(L.accent);
         lvl.setBorder(new EmptyBorder(0, 0, 0, 16));        // room for the label's last glyphs
+        JLabel status = new JLabel(done == n ? "COMPLETED" : done > 0 ? done + " / " + n + " STEPS" : "");
+        status.setFont(uiFont(Font.BOLD, 11.5f));
+        status.setForeground(done == n ? GREEN : DIM);
+        status.setBorder(new EmptyBorder(0, 0, 0, 6));      // room for the label's last glyphs
+        JPanel top = new JPanel(new BorderLayout());
+        top.setOpaque(false);
+        top.add(lvl, BorderLayout.WEST);
+        top.add(status, BorderLayout.EAST);
+        top.setMaximumSize(new Dimension(Integer.MAX_VALUE, top.getPreferredSize().height));
         RichText ti = new RichText(19f);
         ti.setBox(null, INK, 0);
         ti.setMarkup("**" + L.title + "**");
@@ -800,19 +1024,39 @@ public final class LessonStudio extends JPanel {
         JLabel meta = new JLabel((L.steps.size() - L.quizCount()) + " interactive steps  ·  " + L.quizCount() + " checks");
         meta.setFont(uiFont(Font.PLAIN, 12f));
         meta.setForeground(DIM);
-        for (JComponent j : new JComponent[]{lvl, ti, su, bl, meta}) j.setAlignmentX(LEFT_ALIGNMENT);
-        c.add(lvl); c.add(Box.createVerticalStrut(6));
+        for (JComponent j : new JComponent[]{top, ti, su, bl, meta}) j.setAlignmentX(LEFT_ALIGNMENT);
+        c.add(top); c.add(Box.createVerticalStrut(6));
         c.add(ti); c.add(Box.createVerticalStrut(2));
         c.add(su); c.add(Box.createVerticalStrut(8));
         c.add(bl); c.add(Box.createVerticalStrut(8));
         c.add(meta);
+        if (done > 0) {                                     // how far through it you are
+            JComponent bar = new JComponent() {
+                @Override protected void paintComponent(Graphics g0) {
+                    Graphics2D g = (Graphics2D) g0.create();
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    int w = getWidth(), h = getHeight();
+                    g.setColor(new Color(255, 255, 255, 30));
+                    g.fillRoundRect(0, 0, w, h, h, h);
+                    g.setColor(done == n ? GREEN : L.accent);
+                    g.fillRoundRect(0, 0, Math.max(h, (int) Math.round(w * done / (double) n)), h, h, h);
+                    g.dispose();
+                }
+            };
+            bar.setPreferredSize(new Dimension(100, 5));
+            bar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 5));
+            bar.setAlignmentX(LEFT_ALIGNMENT);
+            bar.setToolTipText(progressText(L));
+            c.add(Box.createVerticalStrut(10));
+            c.add(bar);
+        }
         tile.add(c, BorderLayout.CENTER);
-        JButton go = new JButton("Start lesson  →");
+        JButton go = new JButton(done == n ? "Review lesson  →" : done > 0 ? "Continue lesson  →" : "Start lesson  →");
         go.setFont(uiFont(Font.BOLD, 13f));
         go.setBackground(L.accent.darker());
         go.setForeground(Color.WHITE);
         go.setFocusable(false);
-        go.addActionListener(_ -> startLesson(index));
+        go.addActionListener(_ -> startLesson(index, done > 0 && done < n));
         JPanel south = new JPanel(new BorderLayout());
         south.setOpaque(false);
         south.setBorder(new EmptyBorder(12, 0, 0, 0));
@@ -1162,6 +1406,7 @@ public final class LessonStudio extends JPanel {
             box.add(Box.createVerticalStrut(10));
             syncers.add(() -> {
                 int k = get.getAsInt();
+                if (k < 0 || k >= bs.length) { if (bg.getSelection() != null) bg.clearSelection(); return; }   // none of them
                 for (int i = 0; i < bs.length; i++) if (bs[i].isSelected() != (i == k)) bs[i].setSelected(i == k);
             });
             describers.add(() -> {
@@ -1455,6 +1700,19 @@ public final class LessonStudio extends JPanel {
         }
         void reaim() { lastGoal = null; }
 
+        /** Three rings swelling out from the step's {@link Step#watch} point as the step opens. */
+        private void pulseWatch(Step s) {
+            if (s.watch == null) return;
+            double age = simT - stepShownT;
+            if (age > 3.4) return;
+            double[] p = s.watch.get();
+            if (p == null) return;
+            for (int k = 0; k < 3; k++) {
+                double f = (age - 0.25 - 0.9 * k) / 1.3;
+                if (f > 0 && f < 1) r3.ring(p, 10 + 48 * f, alpha(SUN_C, (int) (235 * (1 - f))), 2.6f * (float) (1 - 0.5 * f));
+            }
+        }
+
         /** Sky steps: scene points are east-north-up directions, projected as the planetarium draws them. */
         private final R3.Projector skyProj = new R3.Projector() {
             private final double[] d = new double[3];
@@ -1465,10 +1723,11 @@ public final class LessonStudio extends JPanel {
             public double[] eye() { return v(0, 0, 0); }
         };
 
-        void paint(Graphics2D g0, int w, int h) {
+        void paint(Graphics2D g0, int w, int h, float alpha) {
             Step s = step();
-            if (s == null) return;
+            if (s == null || alpha <= 0) return;
             Graphics2D g = (Graphics2D) g0.create();
+            if (alpha < 1) g.setComposite(AlphaComposite.SrcOver.derive(alpha));
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
             g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
@@ -1487,6 +1746,7 @@ public final class LessonStudio extends JPanel {
             if (sun != null) r3.occluder(sun[0], sun[1], sun[2], sun[3] / u);
             hud.clear();
             if (s.scene != null) s.scene.draw(r3, hud, simT);
+            pulseWatch(s);
             r3.render(g);
             hud.paint(g, w, h);
             g.dispose();
@@ -1637,6 +1897,10 @@ public final class LessonStudio extends JPanel {
         void line(double[] a, double[] b, Color c, float w, boolean dashed) {
             double len = Math.sqrt(sq(b[0] - a[0]) + sq(b[1] - a[1]) + sq(b[2] - a[2]));
             int n = Math.max(1, (int) Math.ceil(len / (dashed ? 0.16 : 0.5)));
+            // Dashes are cut in scene units; in a scene measured in thousands of km they'd shrink below a
+            // pixel and the line would look solid, so keep each dash at least ~4 px on screen.
+            if (dashed && proj(a[0], a[1], a[2], pa) && proj(b[0], b[1], b[2], pb))
+                n = Math.min(n, Math.max(3, (int) (Math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / 8)));
             if (dashed && n % 2 == 0) n++;
             for (int i = 0; i < n; i++) {
                 if (dashed && (i & 1) == 1) continue;
@@ -2147,6 +2411,21 @@ public final class LessonStudio extends JPanel {
             }
         }
 
+        /** Days since the orbit's last perihelion, from its mean anomaly. */
+        double daysSincePeri(Orbit o) {
+            double E = o.E(), M = E - o.e() * Math.sin(E);
+            M = ((M % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+            return M / (2 * Math.PI) * o.periodYears() * 365.25;
+        }
+
+        /** Pause and move the clock so the body is {@code days} past perihelion (to the minute). */
+        void scrubTo(Orbit o, double days) {
+            host.setTime(0);
+            double t = host.simTime() + (days - daysSincePeri(o)) * DAY;
+            java.time.LocalDateTime d = java.time.LocalDateTime.of(2000, 1, 1, 12, 0).plusSeconds(Math.round(t));
+            host.goToUTC(d.getYear(), d.getMonthValue(), d.getDayOfMonth(), d.getHour(), d.getMinute());
+        }
+
         void timeSlider(Controls c, double maxDays) {
             c.slider("Time speed", 0, maxDays, () -> host.timeScale() / DAY, x -> host.setTime(x * DAY),
                     x -> x < 0.05 ? "paused" : String.format("%.1f days per second", x));
@@ -2233,6 +2512,7 @@ public final class LessonStudio extends JPanel {
                 Watch the distance readout as the real Mercury swings in. Slow time down to catch it at
                 perihelion.
                 """)
+                .watch(() -> mercury.at(0))
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Mercury"); host.setOrbits(true, true); timeFor(mercury, 14); })
                 .cam(frame(mercury, 32, 0))
@@ -2259,6 +2539,7 @@ public final class LessonStudio extends JPanel {
                 So perihelion and aphelion tell you everything about the orbit's size and shape:
                 **a = (q + Q) / 2** and **e = (Q − q) / (Q + q)**. For Mercury, Q is about 1.5 times q.
                 """)
+                .watch(() -> mercury.at(Math.PI))
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Mercury"); host.setOrbits(true, true); timeFor(mercury, 14); })
                 .cam(frame(mercury, 38, 180))
@@ -2286,11 +2567,19 @@ public final class LessonStudio extends JPanel {
                 $ vₚ / vₐ = Q / q = (1 + e) / (1 − e)
 
                 The green arrow is Mercury's real orbital speed.
+
+                > Drag "Mercury's day" to walk it around the orbit yourself: every wedge is the same
+                5.5 days, but near the Sun those days carry it much farther.
                 """)
+                .watch(() -> mercury.now())
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Mercury"); host.setOrbits(true, true); timeFor(mercury, 16); })
                 .cam(frame(mercury, 20, 0))
-                .controls(c -> timeSlider(c, 20))
+                .controls(c -> {
+                    timeSlider(c, 20);
+                    c.slider("Mercury's day (since perihelion)", 0, 87.9, () -> daysSincePeri(mercury), x -> scrubTo(mercury, x),
+                            x -> String.format("day %.0f of 88", x));
+                })
                 .scene((r, hud, t) -> {
                     draw(r, mercury, PERI | APO | SPEED);
                     hud.title("Mercury's speed", GREEN);
@@ -2333,6 +2622,7 @@ public final class LessonStudio extends JPanel {
             s.add(new Step("Check: where is it fastest?", """
                 Mercury again, with its equal-time dots.
                 """)
+                .reviews("Fast near the Sun, slow far away")
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Mercury"); host.setOrbits(true, true); timeFor(mercury, 16); })
                 .cam(frame(mercury, 20, 0))
@@ -2350,6 +2640,7 @@ public final class LessonStudio extends JPanel {
                 The violet path is a comet's orbit, with semi-major axis **a = 10 AU** and eccentricity
                 **e = 0.9**. Earth is shown on its real orbit.
                 """)
+                .reviews("Perihelion: Mercury's closest point")
                 .unit(AUm)
                 .enter(() -> {
                     host.showOnly(null, "Earth", "Jupiter", "Saturn"); host.setOrbits(true, true);
@@ -2370,6 +2661,7 @@ public final class LessonStudio extends JPanel {
             s.add(new Step("Check: distance and the seasons", """
                 The simulation is set to **January 3, 2026**. Here is Earth on its real orbit that day.
                 """)
+                .reviews("Real orbits in our Solar System")
                 .beyondSlides()                 // seasons aren't in the AST221 slides
                 .unit(AUm)
                 .enter(() -> { host.showOnly(null, "Earth"); host.setOrbits(true, true); host.goToDate(2026, 1, 3); host.setTime(0); })
@@ -2854,6 +3146,7 @@ public final class LessonStudio extends JPanel {
             s.add(new Step("Check: moving Earth out", """
                 Earth receives F = 1361 W/m² from the Sun at 1 AU.
                 """)
+                .reviews("Flux: the same light, spread thinner")
                 .unit(UNIT_M)
                 .enter(() -> { sunOnly(UNIT_M); setMode(BUNDLE, 48); detAU = 2; })
                 .cam(() -> around(1.7, 2.0, 68, 18))
@@ -2866,6 +3159,7 @@ public final class LessonStudio extends JPanel {
             s.add(new Step("Check: a bigger bubble", """
                 This Gaussian bubble is 3 solar radii across. Now imagine doubling its radius.
                 """)
+                .reviews("Wrap it in a Gaussian bubble")
                 .unit(R_SUN)
                 .enter(() -> { sunOnly(R_SUN); setMode(ISO, 60); bubbleRs = 3; lumpy = false; })
                 .cam(() -> nearSun(0, 7, 58, 25))
@@ -3184,14 +3478,15 @@ public final class LessonStudio extends JPanel {
                     for (int fr = 0; fr < 30; fr++) simFrame.accept(1 / 30.0);
                 }
                 Step st = steps.get(k);
-                if (st.quiz != null) { st.quiz.solved = true; rebuildQuiz(st); }
-                shot(root, String.format("%s/L%d_step%02d.png", dir, li + 1, k + 1));
+                // Before the check is solved, so the file shows what the assistant sees while the user is still on it.
                 if (aiSnapshot != null && Boolean.getBoolean("sss.lessonshot.ai")) {
                     try {
                         java.nio.file.Files.writeString(java.nio.file.Path.of(String.format("%s/L%d_step%02d_ai.txt", dir, li + 1, k + 1)),
                                 aiSnapshot.get());
                     } catch (Exception ex) { System.err.println(ex); }
                 }
+                if (st.quiz != null) { st.quiz.solved = true; rebuildQuiz(st); }
+                shot(root, String.format("%s/L%d_step%02d.png", dir, li + 1, k + 1));
                 n++;
                 if (Boolean.getBoolean("sss.lessonshot.controls")) n += exerciseControls(dir, root, simFrame, li, k);
             }

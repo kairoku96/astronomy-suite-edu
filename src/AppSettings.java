@@ -4,36 +4,60 @@ import java.util.Properties;
 
 /**
  * The window's remembered settings (display toggles, UI size, time speed, window bounds), kept in
- * {@code ~/.astronomy-suite/settings.properties} beside the sky view's observer and the AI key.
+ * {@code ~/.orrerium/settings.properties} beside the sky view's observer and the AI key.
  * A missing or unreadable file just means defaults; a value that fails to parse is ignored.
  */
 final class AppSettings {
     private final Properties p = new Properties();
+    private final Path file;
+    private final String title;
 
-    static Path file() {
-        return Path.of(System.getProperty("user.home", "."), ".astronomy-suite", "settings.properties");
+    private AppSettings(Path file, String title) { this.file = file; this.title = title; }
+
+    static Path file() { return file("settings.properties"); }
+    static Path file(String name) { return dir().resolve(name); }
+
+    private static Path dir;
+
+    /**
+     * {@code ~/.orrerium}. The app was called Astronomy Suite before, so on the first run an
+     * existing {@code ~/.astronomy-suite} is renamed to it; if that fails the old folder stays in
+     * use rather than the settings being lost.
+     */
+    static synchronized Path dir() {
+        if (dir == null) {
+            Path home = Path.of(System.getProperty("user.home", "."));
+            Path now = home.resolve(".orrerium"), old = home.resolve(".astronomy-suite");
+            dir = now;
+            if (!Files.exists(now) && Files.isDirectory(old)) {
+                try { Files.move(old, now); }
+                catch (Exception e) { dir = old; }
+            }
+        }
+        return dir;
     }
 
-    static AppSettings load() {
-        AppSettings s = new AppSettings();
+    static AppSettings load() { return load(file(), "Orrerium - window settings"); }
+
+    /** A settings file of its own beside the window's (e.g. lesson progress, saved as it changes). */
+    static AppSettings load(Path f, String title) {
+        AppSettings s = new AppSettings(f, title);
         try {
-            Path f = file();
             if (Files.isRegularFile(f)) {
                 try (var in = Files.newBufferedReader(f)) { s.p.load(in); }
             }
         } catch (Exception e) {
-            System.err.println("Could not read " + file() + ": " + e);
+            System.err.println("Could not read " + f + ": " + e);
         }
         return s;
     }
 
     void save() {
         try {
-            Path f = file();
-            Files.createDirectories(f.getParent());
-            try (var out = Files.newBufferedWriter(f)) { p.store(out, "Astronomy Suite - window settings"); }
+            Files.createDirectories(file.getParent());
+            try (var out = Files.newBufferedWriter(file)) { p.store(out, title); }
         } catch (Exception e) {
-            System.err.println("Could not write " + file() + ": " + e);
+            System.err.println("Could not write " + file + ": " + e);
         }
     }
 
@@ -55,4 +79,6 @@ final class AppSettings {
     String get(String key, String def) { return p.getProperty(key, def); }
 
     void put(String key, Object value) { p.setProperty(key, String.valueOf(value)); }
+
+    void remove(String key) { p.remove(key); }
 }

@@ -426,6 +426,77 @@ final class MagnitudeLesson extends LessonKit {
                     hud.inset("Energy levels of hydrogen", 270, 300, MagnitudeLesson::bohrInset);
                 }));
 
+        // AST101 checks on the one step it keeps; the AST221 checks below need magnitudes.
+        s.add(step("Check: why only certain colours?", """
+                Starlight passing through hydrogen gas comes out with a few thin dark lines: a few
+                exact colours are missing, and every other colour gets through.
+                """)
+                .reviews("Where absorption lines come from")
+                .only("AST101")
+                .sky(() -> new double[]{285, 55, 120})
+                .enter(() -> {
+                    utm(); host.goToUTC(2026, 9, 22, 1, 0); host.setTime(0);
+                    host.skyLayers(false, false, true, true);
+                })
+                .quiz("Why does hydrogen absorb only certain colours?", 2,
+                      "Hydrogen's electron can only sit at certain energy levels. A photon is absorbed only if its "
+                    + "energy exactly matches a jump between two levels, and a photon's energy sets its colour, so only "
+                    + "those few colours are taken out.",
+                      "Hydrogen gas is red, so it blocks the other colours",
+                      "Dust between the stars blocks those colours",
+                      "Its electron can only jump between fixed energy levels",
+                      "The star doesn't make light at those colours")
+                .scene((r, hud, t) -> hud.inset("Energy levels of hydrogen", 270, 300, MagnitudeLesson::bohrInset)));
+
+        s.add(step("Check: a fingerprint", """
+                In the lab, hot hydrogen gas glows at exactly **656 nm** (red) and **486 nm**
+                (blue-green). A star's spectrum shows dark lines at exactly **656 nm** and
+                **486 nm**.
+                """)
+                .reviews("Where absorption lines come from")
+                .only("AST101")
+                .sky(() -> new double[]{285, 55, 120})
+                .enter(() -> {
+                    utm(); host.goToUTC(2026, 9, 22, 1, 0); host.setTime(0);
+                    host.skyLayers(false, false, true, true);
+                })
+                .quiz("What does this tell you about the star?", 0,
+                      "An element absorbs the same colours it gives off when hot, the jumps between its energy levels. "
+                    + "Every element has its own set, like a fingerprint, so lines at hydrogen's wavelengths mean there "
+                    + "is hydrogen in the star's outer layers. This is how we know what stars are made of without "
+                    + "visiting them.",
+                      "The star's outer layers contain hydrogen", "The star is moving toward us",
+                      "The star is exactly as hot as the lab gas", "The star is surrounded by a cloud of dust")
+                .scene((r, hud, t) -> {
+                    hud.title("Two spectra", ACCENT);
+                    hud.row("hot hydrogen in the lab", "bright lines at 656 nm and 486 nm");
+                    hud.row("the star", "dark lines at 656 nm and 486 nm", SUN_C);
+                }));
+
+        s.add(step("Check: the strongest hydrogen lines", """
+                Four stars, from cool to hot. Remember that a star's temperature decides which
+                jumps its hydrogen atoms can make.
+                """)
+                .reviews("Where absorption lines come from")
+                .only("AST101")
+                .sky(() -> new double[]{285, 55, 120})
+                .enter(() -> {
+                    utm(); host.goToUTC(2026, 9, 22, 1, 0); host.setTime(0);
+                    host.skyLayers(false, false, true, true);
+                })
+                .quiz("Which star shows the strongest hydrogen lines?", 2,
+                      "Visible hydrogen lines come from atoms whose electron sits in the second level. A cool star has "
+                    + "few atoms lifted that high; a very hot star strips the electron off altogether. In between, near "
+                    + "10,000 K (A stars like Vega), the most atoms sit in the second level, so the lines are strongest.",
+                      "A cool red star, 3,000 K", "The Sun, 5,800 K", "Vega, about 10,000 K", "A blue O star, 40,000 K")
+                .scene((r, hud, t) -> {
+                    hud.title("Four stars", ACCENT);
+                    hud.row("cool red M star", "3,000 K", new Color(255, 190, 120));
+                    hud.row("the Sun (G)", "5,800 K", new Color(255, 236, 200));
+                    hud.row("Vega (A)", "about 10,000 K", new Color(230, 236, 255));
+                    hud.row("blue O star", "40,000 K", new Color(170, 190, 255));
+                }));
+
         s.add(step("Check: a bolometric magnitude", """
                 A star has a bolometric flux of **2.5 × 10⁻⁹ W/m²** at Earth. Vega's bolometric flux is
                 f₀ = **2.518 × 10⁻⁸ W/m²**.

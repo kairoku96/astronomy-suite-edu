@@ -305,7 +305,7 @@ final class GLSphereRenderer implements GLEventListener {
         }
         if (Boolean.TRUE.equals(optionalTried.get(cacheKey))) return 0;
         optionalTried.put(cacheKey, Boolean.TRUE);
-        java.io.File f = new java.io.File("assets/textures/" + fileName);
+        java.io.File f = Assets.file("textures/" + fileName);
         if (!f.isFile()) return 0;
         try {
             java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(f);

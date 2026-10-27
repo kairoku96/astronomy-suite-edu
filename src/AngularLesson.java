@@ -13,11 +13,187 @@ final class AngularLesson extends LessonKit {
     AngularLesson(LessonStudio.Host host) { super(host); }
 
     static final String[] WORLDS = {"Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune", "Pluto"};
-    static final double R_MOON = 1737.4e3;
+    static final double R_MOON = 1737.4e3, R_EARTH = 6371.0e3;
+    /** Greatest eclipse (UTC, to the minute) of three real central eclipses: two total, one annular. */
+    static final int[][] ECLIPSES = {{2024, 4, 8, 18, 17}, {2027, 8, 2, 10, 7}, {2024, 10, 2, 18, 45}};
+    static final String[] ECLIPSE_NAMES = {"Total: Apr 8, 2024", "Total: Aug 2, 2027", "Annular: Oct 2, 2024"};
+    /** AST101 fields of view for Jupiter, from the naked eye to a big telescope (degrees). */
+    static final double[] FIELDS = {60, 7, 1, 0.1};
+    static final String[] FIELD_NAMES = {"Naked eye (60°)", "Binoculars (7°)", "Small telescope (1°)", "Big telescope (0.1°)"};
     int world = 2;
     int moonView;                 // 0 = the whole Earth–Moon line, 1 = at the Moon
+    int eclipse, coneView, field; // AST101: which eclipse, side view / down the line, which field of view
+    boolean showHand = true, eclipseHand;
     double[] view = {0, 0, 1};
     double[] camGoal = {0, 0, 1, 50, 0};
+
+    /** Where the Sun–Moon line meets the ground (m, heliocentric): the middle of the shadow's path. */
+    double[] shadowPoint() {
+        double[] e = pos(host.state("Earth")), m = pos(host.state("Moon")), u = norm(m);
+        double[] w = sub(m, e);                                  // the axis is m + s·u, onward from the Sun
+        double b = dot(w, u), disc = b * b - (dot(w, w) - R_EARTH * R_EARTH);
+        if (disc < 0) return add(e, scaleV(norm(sub(add(m, scaleV(u, -b)), e)), R_EARTH));   // a near miss: the nearest ground
+        return add(m, scaleV(u, -b - Math.sqrt(disc)));
+    }
+
+    void frameCone() {
+        double[] e = pos(host.state("Earth")), m = pos(host.state("Moon")), p = shadowPoint(), u = norm(m);
+        double yaw = Math.toDegrees(Math.atan2(u[0], u[1])), pitch = Math.toDegrees(Math.acos(u[2]));
+        double[] mid = sub(lerp(p, m, 0.5), e), mm = sub(m, e);
+        // Side view: across the line. Down the line: from the ground side, along the axis, tipped a little.
+        camGoal = coneView == 0
+                ? new double[]{mid[0], mid[1], 0.6 * len(sub(m, p)), 72, yaw + 90, mid[2]}
+                : new double[]{mm[0], mm[1], 4.5e6, pitch - 10, yaw + 12, mm[2]};
+    }
+
+    /** A direction {@code x}° right and {@code y}° up of {@code t} on the sky, in the frame where {@code up} is up. */
+    static double[] skyAt(double[] t, double[] up, double x, double y) {
+        double[] right = norm(cross(t, up)), u = cross(right, t);
+        return norm(add(t, add(scaleV(right, Math.tan(Math.toRadians(x))), scaleV(u, Math.tan(Math.toRadians(y))))));
+    }
+
+    /**
+     * The four fingers of a right hand held up at arm's length, back toward you, in degrees on the sky
+     * (x right, y up, the little finger's tip at the origin): base centre x and y, length, width at the
+     * base and at the tip, and lean (° clockwise), little finger first. Widths follow the classic
+     * rule of thumb: the little finger about 1° across, the three middle fingers about 5°.
+     */
+    static final double[][] FINGERS = {
+            {0.15, -5.2, 5.2, 1.15, 0.95, 5},
+            {-1.45, -5.6, 7.1, 1.60, 1.35, 2},
+            {-3.20, -5.4, 7.9, 1.70, 1.45, 0},
+            {-4.95, -5.0, 7.0, 1.70, 1.40, -3}};
+
+    /** A tapering finger with a round tip, sunk a little into the palm so the outline joins smoothly. */
+    static Shape finger(double bx, double by, double len, double w0, double w1, double leanDeg) {
+        double a = Math.toRadians(leanDeg), dx = Math.sin(a), dy = Math.cos(a), px = dy, py = -dx, sink = 1.4;
+        double cx = bx + dx * (len - w1 / 2), cy = by + dy * (len - w1 / 2);
+        Path2D.Double p = new Path2D.Double();
+        p.moveTo(bx - dx * sink + px * w0 / 2, by - dy * sink + py * w0 / 2);
+        p.lineTo(cx + px * w1 / 2, cy + py * w1 / 2);
+        for (int i = 1; i <= 16; i++) {
+            double t = Math.PI * i / 16;
+            p.lineTo(cx + (px * Math.cos(t) + dx * Math.sin(t)) * w1 / 2, cy + (py * Math.cos(t) + dy * Math.sin(t)) * w1 / 2);
+        }
+        p.lineTo(bx - dx * sink - px * w0 / 2, by - dy * sink - py * w0 / 2);
+        p.closePath();
+        return p;
+    }
+
+    /** Where finger k's centre line is, and its half-width, at height y: exactly the edges {@link #finger} draws. */
+    static double[] fingerAt(int k, double y) {
+        double[] f = FINGERS[k];
+        double a = Math.toRadians(f[5]), along = (y - f[1]) / Math.cos(a), sink = 1.4;
+        return new double[]{f[0] + Math.tan(a) * (y - f[1]), (f[3] + (f[4] - f[3]) * clamp((along + sink) / (f[2] - f[4] / 2 + sink), 0, 1)) / 2};
+    }
+
+    /**
+     * The thumb's axis, a curve from its root in the palm out to its tip (the metacarpal angled out from
+     * the wrist, the two phalanges turning back up), and its width at the root and the tip.
+     */
+    static final double[][] THUMB = {{-3.6, -12.9}, {-7.6, -10.6}, {-9.2, -6.9}};
+    static final double THUMB_W0 = 3.1, THUMB_W1 = 1.75;
+    /** Where along the thumb the heel's edge joins it, and the web; how far the web runs up the index finger. */
+    static final double HEEL_T = 0.12, WEB_T = 0.8, WEB_TOP = -5.0;
+
+    /** {x, y, unit tangent x, y, half-width} of the thumb a fraction t of the way from its root to its tip. */
+    static double[] thumbAt(double t) {
+        double[] a = THUMB[0], c = THUMB[1], b = THUMB[2];
+        double u = 1 - t, tx = 2 * u * (c[0] - a[0]) + 2 * t * (b[0] - c[0]), ty = 2 * u * (c[1] - a[1]) + 2 * t * (b[1] - c[1]), m = Math.hypot(tx, ty);
+        return new double[]{u * u * a[0] + 2 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2 * u * t * c[1] + t * t * b[1],
+                            tx / m, ty / m, (THUMB_W0 + (THUMB_W1 - THUMB_W0) * t * (2 - t)) / 2};
+    }
+    /** The thumb's edge at t: the side toward the fingers (+1) or the outer side (−1). */
+    static double[] thumbEdge(double t, int side) {
+        double[] s = thumbAt(t);
+        return new double[]{s[0] + side * s[3] * s[4], s[1] - side * s[2] * s[4], s[2], s[3]};
+    }
+
+    /** The thumb from the heel out: a tube tapering along its curved axis, with a round tip. */
+    static Shape thumb() {
+        int n = 24;
+        Path2D.Double p = new Path2D.Double();
+        for (int i = 0; i <= n; i++) {
+            double[] e = thumbEdge(HEEL_T + (1 - HEEL_T) * i / n, 1);
+            if (i == 0) p.moveTo(e[0], e[1]); else p.lineTo(e[0], e[1]);
+        }
+        double[] tip = thumbAt(1);
+        for (int i = 1; i < 16; i++) {
+            double t = Math.PI * i / 16;
+            p.lineTo(tip[0] + (tip[3] * Math.cos(t) + tip[2] * Math.sin(t)) * tip[4], tip[1] + (-tip[2] * Math.cos(t) + tip[3] * Math.sin(t)) * tip[4]);
+        }
+        for (int i = n; i >= 0; i--) {
+            double[] e = thumbEdge(HEEL_T + (1 - HEEL_T) * i / n, -1);
+            p.lineTo(e[0], e[1]);
+        }
+        p.closePath();
+        return p;
+    }
+
+    /**
+     * The whole hand as one outline: fingers, palm, thumb and the web between thumb and index finger.
+     * The heel runs into the thumb's outer edge, and the web leaves the index finger and meets the thumb,
+     * each along that edge's own direction, so the outline has no corner anywhere.
+     */
+    static Area handShape() {
+        Area a = new Area();
+        for (double[] f : FINGERS) a.add(new Area(finger(f[0], f[1], f[2], f[3], f[4], f[5])));
+        double[] heel = thumbEdge(HEEL_T, -1);
+        Path2D.Double palm = new Path2D.Double();
+        palm.moveTo(0.78, -5.4);
+        palm.curveTo(0.95, -8.5, 0.85, -11.5, 0.2, -13.6);           // the little-finger edge, down to the heel
+        palm.curveTo(-1.2, -15.8, heel[0] - heel[2] * 2.6, heel[1] - heel[3] * 2.6, heel[0], heel[1]);
+        palm.curveTo(-5.0, -12.0, -5.6, -8.5, -5.6, -5.3);           // back up inside the thumb and the web
+        palm.lineTo(-3.0, -5.9);
+        palm.closePath();
+        a.add(new Area(palm));
+        a.add(new Area(thumb()));
+        double lean = Math.toRadians(FINGERS[3][5]);
+        double[] ix = fingerAt(3, WEB_TOP), th = thumbEdge(WEB_T, 1);
+        double sx = ix[0] - ix[1] * Math.cos(lean);
+        Path2D.Double web = new Path2D.Double();
+        web.moveTo(sx, WEB_TOP);                                      // down the index finger's side, round the crotch, out the thumb
+        web.curveTo(sx - Math.sin(lean) * 1.9, WEB_TOP - Math.cos(lean) * 1.9, th[0] - th[2] * 1.3, th[1] - th[3] * 1.3, th[0], th[1]);
+        for (double t = WEB_T; t >= 0; t -= 0.1) web.lineTo(thumbAt(t)[0], thumbAt(t)[1]);
+        web.lineTo(-3.0, -9.0);
+        web.lineTo(ix[0], WEB_TOP);
+        web.closePath();
+        a.add(new Area(web));
+        return a;
+    }
+    private static Area handShape;
+
+    /**
+     * Your right hand held up at arm's length, back toward you, at its true angular size: the
+     * little finger is about 1° wide, three fingers about 5°, a closed fist about 10°. The tip of
+     * the little finger sits {@code below}° under {@code t}. One smooth outline, so no finger shows
+     * a seam where it meets the palm.
+     */
+    static void hand(LessonStudio.R3 r, double[] t, double[] up, double below) {
+        if (handShape == null) handShape = handShape();
+        Color fill = new Color(236, 192, 160, 64), edge = new Color(255, 222, 196, 205);
+        List<double[]> run = new ArrayList<>();
+        double[] seg = new double[6];
+        for (PathIterator it = handShape.getPathIterator(null, 0.03); !it.isDone(); it.next()) {
+            int type = it.currentSegment(seg);
+            if (type == PathIterator.SEG_MOVETO) run.clear();
+            if (type != PathIterator.SEG_CLOSE) run.add(skyAt(t, up, seg[0], seg[1] - below));
+            else if (run.size() > 2) r.poly(run.toArray(new double[0][]), fill, edge, 1.4f);
+        }
+        Color mark = new Color(255, 225, 150, 235);
+        double ym = -1.3;
+        double[] lf = fingerAt(0, ym);
+        r.line(skyAt(t, up, lf[0] - lf[1], ym - below), skyAt(t, up, lf[0] + lf[1], ym - below), mark, 1.6f);
+        r.label(skyAt(t, up, lf[0] + lf[1], ym - below), "1°", mark, 12f, 16, 4);
+        double y5 = -3.6;
+        double[] ring = fingerAt(1, y5), index = fingerAt(3, y5);
+        r.line(skyAt(t, up, index[0] - index[1], y5 - below), skyAt(t, up, ring[0] + ring[1], y5 - below), mark, 1.6f);
+        r.label(skyAt(t, up, (index[0] - index[1] + ring[0] + ring[1]) / 2, y5 - below), "three fingers ≈ 5°", mark, 11.5f, 0, 16);
+        r.label(skyAt(t, up, -2.8, -11 - below), "your hand at arm's length", new Color(255, 225, 200, 215), 11.5f, 0, 0);
+    }
+
+    /** The sky's "up" for the hand: celestial north on an equatorial telescope, otherwise the zenith. */
+    double[] skyUp(boolean northUp) { return northUp ? host.skyEnuRaDec(0, 90) : v(0, 0, 1); }
 
     /** Angular radius (rad) of a sphere of radius R at distance d. */
     static double angR(double R, double d) { return Math.asin(Math.min(1, R / d)); }
@@ -56,6 +232,8 @@ final class AngularLesson extends LessonKit {
                 > The field is 2.5° wide. Time runs at 3 seconds per second; slide it to replay the
                 eclipse.
                 """)
+                .watch(() -> host.skyEnu("Sun"))
+                .only("AST221")
                 .sky(() -> view)
                 .enter(() -> {
                     host.skyPlace("Niagara Falls, NY", 43.0962, -79.0377, TORONTO);
@@ -82,6 +260,140 @@ final class AngularLesson extends LessonKit {
                     hud.row("Moon: D / d", String.format("3,474.8 km / %s km", fmtKm(dMoonKm)));
                     hud.row("Moon's angular diameter", String.format("%.4f rad = %.3f°", 3474.8 / dMoonKm, moon[5] / 3600));
                     hud.formula("θ ≈ D / d");
+                }));
+
+        // AST101 doesn't use radians: the same eclipse in degrees, with your hand for scale.
+        s.add(step("Angular size", """
+                April 8, 2024, 3:18 pm, Niagara Falls. The Moon slides exactly over the Sun: a
+                {k:total solar eclipse}. The Sun is 400 times wider than the Moon, but it is also
+                about 400 times farther away, so the two look the same size.
+
+                How big something looks is its {k:angular size}: the angle it covers in the sky,
+                in degrees. It depends on the object's real diameter D and on its distance d:
+
+                $ angular size ≈ 57.3° × D / d
+
+                (57.3 is just the number that turns the ratio D / d into degrees.) Twice as far
+                away looks half as big. The Sun and the Moon both come out at about **half a
+                degree**.
+
+                > The field is 2.5° wide. Tick "Compare with my hand" to zoom out and hold your hand
+                up beside the Sun at arm's length: your little finger is about 1° wide, twice the
+                Sun. Slide the time to replay the eclipse.
+                """)
+                .watch(() -> host.skyEnu("Sun"))
+                .only("AST101")
+                .sky(() -> eclipseHand ? new double[]{view[0], view[1] - 7, 26} : view)
+                .enter(() -> {
+                    host.skyPlace("Niagara Falls, NY", 43.0962, -79.0377, TORONTO);
+                    host.goToUTC(2024, 4, 8, 19, 18);
+                    host.setTime(3);
+                    host.skyNorthUp(false);
+                    host.skyLayers(false, false, false, true);
+                    double[] b = host.skyBody("Sun");
+                    view = new double[]{Math.round(b[1] * 10) / 10.0, Math.round(b[0] * 10) / 10.0, 2.5};
+                    eclipseHand = false;
+                })
+                .controls(c -> {
+                    c.slider("Time speed", 0, 60, () -> host.timeScale(), x -> host.setTime(x < 0.5 ? 0 : x),
+                            x -> x < 0.5 ? "paused" : String.format("%.0f s per second", x));
+                    c.toggle("Compare with my hand (zooms out to 26°)", () -> eclipseHand, x -> eclipseHand = x);
+                })
+                .scene((r, hud, t) -> {
+                    double[] sun = host.skyBody("Sun"), moon = host.skyBody("Moon");
+                    double[] se = host.skyEnu("Sun"), me = host.skyEnu("Moon");
+                    int off = eclipseHand ? 70 : 190;
+                    r.label(se, String.format("Sun  %.2f°", sun[5] / 3600), SUN_C, 12.5f, -off, -off / 3);
+                    r.label(me, String.format("Moon  %.2f°", moon[5] / 3600), INK, 12.5f, off, -off / 3);
+                    if (eclipseHand) hand(r, se, skyUp(false), 0.45);
+                    double dSunKm = sun[6] * AU / 1e3, dMoonKm = moon[6] * AU / 1e3;
+                    hud.title("Angular sizes right now", SUN_C);
+                    hud.row("local time", host.skyLocalTime().replaceAll("\\s+\\(.*\\)$", ""));
+                    hud.row("Sun hidden by the Moon", String.format("%.1f%%", 100 * host.skyEclipsed()));
+                    hud.gap();
+                    hud.row("Sun: D / d", String.format("1,391,400 km / %s km", fmtKm(dSunKm)), SUN_C);
+                    hud.row("Sun: 57.3° × D / d", String.format("%.3f°  (%.1f′)", 57.296 * 1.3914e6 / dSunKm, sun[5] / 60), SUN_C);
+                    hud.row("Moon: D / d", String.format("3,475 km / %s km", fmtKm(dMoonKm)));
+                    hud.row("Moon: 57.3° × D / d", String.format("%.3f°  (%.1f′)", 57.296 * 3474.8 / dMoonKm, moon[5] / 60));
+                    hud.gap();
+                    hud.row("1° = 60′ (arcminutes)", "your little finger ≈ 1°", DIM);
+                    hud.formula("angular size ≈ 57.3° × D / d");
+                }));
+
+        s.add(step("Same angle, different sizes", """
+                The same line-up in space, at true scale. The gold lines are the {k:cone of
+                sunlight}: every direction from the middle of the Moon's shadow on the ground that
+                lands on the Sun. The cone's angle is the Sun's half degree, so it widens with
+                distance: at the Moon it is about as wide as the Moon.
+
+                The Moon's orbit is a stretched circle, so its distance changes, from 357,000 km at
+                its closest (perigee) to 407,000 km at its farthest (apogee).
+
+                **Near**: the Moon is wider than the cone and hides the whole Sun: a
+                {k:total eclipse}.
+
+                **Far**: the Moon is narrower than the cone and a ring of Sun shows around it: an
+                {k:annular eclipse}.
+
+                > Pick an eclipse. Switch to "Down the line" to look along the cone from the
+                ground. The inset is what you'd see there.
+                """)
+                .watch(() -> scaleV(pos(host.state("Moon")), 1 / KM))
+                .only("AST101")
+                .unit(KM)
+                .cam("Earth", () -> camGoal)
+                .enter(() -> {
+                    host.showOnly(null, "Earth"); host.setOrbits(false, true); host.setTime(0);
+                    int[] d = ECLIPSES[eclipse];
+                    host.goToUTC(d[0], d[1], d[2], d[3], d[4]);
+                    frameCone();
+                })
+                .controls(c -> {
+                    c.choices("Eclipse", ECLIPSE_NAMES, () -> eclipse, k -> {
+                        eclipse = k;
+                        int[] d = ECLIPSES[k];
+                        host.goToUTC(d[0], d[1], d[2], d[3], d[4]);
+                        frameCone();
+                    });
+                    c.choices("View", new String[]{"Side view", "Down the line"}, () -> coneView, k -> { coneView = k; frameCone(); });
+                })
+                .scene((r, hud, t) -> {
+                    double[] p = shadowPoint(), m = pos(host.state("Moon")), u = norm(m);
+                    double dS = len(p), dM = len(sub(m, p));
+                    double aS = Math.asin(R_SUN / dS), aM = Math.asin(R_MOON / dM);   // angular radii from the ground
+                    double[] side = norm(cross(u, v(0, 0, 1))), up = cross(side, u);
+                    double[] pk = scaleV(p, 1 / KM), mk = scaleV(m, 1 / KM);
+                    double reach = dM * 1.12 / KM, coneR = Math.tan(aS) * dM / KM;
+                    // The cone: a few lines along it from the ground, and its cross-section at the Moon.
+                    for (int i = 0; i < 8; i++) {
+                        double th = 2 * Math.PI * i / 8;
+                        double[] dir = norm(add(scaleV(u, -1), scaleV(add(scaleV(side, Math.cos(th)), scaleV(up, Math.sin(th))), Math.tan(aS))));
+                        r.seg(pk, add(pk, scaleV(dir, reach)), alpha(SUN_C, i % 4 == 0 ? 220 : 90), i % 4 == 0 ? 1.6f : 1f);
+                    }
+                    double[][] ring = new double[120][];
+                    for (int i = 0; i < 120; i++) {
+                        double th = 2 * Math.PI * i / 120;
+                        ring[i] = add(mk, scaleV(add(scaleV(side, Math.cos(th)), scaleV(up, Math.sin(th))), coneR));
+                    }
+                    r.polyline(ring, true, SUN_C, 2f, false);
+                    r.dot(pk, 4, ACCENT);
+                    r.label(pk, "middle of the shadow", ACCENT, 12f, 0, 18);
+                    boolean total = aM > aS;
+                    double coneKm = 2 * Math.tan(aS) * dM / 1e3, moonKm = 2 * R_MOON / 1e3;
+                    if (coneView == 1) {
+                        r.label(add(mk, scaleV(up, coneR)), String.format("cone: %,.0f km wide here", coneKm), SUN_C, 12.5f, 0, -14);
+                        r.label(add(mk, scaleV(up, -R_MOON / KM)), "Moon: 3,475 km", INK, 12.5f, 0, 22);
+                    } else {
+                        r.label(mk, String.format("Moon, %,.0f km up", dM / 1e3), INK, 12.5f, 0, -18);
+                    }
+                    hud.title(total ? "Total: the Moon covers the cone" : "Annular: the Moon is too small", total ? SUN_C : ORANGE);
+                    hud.row("Moon's distance (from the ground)", fmtKm(dM / 1e3) + " km");
+                    hud.row("Moon: 57.3° × 3,475 km / d", String.format("%.3f°", 57.296 * moonKm * 1e3 / dM));
+                    hud.row("Sun: 57.3° × 1,391,400 km / d", String.format("%.3f°", 57.296 * 2 * R_SUN / dS), SUN_C);
+                    hud.row("Moon's width / cone's width", String.format("%,.0f km / %,.0f km = %.3f", moonKm, coneKm, moonKm / coneKm),
+                            total ? SUN_C : ORANGE);
+                    hud.formula("angular size ≈ 57.3° × D / d");
+                    hud.inset("From the shadow's middle (1.2°)", 220, 220, (g, b) -> eclipseInset(g, b, aS, aM));
                 }));
 
         s.add(step("A radian is huge; sky angles are tiny", """
@@ -187,6 +499,8 @@ final class AngularLesson extends LessonKit {
 
                 > Zoom out with the scroll wheel to see how small Jupiter is to the naked eye.
                 """)
+                .watch(() -> host.skyEnu("Jupiter"))
+                .only("AST221")
                 .sky("Jupiter", () -> new double[]{0, 0, 0.1})
                 .enter(() -> {
                     host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
@@ -209,10 +523,66 @@ final class AngularLesson extends LessonKit {
                     hud.formula("θ (arcsec) = 206,265 × D / d");
                 }));
 
+        s.add(step("A planet's tiny disc", """
+                Jupiter at opposition, January 10, 2026, seen from Mississauga at midnight. Jupiter
+                is 143,000 km across, eleven times wider than Earth, but it is 630 million km away,
+                so its angular size is
+
+                $ 57.3° × 143,000 km / 630,000,000 km ≈ 0.013°
+
+                That is 47 {k:arcseconds} (1° = 60 arcminutes = 3,600 arcseconds), about 1/40 of the
+                Moon's width. To your eye Jupiter is a point of light. It takes a telescope to see
+                its disc.
+
+                > Step through the fields of view, from your naked eye (with your hand at arm's length
+                for scale) to a big telescope. The dashed
+                circle is how big the full Moon would look. The four dots in a line are Jupiter's
+                Galilean moons, at their real places that night.
+                """)
+                .watch(() -> host.skyEnu("Jupiter"))
+                .only("AST101")
+                .sky("Jupiter", () -> new double[]{0, 0, FIELDS[field]})
+                .enter(() -> {
+                    host.skyPlace(UTM, UTM_LAT, UTM_LON, TORONTO);
+                    host.goToUTC(2026, 1, 10, 5, 0);
+                    host.setTime(60);
+                    host.skyNorthUp(true);
+                    host.skyLayers(false, false, false, true);
+                    field = 0;
+                })
+                .controls(c -> {
+                    c.choices("Field of view", FIELD_NAMES, () -> field, k -> field = k);
+                    c.toggle("Show my hand at arm's length", () -> showHand, x -> showHand = x);
+                    c.slider("Time speed", 0, 30, () -> host.timeScale() / 60, x -> host.setTime(x < 0.3 ? 0 : x * 60),
+                            x -> x < 0.3 ? "paused" : String.format("%.0f min per second", x));
+                })
+                .scene((r, hud, t) -> {
+                    double[] j = host.skyBody("Jupiter"), je = host.skyEnu("Jupiter"), up = skyUp(true);
+                    double dKm = j[6] * AU / 1e3, deg = 57.296 * 142984 / dKm;
+                    double moonR = 0.259;                                  // the full Moon's angular radius (°)
+                    if (FIELDS[field] < 10) {                              // at 60° it is a speck
+                        LessonKit.skyCircle(r, je, moonR, alpha(INK, 170), 1.3f, true);
+                        if (moonR < 0.45 * FIELDS[field])
+                            r.label(skyAt(je, up, 0, moonR), "the full Moon, this big", alpha(INK, 210), 11.5f, 0, -12);
+                    }
+                    if (showHand && FIELDS[field] >= 20) hand(r, je, up, 0.6);   // a hand is a naked-eye ruler
+                    hud.title("Jupiter tonight", SUN_C);
+                    hud.row("distance d", String.format("%s km", fmtKm(dKm)));
+                    hud.row("diameter D", "142,984 km");
+                    hud.row("57.3° × D / d", String.format("%.4f°  =  %.0f″", deg, deg * 3600), SUN_C);
+                    hud.row("the full Moon, for comparison", "0.52°  =  1,870″");
+                    hud.row("field of view", FIELD_NAMES[field]);
+                    hud.row("Jupiter's width / the field", String.format("1 / %,.0f", FIELDS[field] / deg), DIM);
+                    if (FIELDS[field] < 0.52) hud.row("the full Moon would span", String.format("%.0f× this field", 0.52 / FIELDS[field]), DIM);
+                    hud.formula("angular size ≈ 57.3° × D / d");
+                }));
+
         s.add(step("Check: the Moon's angular size", """
                 From the slides: the Moon has diameter **3.5 × 10³ km** and distance
                 **3.8 × 10⁵ km**.
                 """)
+                .reviews("A radian is huge; sky angles are tiny")
+                .only("AST221")
                 .unit(KM)
                 .cam("Earth", () -> camGoal)
                 .enter(() -> {
@@ -228,9 +598,32 @@ final class AngularLesson extends LessonKit {
                     r.ring(m, 4, alpha(INK, 160), 1.4f);
                 }));
 
+        s.add(step("Check: the Moon's angular size", """
+                From the slides: the Moon has diameter **3.5 × 10³ km** and distance
+                **3.8 × 10⁵ km**.
+                """)
+                .reviews("Angular size")
+                .only("AST101")
+                .unit(KM)
+                .cam("Earth", () -> camGoal)
+                .enter(() -> {
+                    host.showOnly(null, "Earth"); host.setOrbits(false, true); host.setTime(0);
+                    moonView = 1; frameMoon();
+                })
+                .quiz("What is the Moon's angular diameter?", 1,
+                      "Angular size ≈ 57.3° × D / d = 57.3° × 3.5 × 10³ / 3.8 × 10⁵ = 0.53°: about half a degree, "
+                    + "half your little finger at arm's length. The Sun comes out the same: "
+                    + "57.3° × 1.4 × 10⁶ km / 1.5 × 10⁸ km = 0.53°.",
+                      "About 5°", "About 0.5°", "About 0.05°", "About 30°")
+                .scene((r, hud, t) -> {
+                    double[] m = scaleV(pos(host.state("Moon")), 1 / KM);
+                    r.ring(m, 4, alpha(INK, 160), 1.4f);
+                }));
+
         s.add(step("Check: the Sun's solid angle", """
                 From the slides: the Sun has radius **7 × 10⁵ km** and is **1.5 × 10⁸ km** away.
                 """)
+                .reviews("Solid angle: how much sky the Sun covers")
                 .unit(AU)
                 .cam(() -> camGoal)
                 .enter(() -> {
@@ -258,6 +651,27 @@ final class AngularLesson extends LessonKit {
     }
 
     static String fmtKm(double km) { return String.format("%,.0f", km); }
+
+    /** The Sun and the Moon at true angular size (radii in radians) in a 1.2°-wide field, centred on each other. */
+    static void eclipseInset(Graphics2D g, Rectangle b, double sunR, double moonR) {
+        double cx = b.getCenterX(), cy = b.getCenterY(), pxPerDeg = b.width / 1.2;
+        double rs = Math.toDegrees(sunR) * pxPerDeg, rm = Math.toDegrees(moonR) * pxPerDeg;
+        if (rm >= rs) {                                   // totality: only the corona shows around the Moon
+            g.setPaint(new RadialGradientPaint(new Point2D.Double(cx, cy), (float) (rs * 2.2),
+                    new float[]{0f, 0.45f, 1f}, new Color[]{new Color(235, 240, 255, 200), new Color(200, 215, 255, 70), new Color(200, 215, 255, 0)}));
+            g.fill(new Ellipse2D.Double(cx - rs * 2.2, cy - rs * 2.2, rs * 4.4, rs * 4.4));
+        } else {
+            g.setPaint(new RadialGradientPaint(new Point2D.Double(cx, cy), (float) rs,
+                    new float[]{0f, 0.8f, 1f}, new Color[]{new Color(255, 248, 225), new Color(255, 222, 150), new Color(240, 170, 80)}));
+            g.fill(new Ellipse2D.Double(cx - rs, cy - rs, 2 * rs, 2 * rs));
+        }
+        g.setColor(new Color(4, 4, 6));
+        g.fill(new Ellipse2D.Double(cx - rm, cy - rm, 2 * rm, 2 * rm));
+        g.setFont(LessonStudio.uiFont(Font.PLAIN, 11f));
+        g.setColor(rm >= rs ? new Color(220, 228, 255) : new Color(255, 200, 120));
+        String s = rm >= rs ? "Total: the Moon hides the whole Sun" : "Annular: a ring of Sun shows";
+        g.drawString(s, (float) (b.x + 8), (float) (b.getMaxY() - 8));
+    }
 
     /** The Sun's disc at true angular scale in a 2°-wide field, with Earth's view dashed for scale. */
     static void sunInset(Graphics2D g, Rectangle b, double angRad) {
