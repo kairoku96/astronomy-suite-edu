@@ -674,6 +674,7 @@ public final class LessonStudio extends JPanel {
         }
         Step s = step();
         int li = lessons.indexOf(lesson) + 1;
+        b.append("Course bundle: ").append(courseCode()).append(" (").append(COURSES.get(course).name()).append(")\n");
         b.append(courseCode()).append(" LESSON IN PROGRESS: lesson ").append(li).append(" of ").append(lessons.size()).append(", \"")
          .append(lesson.title).append("\" (").append(lesson.level).append(": ").append(lesson.subtitle).append(")\n");
         b.append("Step ").append(stepIdx + 1).append(" of ").append(lesson.steps.size()).append(": \"").append(s.title).append("\"")
@@ -689,9 +690,14 @@ public final class LessonStudio extends JPanel {
             for (int k = 0; k < q.options.length; k++)
                 b.append("  ").append((char) ('A' + k)).append(". ").append(plainText(q.options[k]).strip())
                  .append(q.tried[k] ? "   (user tried this: wrong)" : "").append('\n');
-            b.append("  Correct answer (for tutoring only): ").append((char) ('A' + q.correct)).append(". ")
-             .append(plainText(q.options[q.correct]).strip()).append(" - ").append(plainText(q.explain).strip()).append('\n');
-            b.append("  Status: ").append(q.solved ? "the user has answered it correctly" : "not answered correctly yet").append('\n');
+            if (s.reviews != null) b.append("  This check reviews the step \"").append(s.reviews).append("\".\n");
+            // The answer and its explanation are left out until the user solves it, so the assistant
+            // cannot give them away however it is asked; it tutors from the narration instead.
+            if (q.solved)
+                b.append("  Status: the user has answered it correctly. Answer: ").append((char) ('A' + q.correct)).append(". ")
+                 .append(plainText(q.options[q.correct]).strip()).append(" - ").append(plainText(q.explain).strip()).append('\n');
+            else
+                b.append("  Status: not answered correctly yet (the answer is withheld from you; do not work it out for the user).\n");
         }
         Hud hud = overlay.hud;
         if (hud.title != null || !hud.rows.isEmpty() || !hud.formulas.isEmpty()) {
@@ -782,7 +788,7 @@ public final class LessonStudio extends JPanel {
     // ---- progress: which steps of each lesson the user has done, kept across runs ----
 
     /** Per course and lesson, the titles of the steps done: seen, or for a check, answered right. */
-    private final AppSettings progress = AppSettings.load(AppSettings.file("lessons.properties"), "Astronomy Suite - lesson progress");
+    private final AppSettings progress = AppSettings.load(AppSettings.file("lessons.properties"), "Orrerium - lesson progress");
     /** The head-less shot and alignment runs walk every step; they mustn't mark anything done. */
     private static final boolean RECORD = System.getProperty("sss.lessonshot") == null && System.getProperty("sss.aligncheck") == null;
     private static final String SEP = " | ";
@@ -3472,14 +3478,15 @@ public final class LessonStudio extends JPanel {
                     for (int fr = 0; fr < 30; fr++) simFrame.accept(1 / 30.0);
                 }
                 Step st = steps.get(k);
-                if (st.quiz != null) { st.quiz.solved = true; rebuildQuiz(st); }
-                shot(root, String.format("%s/L%d_step%02d.png", dir, li + 1, k + 1));
+                // Before the check is solved, so the file shows what the assistant sees while the user is still on it.
                 if (aiSnapshot != null && Boolean.getBoolean("sss.lessonshot.ai")) {
                     try {
                         java.nio.file.Files.writeString(java.nio.file.Path.of(String.format("%s/L%d_step%02d_ai.txt", dir, li + 1, k + 1)),
                                 aiSnapshot.get());
                     } catch (Exception ex) { System.err.println(ex); }
                 }
+                if (st.quiz != null) { st.quiz.solved = true; rebuildQuiz(st); }
+                shot(root, String.format("%s/L%d_step%02d.png", dir, li + 1, k + 1));
                 n++;
                 if (Boolean.getBoolean("sss.lessonshot.controls")) n += exerciseControls(dir, root, simFrame, li, k);
             }
